@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+# @tk-name: git.log-recent
+# @tk-summary: Recent commits in a git working tree (sha, date, author, subject)
+# @tk-safety: read-only
+# @tk-arg: --repo  | required | string | Path to the git working tree
+# @tk-arg: --limit | optional | int    | Maximum commits to return (default: 5)
+# @tk-output: json | {repo, count, commits:[{sha, date, author, subject}]}
+# @tk-example: tk run git.log-recent --repo . --limit 5
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import subprocess
+import sys
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def parse_log(text: str) -> list[dict]:
+    commits: list[dict] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        sha, date, author, subject = (line.split("\x1f", 3) + ["", "", ""])[:4]
+        commits.append(
+            {"sha": sha, "date": date, "author": author, "subject": subject}
+        )
+    return commits
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "5"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit({"repo": repo or "example", "count": 0, "commits": []})
+    if not repo:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_REPO is required",
+                "fix": "tk run git.log-recent --repo <path>",
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run git.log-recent --repo <git-dir> --limit 5",
+            },
+            2,
+        )
+    if limit < 1:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 1",
+                "fix": "tk run git.log-recent --repo <git-dir> --limit 5",
+            },
+            2,
+        )
+    probe = git(repo, "rev-parse", "--is-inside-work-tree")
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return emit(
+            {
+                "error": "not_a_repo",
+                "why": probe.stderr.strip() or f"{repo} is not a git working tree",
+                "fix": "tk run git.log-recent --repo <git-dir>",
+            },
+            1,
+        )
+    log = git(
+        repo,
+        "log",
+        "-n",
+        str(limit),
+        "--pretty=format:%H%x1f%aI%x1f%an%x1f%s",
+    )
+    if log.returncode != 0:
+        return emit(
+            {
+                "error": "git_failed",
+                "why": log.stderr.strip() or "git log failed",
+                "fix": "tk run git.log-recent --repo <git-dir> --limit 5",
+            },
+            1,
+        )
+    commits = parse_log(log.stdout)
+    return emit({"repo": repo, "count": len(commits), "commits": commits})
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run git.log-recent --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

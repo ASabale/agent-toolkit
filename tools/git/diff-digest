@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+# @tk-name: git.diff-digest
+# @tk-summary: Compact changed-file digest of a git ref versus the working tree
+# @tk-safety: read-only
+# @tk-arg: --repo | required | string | Path to the git working tree
+# @tk-arg: --ref  | optional | string | Git ref to compare against the working tree (default: HEAD)
+# @tk-output: json | {repo, ref, files_changed, insertions, deletions, files:[{path, status, added, deleted}]}
+# @tk-example: tk run git.diff-digest --repo . --ref HEAD
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import subprocess
+import sys
+
+_STATUS = {
+    "A": "added",
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "copied",
+    "T": "typechange",
+    "U": "unmerged",
+}
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def parse_name_status(text: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        letter = parts[0][:1]
+        rows.append((_STATUS.get(letter, letter or "modified"), parts[-1]))
+    return rows
+
+
+def parse_numstat(text: str) -> dict[str, tuple[int, int]]:
+    counts: dict[str, tuple[int, int]] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        added_s, deleted_s, path = line.split("\t", 2)
+        added = 0 if added_s == "-" else int(added_s)
+        deleted = 0 if deleted_s == "-" else int(deleted_s)
+        counts[path] = (added, deleted)
+    return counts
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    ref = os.environ.get("TK_ARG_REF") or "HEAD"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "repo": repo or "example",
+                "ref": ref,
+                "files_changed": 0,
+                "insertions": 0,
+                "deletions": 0,
+                "files": [],
+            }
+        )
+    if not repo:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_REPO is required",
+                "fix": "tk run git.diff-digest --repo <path>",
+            },
+            2,
+        )
+    probe = git(repo, "rev-parse", "--is-inside-work-tree")
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return emit(
+            {
+                "error": "not_a_repo",
+                "why": probe.stderr.strip() or f"{repo} is not a git working tree",
+                "fix": "tk run git.diff-digest --repo <git-dir>",
+            },
+            1,
+        )
+    names = git(repo, "diff", "--name-status", ref)
+    stats = git(repo, "diff", "--numstat", ref)
+    if names.returncode != 0 or stats.returncode != 0:
+        why = (names.stderr or stats.stderr).strip() or "git diff failed"
+        return emit(
+            {
+                "error": "git_failed",
+                "why": why,
+                "fix": "tk run git.diff-digest --repo <git-dir> --ref HEAD",
+            },
+            1,
+        )
+    numstat = parse_numstat(stats.stdout)
+    files = []
+    seen: set[str] = set()
+    for status, path in parse_name_status(names.stdout):
+        added, deleted = numstat.get(path, (0, 0))
+        files.append(
+            {"path": path, "status": status, "added": added, "deleted": deleted}
+        )
+        seen.add(path)
+    for path, (added, deleted) in numstat.items():
+        if path in seen:
+            continue
+        files.append(
+            {"path": path, "status": "modified", "added": added, "deleted": deleted}
+        )
+    return emit(
+        {
+            "repo": repo,
+            "ref": ref,
+            "files_changed": len(files),
+            "insertions": sum(item["added"] for item in files),
+            "deletions": sum(item["deleted"] for item in files),
+            "files": files,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run git.diff-digest --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

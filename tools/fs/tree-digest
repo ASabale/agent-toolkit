@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+# @tk-name: fs.tree-digest
+# @tk-summary: Depth-limited file tree counts, top extensions, and entries
+# @tk-safety: read-only
+# @tk-arg: --path      | required | string | Directory to summarize
+# @tk-arg: --max-depth | optional | int    | How many levels below path to include (default: 2)
+# @tk-output: json | {path, files, dirs, top_extensions, entries}
+# @tk-example: tk run fs.tree-digest --path . --max-depth 2
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import sys
+
+_SKIP = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_TOP_N = 8
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def digest(root: str, max_depth: int) -> dict:
+    files = 0
+    dirs = 0
+    ext_counts: dict[str, int] = {}
+    entries: list[dict] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+        if depth > max_depth:
+            dirnames[:] = []
+            continue
+        dirnames[:] = sorted(name for name in dirnames if name not in _SKIP)
+        if depth >= max_depth:
+            dirnames[:] = []
+        if rel != ".":
+            dirs += 1
+            entries.append({"path": rel.replace(os.sep, "/"), "kind": "dir"})
+        for name in sorted(filenames):
+            if name in _SKIP:
+                continue
+            files += 1
+            rel_file = name if rel == "." else os.path.join(rel, name)
+            entries.append(
+                {"path": rel_file.replace(os.sep, "/"), "kind": "file"}
+            )
+            suffix = os.path.splitext(name)[1].lower()
+            if suffix:
+                ext_counts[suffix] = ext_counts.get(suffix, 0) + 1
+    top = sorted(ext_counts.items(), key=lambda item: (-item[1], item[0]))[:_TOP_N]
+    entries.sort(key=lambda item: item["path"])
+    return {
+        "path": root,
+        "files": files,
+        "dirs": dirs,
+        "top_extensions": [{"ext": ext, "count": count} for ext, count in top],
+        "entries": entries,
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    depth_raw = os.environ.get("TK_ARG_MAX_DEPTH") or "2"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "path": path or "example",
+                "files": 0,
+                "dirs": 0,
+                "top_extensions": [],
+                "entries": [],
+            }
+        )
+    if not path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATH is required",
+                "fix": "tk run fs.tree-digest --path <dir>",
+            },
+            2,
+        )
+    try:
+        max_depth = int(depth_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"max-depth is not an int: {depth_raw}",
+                "fix": "tk run fs.tree-digest --path <dir> --max-depth 2",
+            },
+            2,
+        )
+    if max_depth < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "max-depth must be >= 0",
+                "fix": "tk run fs.tree-digest --path <dir> --max-depth 2",
+            },
+            2,
+        )
+    if not os.path.isdir(path):
+        return emit(
+            {
+                "error": "not_a_directory",
+                "why": f"{path} is not a directory",
+                "fix": "tk run fs.tree-digest --path <dir>",
+            },
+            1,
+        )
+    return emit(digest(path, max_depth))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run fs.tree-digest --path <dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

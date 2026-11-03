@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""tk — dispatcher for the agent toolkit."""
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+
+_SAFETY = {"read-only", "mutating", "destructive"}
+
+
+def _err(error: str, why: str, fix: str) -> None:
+    sys.stderr.write(
+        json.dumps({"error": error, "why": why, "fix": fix}, separators=(",", ":")) + "\n"
+    )
+
+
+def _emit_streams(out: str, err: str) -> None:
+    if out:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    if err:
+        sys.stderr.write(err if err.endswith("\n") else err + "\n")
+
+
+def _write_text(text: str) -> None:
+    if not text:
+        return
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+
+
+def _parse_opts(argv: list[str], *, repeats: set[str]) -> tuple[dict, list[str]]:
+    """Parse dispatcher flags. Repeated names in `repeats` become lists of strings."""
+    opts: dict = {}
+    positional: list[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            positional.extend(argv[i + 1 :])
+            break
+        if not token.startswith("--") or token == "--":
+            positional.append(token)
+            i += 1
+            continue
+        name, eq, inline = token[2:].partition("=")
+        if not name:
+            raise ValueError(f"invalid flag {token}")
+        if eq:
+            value: str | None = inline
+            i += 1
+        elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            value = argv[i + 1]
+            i += 2
+        else:
+            value = None
+            i += 1
+        if name in repeats:
+            if value is None:
+                raise ValueError(f"--{name} requires a value")
+            opts.setdefault(name, []).append(value)
+            continue
+        if value is None:
+            opts[name] = True
+        else:
+            opts[name] = value
+    return opts, positional
+
+
+def _require_summary(opts: dict, fix: str) -> str | None:
+    summary = opts.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        _err("missing_flag", "--summary is required", fix)
+        return None
+    return summary.strip()
+
+
+def _safety(opts: dict, fix: str) -> str | None:
+    safety = opts.get("safety", "read-only")
+    if safety is True:
+        _err("missing_flag", "--safety requires a value", fix)
+        return None
+    if safety not in _SAFETY:
+        _err(
+            "invalid_safety",
+            "--safety must be read-only, mutating, or destructive",
+            fix,
+        )
+        return None
+    return safety
+
+
+def _catalog_item(catalog, name: str):
+    return catalog.discover_catalog(ROOT).get(name)
+
+
+def _cmd_find(catalog, evolver, argv: list[str]) -> int:
+    if any(a.startswith("--") for a in argv):
+        _err("unknown_flag", "tk find takes an optional query", "tk find")
+        return 2
+    query = " ".join(argv).strip()
+    items = catalog.find_items(ROOT, query)
+    if not items:
+        evolver.log_event(ROOT, "search_miss", {"query": query})
+    _write_text(catalog.format_find_output(items))
+    return 0
+
+
+def _cmd_info(catalog, evolver, argv: list[str]) -> int:
+    if len(argv) != 1 or argv[0].startswith("--"):
+        _err("missing_name", "info requires a tool or chain name", "tk find")
+        return 2
+    name = argv[0]
+    item = _catalog_item(catalog, name)
+    if item is None:
+        evolver.log_event(ROOT, "search_miss", {"query": name})
+        _err("not_found", f"no tool or chain named {name}", "tk find")
+        return 2
+    _write_text(catalog.format_info_output(item))
+    return 0
+
+
+def _stdin_data() -> str | None:
+    if sys.stdin.isatty():
+        return None
+    return sys.stdin.read()
+
+
+def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chains_only: bool) -> int:
+    flags, dry_run, positional = runner.parse_cli_flags(flag_argv)
+    item = _catalog_item(catalog, name)
+    if item is None:
+        evolver.log_event(ROOT, "search_miss", {"query": name})
+        _err("not_found", f"no tool or chain named {name}", "tk find")
+        return 2
+    if chains_only and item.get("kind") != "chain":
+        _err("not_a_chain", f"{name} is a tool", f"tk run {name}")
+        return 2
+    if item.get("kind") == "chain":
+        code, out, err = runner.run_chain(ROOT, item, flags, positional, dry_run)
+    else:
+        code, out, err = runner.run_tool(
+            ROOT, item, flags, positional, dry_run, _stdin_data()
+        )
+    _emit_streams(out or "", err or "")
+    return int(code)
+
+
+def _normalize_steps(raw_steps: list) -> list[dict]:
+    steps: list[dict] = []
+    for step in raw_steps:
+        if isinstance(step, str):
+            if step.strip():
+                steps.append({"tool": step.strip()})
+            continue
+        if isinstance(step, dict) and step.get("tool"):
+            steps.append(step)
+            continue
+        raise ValueError("each step must be a tool name or an object with tool")
+    return steps
+
+
+def _steps_from_opts(opts: dict, positional: list[str]) -> list[dict]:
+    raw = opts.get("steps")
+    steps: list[dict] = []
+    if isinstance(raw, list):
+        raise ValueError("--steps was repeated; pass one JSON array or space-separated list")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("[") or text.startswith("{"):
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            if not isinstance(parsed, list):
+                raise ValueError("--steps JSON must be a list")
+            steps.extend(_normalize_steps(parsed))
+        else:
+            steps.extend({"tool": part} for part in text.split() if part)
+    elif raw is True:
+        raise ValueError("--steps requires a value")
+    for name in positional:
+        steps.append({"tool": name})
+    if not steps:
+        raise ValueError("--steps is required")
+    return steps
+
+
+def _cmd_chain(catalog, runner, evolver, argv: list[str]) -> int:
+    if not argv:
+        _err(
+            "usage",
+            "chain requires run or save",
+            'tk chain save <name> --summary "<text>" --steps \'<json-or-names>\'',
+        )
+        return 2
+    sub = argv[0]
+    if sub == "run":
+        if len(argv) < 2 or argv[1].startswith("--"):
+            _err("missing_name", "chain run requires a chain name", "tk find")
+            return 2
+        return _cmd_run(catalog, runner, evolver, argv[1], argv[2:], chains_only=True)
+    if sub == "save":
+        return _cmd_chain_save(evolver, argv[1:])
+    if sub.startswith("--"):
+        _err(
+            "usage",
+            "chain requires run or save",
+            'tk chain run <name>',
+        )
+        return 2
+    return _cmd_run(catalog, runner, evolver, sub, argv[1:], chains_only=True)
+
+
+def _cmd_chain_save(evolver, argv: list[str]) -> int:
+    fix = 'tk chain save <name> --summary "<text>" --steps \'<json-or-names>\''
+    if not argv or argv[0].startswith("--"):
+        _err("missing_name", "chain save requires a name", fix)
+        return 2
+    name = argv[0]
+    try:
+        opts, positional = _parse_opts(argv[1:], repeats=set())
+    except ValueError as exc:
+        _err("invalid_flag", str(exc), fix)
+        return 2
+    known = {"summary", "steps", "safety"}
+    unknown = sorted(k for k in opts if k not in known)
+    if unknown:
+        _err("unknown_flag", f"unknown flag --{unknown[0]}", fix)
+        return 2
+    summary = _require_summary(opts, fix)
+    if summary is None:
+        return 2
+    safety = _safety(opts, fix)
+    if safety is None:
+        return 2
+    try:
+        steps = _steps_from_opts(opts, positional)
+    except (ValueError, json.JSONDecodeError) as exc:
+        _err("invalid_steps", str(exc), fix)
+        return 2
+    code, out, err = evolver.save_chain(
+        ROOT,
+        name,
+        summary,
+        steps,
+        args=None,
+        safety=safety,
+        example=None,
+        force=False,
+    )
+    _emit_streams(out or "", err or "")
+    return int(code)
+
+
+def _cmd_save(evolver, argv: list[str]) -> int:
+    fix = 'tk save <name> --summary "<text>" [--safety read-only] [--from-cmd "<cmd>" | --file <path>]'
+    if not argv or argv[0].startswith("--"):
+        _err("missing_name", "save requires a tool name", fix)
+        return 2
+    name = argv[0]
+    try:
+        opts, positional = _parse_opts(argv[1:], repeats={"arg"})
+    except ValueError as exc:
+        _err("invalid_flag", str(exc), fix)
+        return 2
+    if positional:
+        _err("positional_arguments_forbidden", "save takes named flags only", fix)
+        return 2
+    known = {"summary", "safety", "from-cmd", "file", "arg", "force"}
+    unknown = sorted(k for k in opts if k not in known)
+    if unknown:
+        _err("unknown_flag", f"unknown flag --{unknown[0]}", fix)
+        return 2
+    summary = _require_summary(opts, fix)
+    if summary is None:
+        return 2
+    safety = _safety(opts, fix)
+    if safety is None:
+        return 2
+    from_cmd = opts.get("from-cmd")
+    file_path = opts.get("file")
+    if from_cmd is True or file_path is True:
+        _err("missing_flag", "--from-cmd and --file require a value", fix)
+        return 2
+    if from_cmd and file_path:
+        _err("conflicting_flags", "pass only one of --from-cmd or --file", fix)
+        return 2
+    force = opts.get("force", False)
+    if isinstance(force, str):
+        force = force.lower() in {"1", "true", "yes"}
+    args_spec = opts.get("arg")
+    code, out, err = evolver.save_tool(
+        ROOT,
+        name,
+        summary,
+        safety=safety,
+        from_cmd=from_cmd if isinstance(from_cmd, str) else None,
+        file_path=file_path if isinstance(file_path, str) else None,
+        args_spec=args_spec,
+        force=bool(force),
+    )
+    _emit_streams(out or "", err or "")
+    return int(code)
+
+
+def _check_errors(payload: dict) -> list[str]:
+    errors = [str(item) for item in payload.get("errors") or []]
+    if errors:
+        return errors
+    collected: list[str] = []
+    for result in payload.get("results") or []:
+        if result.get("ok"):
+            continue
+        detail = "; ".join(result.get("errors") or [])
+        collected.append(f"{result.get('name', '?')}: {detail}".rstrip(": "))
+    return collected
+
+
+def _cmd_check(catalog, argv: list[str]) -> int:
+    fix = "tk check [name] [--json]"
+    json_mode = False
+    names: list[str] = []
+    for token in argv:
+        if token == "--json":
+            json_mode = True
+        elif token.startswith("--"):
+            _err("unknown_flag", f"unknown flag {token}", fix)
+            return 2
+        else:
+            names.append(token)
+    if len(names) > 1:
+        _err("usage", "tk check accepts at most one name", fix)
+        return 2
+    if names:
+        payload = catalog.check_item(ROOT, names[0])
+    else:
+        payload = catalog.check_all(ROOT)
+    if json_mode:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    elif "checked" in payload:
+        state = "ok" if payload.get("ok") else "fail"
+        sys.stdout.write(f"{state} {payload.get('checked', 0)}\n")
+    else:
+        state = "ok" if payload.get("ok") else "fail"
+        sys.stdout.write(f"{payload.get('name', names[0] if names else '?')} {state}\n")
+    if not payload.get("ok"):
+        if not json_mode:
+            _err("check_failed", "; ".join(_check_errors(payload)) or "validation failed", "tk check --json")
+        return 1
+    return 0
+
+
+def _cmd_evolve(evolver, argv: list[str]) -> int:
+    auto_promote = True
+    for token in argv:
+        if token == "--no-promote":
+            auto_promote = False
+        elif token.startswith("--"):
+            _err("unknown_flag", f"unknown flag {token}", "tk evolve [--no-promote]")
+            return 2
+        else:
+            _err("positional_arguments_forbidden", "evolve takes no positional arguments", "tk evolve")
+            return 2
+    report = evolver.evolve_report(ROOT, auto_promote=auto_promote)
+    sys.stdout.write(json.dumps(report, separators=(",", ":")) + "\n")
+    return 0
+
+
+def _load(name: str):
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import importlib
+
+    return importlib.import_module(name)
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in {"-h", "--help", "help"}:
+        _err(
+            "usage",
+            "subcommands: find, info, run, chain, save, check, evolve",
+            "tk find",
+        )
+        return 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "find":
+        return _cmd_find(_load("lib.catalog"), _load("lib.evolver"), rest)
+    if cmd == "info":
+        return _cmd_info(_load("lib.catalog"), _load("lib.evolver"), rest)
+    if cmd == "run":
+        if not rest or rest[0].startswith("--"):
+            _err("missing_name", "run requires a tool or chain name", "tk find")
+            return 2
+        return _cmd_run(
+            _load("lib.catalog"),
+            _load("lib.runner"),
+            _load("lib.evolver"),
+            rest[0],
+            rest[1:],
+            chains_only=False,
+        )
+    if cmd == "chain":
+        return _cmd_chain(_load("lib.catalog"), _load("lib.runner"), _load("lib.evolver"), rest)
+    if cmd == "save":
+        return _cmd_save(_load("lib.evolver"), rest)
+    if cmd == "check":
+        return _cmd_check(_load("lib.catalog"), rest)
+    if cmd == "evolve":
+        return _cmd_evolve(_load("lib.evolver"), rest)
+    _err("unknown_command", f"unknown command {cmd}", "tk find")
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except SystemExit:
+        raise
+    except Exception as exc:
+        _err("internal_error", str(exc), "tk check")
+        raise SystemExit(1)

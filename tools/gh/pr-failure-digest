@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+# @tk-name: gh.pr-failure-digest
+# @tk-summary: Failing and pending CI checks for a GitHub pull request, with pass count
+# @tk-safety: read-only
+# @tk-arg: --repo | required | string | Repository in owner/name form
+# @tk-arg: --pr | required | int | Pull request number
+# @tk-output: json | {repo, pr, fail:[{name, url}], pending, pass}
+# @tk-example: tk run gh.pr-failure-digest --repo cli/cli --pr 1
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import subprocess
+import sys
+
+_FAIL_CONCLUSIONS = {
+    "FAILURE",
+    "CANCELLED",
+    "TIMED_OUT",
+    "ACTION_REQUIRED",
+    "STARTUP_FAILURE",
+    "ERROR",
+}
+_PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+_PENDING = {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED", "EXPECTED"}
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def classify(check: dict) -> str:
+    conclusion = str(check.get("conclusion") or check.get("state") or "").upper()
+    status = str(check.get("status") or "").upper()
+    if conclusion in _FAIL_CONCLUSIONS or status in {"FAILURE", "ERROR"}:
+        return "fail"
+    if conclusion in _PASS_CONCLUSIONS or status in _PASS_CONCLUSIONS:
+        return "pass"
+    if conclusion in _PENDING or status in _PENDING or status not in {"COMPLETED", ""}:
+        return "pending"
+    if conclusion:
+        return "pending"
+    return "pending"
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    pr_raw = os.environ.get("TK_ARG_PR", "")
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        pr = int(pr_raw) if pr_raw.isdigit() else 1
+        return emit(
+            {
+                "repo": repo or "example",
+                "pr": pr,
+                "fail": [],
+                "pending": 0,
+                "pass": 0,
+            }
+        )
+    if not repo or not pr_raw:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_REPO and TK_ARG_PR are required",
+                "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+            },
+            2,
+        )
+    try:
+        pr = int(pr_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"pr is not an int: {pr_raw}",
+                "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr 1",
+            },
+            2,
+        )
+    proc = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr),
+            "--repo",
+            repo,
+            "--json",
+            "statusCheckRollup",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return emit(
+            {
+                "error": "gh_failed",
+                "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
+                "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+            },
+            1,
+        )
+    payload = json.loads(proc.stdout or "{}")
+    fail: list[dict] = []
+    pending = 0
+    passed = 0
+    for check in payload.get("statusCheckRollup") or []:
+        if not isinstance(check, dict):
+            continue
+        kind = classify(check)
+        if kind == "fail":
+            if len(fail) < 20:
+                fail.append(
+                    {
+                        "name": check.get("name") or check.get("context") or "",
+                        "url": check.get("detailsUrl") or check.get("targetUrl") or "",
+                    }
+                )
+        elif kind == "pass":
+            passed += 1
+        else:
+            pending += 1
+    return emit({"repo": repo, "pr": pr, "fail": fail, "pending": pending, "pass": passed})
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
