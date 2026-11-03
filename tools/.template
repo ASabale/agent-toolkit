@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# @tk-name: namespace.verb-noun
+# @tk-summary: One-line description of what this tool does and when to use it
+# @tk-safety: read-only
+# @tk-arg: --target | required | string | Target resource identifier (never hardcode)
+# @tk-arg: --limit  | optional | int    | Maximum items to return (default: 20)
+# @tk-output: json | Object or array returned inside the standard stdout envelope
+# @tk-example: tk run namespace.verb-noun --target example-id --limit 10
+# @tk-verified: none
+
+set -euo pipefail
+
+# Dispatcher injects validated flags as TK_ARG_<UPPER_NAME> and TK_DRY_RUN (0 or 1).
+TARGET="${TK_ARG_TARGET}"
+LIMIT="${TK_ARG_LIMIT:-20}"
+
+if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '{"dry_run": true, "target": "%s", "limit": %s}\n' "${TARGET}" "${LIMIT}"
+  exit 0
+fi
+
+# Emit valid JSON to stdout; send any diagnostics to stderr.
+printf '{"target": "%s", "limit": %s}\n' "${TARGET}" "${LIMIT}"

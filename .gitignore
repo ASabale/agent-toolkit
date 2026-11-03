@@ -1,0 +1,14 @@
+# Runtime telemetry, gap journal, and local state
+state/*.jsonl
+state/*.log
+!state/.gitkeep
+
+# OS & Python artifacts
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Code review graph local DB
+.code-review-graph/
