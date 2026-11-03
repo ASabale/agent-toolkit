@@ -4,7 +4,7 @@
 # @tk-safety: read-only
 # @tk-arg: --target | required | string | Target resource identifier (never hardcode)
 # @tk-arg: --limit  | optional | int    | Maximum items to return (default: 20)
-# @tk-output: json | Object or array returned inside the standard stdout envelope
+# @tk-output: json | Distilled, minimum-token JSON containing only decision-ready fields
 # @tk-example: tk run namespace.verb-noun --target example-id --limit 10
 # @tk-verified: none
 

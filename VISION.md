@@ -12,33 +12,39 @@ Meanwhile, language models already possess a superpower from pretraining: **they
 
 ---
 
-## 2. The Thesis
+## 2. Purpose & Core Principles
 
-Replace static, context-heavy MCP servers with a **portable, self-evolving CLI toolkit packaged as an Agent Skill**.
+**Purpose**: Enable any agent to **get the job done** with **minimum cognitive load** and **minimum tokens**, while making the toolkit effortless to use and evolve.
 
-Once a user drops this toolkit into any agentic harness (OMP, Claude Code, Cursor, Codex, Devin), they can **turn off MCP servers entirely**. Instead of loading hundreds of tool schemas upfront, the agent holds one compact skill pointer and interacts with a single CLI entrypoint (`tk`) that has two natures:
+Replace static, context-heavy MCP servers with a **portable, self-evolving CLI toolkit packaged as an Agent Skill**. Once a user drops this toolkit into any agentic harness (OMP, Claude Code, Cursor, Codex, Devin), they can **turn off MCP servers entirely**.
 
-1. **Consumer Nature (Easy to Use)**: Any model—down to small local models—can deterministically find a capability, read its exact invocation contract, run it, or chain several tools together in a single turn.
-2. **Evolver Nature (Easy to Extend & Maintain)**: When an agent solves a novel task using ad-hoc commands/scripts or repeats a multi-step sequence, it saves that capability back into the toolkit as a reusable, verified tool or chain. The toolkit grows sharper with every session.
+Every decision in `agent-toolkit` is governed by three non-negotiable principles:
+
+1. **Minimum Model Cognitive Load**: The toolkit must require near-zero reasoning to understand. One flat command shape, zero ordering traps, self-explanatory flags, and errors that print the exact corrected command. Even a small or local model succeeds on the first try.
+2. **Minimum Token Footprint**: We optimize relentlessly for the lowest total tokens across the entire task lifecycle:
+   - **Zero idle tokens**: Only a compact skill pointer sits in context; tool definitions stay on disk until needed.
+   - **Minimum discovery tokens**: `tk find` returns the matching tool *and* its exact copy-pasteable `tk run` signature in two lines—eliminating extra inspection turns.
+   - **Minimum output tokens**: Tools are **distillers**, not raw API pipes. A tool filters out noise and emits only the compact, high-signal data required to complete the job.
+3. **Continuous Usage-Driven Evolution**: Agents are both consumers and authors. When an agent solves a task or hits friction, it saves or refines the tool on the spot, chains multi-step workflows into one call, and prunes stale tools so bloat never returns.
 
 ---
 
 ## 3. The Three Pillars
 
-### Pillar I: Easy to Use (Deterministic for Dumb Models)
+### Pillar I: Easy to Use (Zero Cognitive Load, Minimum Tokens)
 
-If a 7B–30B model cannot use a tool on the first try without guessing, the tool's interface is broken.
+If a 7B–30B model cannot use a tool on the first try without wasting turns or tokens, the tool's interface is broken.
 
 - **One Uniform Grammar**: Every invocation follows the exact same shape:
   ```bash
   tk run <tool> [--flag <value> ...]
   ```
   No positional arguments, no order-dependent global flags (never repeat the `--instance`-before-plane trap of earlier harnesses), and no implicit environment magic.
-- **Find → Inspect → Run**:
-  1. `tk find "<intent>"` returns ranked matches with one-line summaries.
-  2. `tk info <tool>` returns the required flags, input/output contract, and a **copy-pasteable working example**.
-  3. `tk run <tool> ...` executes deterministically and returns a standard JSON envelope.
-- **Actionable Errors**: When a flag is missing or an upstream call fails, `stderr` states *what failed*, *why*, and the *exact command or fix required*—so a small model repairs the call in one step instead of guessing.
+- **Two-Step Execution (`Find → Run`)**:
+  1. `tk find "<intent>"` returns ranked matches **with their required flags and copy-pasteable example inline** (no mandatory `tk info` round-trip before running).
+  2. `tk run <tool> ...` executes deterministically and emits distilled, low-token JSON. (`tk info <tool>` exists only when deep contract inspection is needed.)
+- **Distilled Output by Default**: A tool that dumps 5,000 tokens of raw API JSON into context has failed. Tools strip noise, paginate, and return only the fields the agent needs to act.
+- **Self-Healing Errors**: When a flag is missing or an upstream call fails, `stderr` states *what failed*, *why*, and the *exact copy-pasteable `fix` command*—so a model repairs the call in one step without burning thinking tokens.
 
 ### Pillar II: Easy to Extend (Single-File Tools & Seamless Chaining)
 

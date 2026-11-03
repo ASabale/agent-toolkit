@@ -1,63 +1,44 @@
 ---
 name: toolkit
-description: Self-evolving CLI toolkit that replaces MCP servers. Use when executing external service actions, querying APIs or infrastructure, chaining multi-step CLI workflows, or saving a repeatable command/script as a reusable tool.
+description: Low-token, self-evolving CLI toolkit that replaces MCP servers. Use to find, run, chain, or save deterministic CLI tools for external services, APIs, repos, databases, and infrastructure.
 ---
 
 # Agent Toolkit (`tk`)
 
-Deterministic CLI toolkit for executing, chaining, and evolving operational tools without MCP context bloat.
+**Purpose**: Get the job done in **minimum turns and minimum tokens** with near-zero cognitive load. Use existing tools first; when you solve a new repeatable task with raw commands, save it back so the toolkit evolves.
 
-## Use Loop: Find → Inspect → Run
+## 1. Use (`Find → Run`)
 
-Follow these three steps in order. Never guess tool names or flags.
-
-1. **Find** a tool or chain matching your intent:
+1. **Find** by intent (returns matching tools + exact runnable command):
    ```bash
-   tk find "<intent keywords>"
+   tk find "<intent>"
    ```
-   *Done when*: you have a matching tool name from the results, or `tk find` reports no match (proceed to **Evolve Loop** below if you solve the task with raw commands).
-
-2. **Inspect** the tool's contract and copyable example:
+2. **Run** by copying the returned `tk run` line and filling `--flag` values:
    ```bash
-   tk info <tool-name>
+   tk run <tool> --flag "<value>"
    ```
-   *Done when*: you know every `required` flag, the safety tier (`read-only`, `mutating`, `destructive`), and have a copy-pasteable `@tk-example`.
+   - Need full flag details? Run `tk info <tool>`.
+   - Command failed? Run the exact `fix` command printed in `stderr`.
+   - Multi-step workflow? Pipe JSON (`tk run<a> | tk run <b>`) or run a saved chain (`tk run <chain>`).
 
-3. **Run** (or pipe) the tool with explicit named flags:
+## 2. Evolve (`Save → Check`)
+
+When `tk find` misses and you solve a repeatable or noisy multi-step task with raw CLI commands:
+
+1. **Save** the generalized command/script (use `$TK_ARG_<FLAG>` for inputs, emit compact JSON to `stdout`):
    ```bash
-   tk run <tool-name> --flag "<value>"
+   tk save <namespace>.<name> --summary "<1-line summary>" --safety <read-only|mutating|destructive> --file <script>
    ```
-   *Done when*: the command exits `0` and returns `"ok": true` on `stdout`. On non-zero exit, read the `fix` field in the `stderr` JSON and run the corrected command.
-
-## Chaining Tools
-
-- **One-off pipeline**: Pass `--raw` to unwrap the JSON envelope and pipe into `jq` or another `tk run` call:
-  ```bash
-  tk run <tool-a> --flag val --raw | tk run <tool-b> --from-stdin
-  ```
-- **Saved multi-step chain**: When a pipeline of 2+ tools will run again, save it as a deterministic chain so future runs take a single command:
-  ```bash
-  tk chain save <chain-name> --description "<what it does>" <step-1> <step-2>
-  ```
-
-## Evolve Loop: Capture → Generalize → Check
-
-Whenever you solve a non-trivial task using raw CLI commands (`curl`, `gh`, `aws`, `kubectl`, `psql`, `python3`, etc.) or notice a missing capability, leave the toolkit stronger than you found it:
-
-1. **Generalize** the working command or script: replace hardcoded IDs, paths, hosts, and branches with `$TK_ARG_<NAME>` variables.
-2. **Save** the tool into `tools/<namespace>/<name>` (using `tk save` or copying [`tools/.template`](../../tools/.template)):
+   Or save a multi-tool pipeline as one command:
    ```bash
-   tk save <namespace>.<name> --summary "<one-line summary>" --safety <read-only|mutating|destructive> --file <script-path>
+   tk chain save <namespace>.<name> --summary "<1-line summary>" <tool-1> <tool-2>
    ```
-   *Done when*: the single-file tool exists in `tools/` with complete `# @tk-*` headers and a real `@tk-example`.
-3. **Check** the tool contract:
+2. **Verify** contract and dry-run:
    ```bash
-   tk check <namespace>.<name>
+   tk check <namespace>.<name> && tk run <namespace>.<name> --dry-run
    ```
-   *Done when*: `tk check` exits `0` and `tk run <namespace>.<name> --dry-run` succeeds.
 
-## Reference Pointers
-
-- Full vision and MCP replacement philosophy → [`VISION.md`](../../VISION.md)
-- Single-file `# @tk-*` header spec and JSON envelope schema → [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
-- Canonical single-file tool template → [`tools/.template`](../../tools/.template)
+## Rules for Every Tool
+- **Minimum tokens**: Distill outputs—strip noise, logs, and unused fields before printing to `stdout`.
+- **Zero guessing**: Named `--flags` only; never positional args; never hardcode IDs, hosts, or paths.
+- **No bloat**: Never wrap a single standard UNIX command 1:1; only save tools that collapse steps, filter noisy output, or enforce safety.

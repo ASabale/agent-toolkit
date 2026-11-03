@@ -9,11 +9,13 @@ Model Context Protocol (MCP) servers fight how language models actually work:
 2. **Multi-Turn Ping-Pong**: Completing a 4-step workflow through MCP requires 4 sequential model turns (`call → wait → parse → call`), multiplying latency, cost, and failure surface.
 3. **Training Mismatch**: LLMs are deeply pretrained on Linux shells, POSIX flags, pipes, and code — not bespoke JSON-RPC schemas.
 
-**Agent Toolkit** flips the model:
-- **Skill-First Discovery (Zero Idle Bloat)**: A single lightweight skill (`skills/toolkit/SKILL.md`) sits in context. Full tool schemas load only on demand via CLI discovery.
-- **Deterministic for Small Models**: Uniform grammar, copy-pasteable invocation examples, strict argument validation, and structured JSON output allow fast, cheap, or local models to execute actions deterministically on the first try.
-- **Composable by Default**: Tools speak standard `stdin`/`stdout` JSON and chain via UNIX pipes (`|`) or saved multi-step chains — collapsing 5 turns of MCP calls into 1 deterministic command.
-- **Self-Evolving**: Agents are authors, not just callers. Agents save frequently used commands, author new tools in a single file, chain existing tools together, and automatically promote recurring workflows into verified tools.
+**Agent Toolkit** flips the model around three core principles:
+- **Minimum Cognitive Load**: One flat grammar (`tk run <tool> --flag <value>`), zero flag-ordering traps, and self-healing errors that print the exact `fix` command. Even small or local models succeed on the first try.
+- **Minimum Token Spend**:
+  - *Zero idle bloat*: Only a 35-line skill (`skills/toolkit/SKILL.md`) sits in context.
+  - *Single-hop discovery*: `tk find "<intent>"` prints the matching tool and its copy-pasteable `tk run` command immediately—no extra inspection turns.
+  - *Distilled outputs*: Tools strip API/log noise and emit only compact, decision-ready JSON.
+- **Usage-Driven Evolution (Zero Bloat)**: Agents save repeatable multi-step commands (`tk save`), chain tools (`tk chain`), and continuously prune unused or overlapping tools (`tk evolve`) so the toolkit stays small and sharp.
 
 ## Repository Layout
 

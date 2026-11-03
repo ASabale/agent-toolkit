@@ -2,33 +2,37 @@
 
 Instructions for agents designing, building, and evolving `agent-toolkit`.
 
-## Core Mandate
+## Core Purpose & Mandate
 
-Build a **harness-agnostic, self-evolving CLI toolkit** packaged as a skill so users can turn off MCP servers. Every design and implementation choice must optimize three properties simultaneously:
-1. **Easy to use**: A small or local model can discover, parameterize, and run any tool deterministically on the first attempt.
-2. **Easy to extend**: Any agent can author a new tool or chain existing tools in a single step without multi-file boilerplate.
-3. **Easy to maintain**: Every fact has a single source of truth; `tk check` catches contract drift automatically.
+**Purpose**: Help agents **get the job done** with **minimum cognitive load** and **minimum tokens**, while making the toolkit effortless to use and evolve.
+
+Every agent touching this repository must uphold four non-negotiable laws:
+1. **Minimize Cognitive Load**: The toolkit must be immediately obvious to any model (including small/local models). One uniform command grammar, zero ordering traps, and errors that give the exact command to run next.
+2. **Minimize Token Spend**: Every extra turn, long help text, or unfiltered API payload wastes context. Optimize discovery (`tk find` gives the runnable command immediately), keep `SKILL.md` razor-thin, and ensure every tool emits distilled, minimum-token output.
+3. **Make Evolution Effortless**: Creating a tool (`tk save`) or chaining tools (`tk chain`) takes one step in a single file with zero sidecar boilerplate.
+4. **Stay Lean**: Continuously consolidate overlapping tools and prune unused ones so the toolkit never bloats.
 
 ## Context Pointers
 
-- Evaluating product scope, why this replaces MCPs, or roadmap priorities → read [`VISION.md`](VISION.md).
-- Designing CLI commands, module seams, tool header metadata, or JSON envelopes → read [`ARCHITECTURE.md`](ARCHITECTURE.md).
+- Evaluating product scope, why this replaces MCPs, or core principles → read [`VISION.md`](VISION.md).
+- Designing CLI commands, module seams, tool header metadata, or token budgets → read [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Editing the portable agent skill consumed by external harnesses → read [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md).
 
 ## Architectural Invariants
 
 1. **Single-File Tool Truth**: Every tool in `tools/` is a single executable file containing its `# @tk-*` contract header and its implementation. Never introduce sidecar `.yaml` or `.json` manifest files that can drift from the script.
-2. **Dumb-Model Ergonomics**:
+2. **Zero-Friction Discovery (`Find → Run`)**:
+   - `tk find "<intent>"` must return the matching tool's summary *and* its copy-pasteable `tk run` example in 2 lines so agents execute in 2 steps (`find → run`), not 3 (`find → info → run`).
+3. **Dumb-Model Ergonomics**:
    - All tool arguments are explicit named flags (`--key value`). Positional arguments inside tools are forbidden.
    - Flag order must never change behavior.
-   - Every tool header must include at least one working, copy-pasteable `@tk-example`.
-   - Error messages must output JSON to `stderr` with `error`, `why`, and `fix` (the exact corrected command or missing prerequisite).
-3. **Composable I/O**:
-   - `stdout` emits valid JSON by default (`{"ok": true, "data": ...}`) so tools pipe cleanly into `jq` or other `tk` tools.
-   - Diagnostic logs, progress, and errors go exclusively to `stderr`.
-4. **Deep Modules**: Keep the `tk` surface small (`find`, `info`, `run`, `chain`, `save`, `evolve`, `check`) and hide parsing, indexing, validation, and telemetry behind that interface.
-5. **Anti-Bloat & Continuous Pruning**: Never build speculative tools. Every tool must earn its place through real usage; `tk evolve` tracks both promotion of recurring patterns and pruning/consolidation of unused or overlapping tools.
-6. **Zero External Dependencies in the Core**: The core `tk` runtime must run out-of-the-box on macOS and Linux using standard system Python 3 + POSIX shell so any agent harness can clone and use it immediately.
+   - Error messages on `stderr` must include `error`, `why`, and a copy-pasteable `fix` command.
+4. **Minimum-Token Composable Output**:
+   - Tools are **distillers**, not raw API mirrors. Strip noise and emit compact JSON on `stdout` containing only the fields an agent needs to make a decision or pipe to the next tool.
+   - Diagnostic logs and errors go exclusively to `stderr`.
+5. **Deep Modules**: Keep the `tk` surface small (`find`, `run`, `chain`, `save`, `evolve`, `check`, `info`) and hide parsing, indexing, validation, and telemetry behind that interface.
+6. **Anti-Bloat & Continuous Pruning**: Never build speculative tools. Every tool must earn its place through real usage; `tk evolve` tracks both promotion of recurring patterns and pruning/consolidation of unused or overlapping tools.
+7. **Zero External Dependencies in the Core**: The core `tk` runtime must run out-of-the-box on macOS and Linux using standard system Python 3 + POSIX shell so any agent harness can clone and use it immediately.
 
 ## Workflow & Verification
 
