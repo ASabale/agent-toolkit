@@ -176,9 +176,7 @@ def _cmd_info(catalog, evolver, argv: list[str]) -> int:
 
 
 def _stdin_data() -> str | None:
-    if sys.stdin.isatty():
-        return None
-    return sys.stdin.read()
+    return None
 
 
 def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chains_only: bool) -> int:
@@ -195,9 +193,7 @@ def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chain
     if item.get("kind") == "chain":
         code, out, err = runner.run_chain(ROOT, item, flags, positional, dry_run)
     else:
-        code, out, err = runner.run_tool(
-            ROOT, item, flags, positional, dry_run, _stdin_data()
-        )
+        code, out, err = runner.run_tool(ROOT, item, flags, positional, dry_run, _stdin_data())
     _emit_streams(out or "", err or "")
     return int(code)
 
