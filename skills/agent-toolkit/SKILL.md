@@ -40,9 +40,9 @@ When `tk find` misses:
 - Distill `stdout`. Named `--flags` only; no positional args; no hardcoded IDs. Do not wrap one UNIX command.
 - A mutating tool returns its plan unless you pass `--yes`.
 
-## 3. Migrate off MCP or cli-harness
+## 3. Migrate off MCP
 
-One real task, one file. Do not paste an MCP schema or a cli-harness yaml sidecar into the repo.
+One real task, one file. Do not paste an MCP schema or a yaml sidecar into the repo.
 
 1. `tk find "<intent>"`. If a tool hits, run it and turn that MCP off.
 2. Otherwise save a command that already worked and prints one JSON value: `tk save <ns>.<name> --summary "<one line>" --from-cmd "<command>"`. Plain text is refused.
