@@ -63,6 +63,8 @@ Sidecar manifests (`.yaml` + `.sh`) inevitably drift. In `agent-toolkit`, **the 
 ### Runtime Environment Passed to Tools
 Before invoking a tool script, `tk run` parses and validates all `@tk-arg` flags and injects them as normalized environment variables (`TK_ARG_<UPPER_NAME>`, plus `TK_DRY_RUN=0|1`). Tools never need to write fragile `getopts` or `argparse` boilerplate—the dispatcher handles validation and help generation for every language (`.sh`, `.py`, `.ts`).
 
+`run_tool` runs the tool in the caller's cwd (`cwd=None`) and exports `TK_ROOT_DIR` as the toolkit root. The runner does not change `PYTHONPATH`. Relative flag values such as `--path` and `--repo` resolve in that cwd. Tools import `lib` by inserting the toolkit root on `sys.path` from `__file__`, the same way `tk` and `tools/.template` do.
+
 Python tools may import `lib.tool_sdk` (opt-in, stdlib only). The Python example in `tools/.template` reaches the repo root with `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`, which assumes the tool lives at `tools/<ns>/<file>.py`. The tool stays a single file: the import is not a sidecar manifest, and the `# @tk-*` header remains the contract.
 
 ---
@@ -91,7 +93,7 @@ The toolkit evolves from real agent work rather than speculative upfront design:
 2. **Verify (`tk check`)** (`ASabale/agent-toolkit@9c0f0f6`, PR #79):
    - Checks header fields, required flag coverage, and output compactness.
    - Guard: a `mutating` or `destructive` tool with no non-comment `TK_DRY_RUN` reference fails with `<safety> tool must branch on TK_DRY_RUN` and is never executed.
-   - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). Every JSON-object dry-run payload must include `"dry_run": true`. `plan` stays required only for `mutating` and `destructive` tools: stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
+   - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). A read-only `tk check` dry-run also uses that scratch `cwd` and does not replace `HOME`. Every JSON-object dry-run payload must include `"dry_run": true`. `plan` stays required only for `mutating` and `destructive` tools: stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
 3. **Promote (`tk evolve` and `tk check <name> --verify`)**:
    - **Read-only (`@tk-safety: read-only`)**: `tk check` is the verification. `tk evolve` stamps `@tk-verified: <YYYY-MM-DD>` after a passing check and a `run_ok`. `tk check <name> --verify` reports that result and does not rewrite the header.
    - **Mutating (`@tk-safety: mutating`)**: `tk evolve` never stamps these. `tk check <name> --verify` (exactly one name) runs the tool with `TK_DRY_RUN=1` in a scratch directory and, on a non-empty `plan`, stamps `# @tk-verified: <YYYY-MM-DD>`, logs `tool_verified`, and prints `{"ok":true,"name","safety","verified","plan"}`. A second run is a no-op (exit 0, header unchanged).

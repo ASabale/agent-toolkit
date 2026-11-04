@@ -12,6 +12,8 @@ On 2026-11-03, `validate_and_build_env` rejected a non-empty positional list wit
 
 On 2026-11-03, `run_tool` validated flags, executed `item["path"]`, and required stdout to be compact JSON. Failures became a single-line JSON object on stderr with `error`, `why`, and `fix`. An unexpected exception became `internal_error` with `fix` `tk check`, matching the trust invariant in [0003](../decisions/0003-autonomous-chief-of-staff-governance.md).
 
+On 2026-11-04, `ASabale/agent-toolkit@3619bfa` set `TK_ROOT_DIR` to the toolkit root on the environment `run_tool` copies from `os.environ`, and started the tool with `cwd=None`, so the process keeps the caller's working directory. Relative flag values such as `--path` and `--repo` resolve there. `ASabale/agent-toolkit@eb1d6ca` stopped prepending the toolkit root to `PYTHONPATH`; the caller's `PYTHONPATH` is not modified. Tools import `lib` by inserting the toolkit root on `sys.path` from `__file__`, the same way `tk` and `tools/.template` do. `lib/catalog.py` `_dry_run_error` runs every `tk check` dry-run, including read-only tools, with `cwd` set to a fresh `tempfile.TemporaryDirectory()`. `HOME` is replaced with that directory only when safety is `mutating` or `destructive`.
+
 On 2026-11-03, `_record_run` skipped logging when `dry_run` was true. A real exit 0 logged `run_ok`. A real non-zero exit logged `run_error` with `why` taken from stderr JSON when that JSON had a `why` string. See [Evolver and quarantine](evolver-and-quarantine.md).
 
 ## Chains
