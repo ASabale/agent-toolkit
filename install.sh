@@ -83,7 +83,11 @@ link_skill() {
     dest="${dest_parent}/agent-toolkit"
     old_dest="${dest_parent}/toolkit"
     if [ -L "$old_dest" ]; then
-        rm -f "$old_dest"
+        old_target=$(readlink "$old_dest")
+        old_ours="${REPO_ROOT}/skills/toolkit"
+        if [ "$old_target" = "$old_ours" ] || [ "$old_target" = "${SKILL_SRC}" ]; then
+            rm -f "$old_dest"
+        fi
     fi
     if [ -e "$dest" ] && [ ! -L "$dest" ]; then
         if [ -d "$dest" ]; then

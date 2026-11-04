@@ -184,7 +184,7 @@ class InstallTests(unittest.TestCase):
         parent = self.home / ".agents" / "skills"
         parent.mkdir(parents=True)
         old = parent / "toolkit"
-        old.symlink_to(self.repo / "skills" / "agent-toolkit")
+        old.symlink_to(self.repo / "skills" / "toolkit")
         first = self._payload()
         new = parent / "agent-toolkit"
         self.assertFalse(old.exists())
@@ -199,6 +199,30 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(old.is_symlink())
         self._assert_skill_link(new)
         self.assertEqual(second["skill_links"], first["skill_links"])
+        self.assertEqual(second["skill_links_skipped"], [])
+
+    def test_foreign_toolkit_symlink_is_left_in_place(self) -> None:
+        parent = self.home / ".agents" / "skills"
+        parent.mkdir(parents=True)
+        other = self.tmp / "other"
+        other.mkdir()
+        (other / "SKILL.md").write_text("foreign\n", encoding="utf-8")
+        old = parent / "toolkit"
+        old.symlink_to(other)
+        payload = self._payload()
+        new = parent / "agent-toolkit"
+        self.assertTrue(old.is_symlink())
+        self.assertEqual(old.resolve(), other.resolve())
+        self.assertEqual((old / "SKILL.md").read_text(encoding="utf-8"), "foreign\n")
+        self._assert_skill_link(new)
+        self.assertEqual(payload["skill_links"], [str(new)])
+        self.assertEqual(payload["skill_links_skipped"], [])
+
+        second = self._payload()
+        self.assertTrue(old.is_symlink())
+        self.assertEqual(old.resolve(), other.resolve())
+        self._assert_skill_link(new)
+        self.assertEqual(second["skill_links"], payload["skill_links"])
         self.assertEqual(second["skill_links_skipped"], [])
 
     def test_existing_real_old_toolkit_dir_is_left_in_place(self) -> None:
