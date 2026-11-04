@@ -143,6 +143,8 @@ def save_tool(
             saved_payload={"name": name, "path": str(dest), "safety": safety, "kind": "tool"},
             catalog_root=root / "tools",
             already_exists_fix=_save_tool_force_hint(name, summary, safety, from_cmd, file_path, args_spec),
+            marker_source=file_path,
+            marker_rerun=_save_tool_rerun(name, summary, safety, from_cmd, file_path, args_spec, force),
         )
     except Exception as exc:
         return _failure("internal_error", str(exc), "tk check")
@@ -351,6 +353,31 @@ def _chain_arg_specs(args: list[dict] | None) -> list[str]:
         description = str(arg.get("description") or flag.lstrip("-"))
         specs.append(f"{flag} | {required} | {typ} | {description}")
     return specs
+
+
+def _save_tool_rerun(
+    name: str,
+    summary: str,
+    safety: str,
+    from_cmd: str | None,
+    file_path: str | None,
+    args_spec: list[str] | None,
+    force: bool,
+) -> str:
+    """The ``tk save`` invocation to repeat after a dry-run marker fix."""
+    parts = ["tk", "save", name, "--summary", summary, "--safety", safety]
+    if file_path:
+        parts.extend(["--file", file_path])
+    elif from_cmd:
+        parts.extend(["--from-cmd", from_cmd])
+    parts.extend(_arg_cli_parts(args_spec))
+    if force:
+        parts.append("--force")
+    return _quoted_cli(parts)
+
+
+def _fails_on_dry_run_marker(errors: list) -> bool:
+    return any('"dry_run": true' in str(err) for err in errors)
 
 
 def _save_tool_force_hint(
@@ -805,6 +832,8 @@ def _commit_draft(
     saved_payload: dict,
     catalog_root: Path,
     already_exists_fix: str,
+    marker_source: str | None = None,
+    marker_rerun: str | None = None,
 ) -> tuple[int, str, str]:
     if dest.exists() and not force:
         return _failure("already_exists", f"{dest.name} already exists", already_exists_fix)
@@ -825,7 +854,14 @@ def _commit_draft(
                 dest.chmod(0o755)
         errors = check.get("errors") or ["validation failed"]
         why = "; ".join(str(err) for err in errors)
-        return _failure("check_failed", why, _fix_from_check_errors(errors))
+        fix = _fix_from_check_errors(errors)
+        if marker_rerun and _fails_on_dry_run_marker(errors):
+            where = marker_source or "the draft"
+            fix = (
+                'add "dry_run": true to the TK_DRY_RUN=1 output of '
+                f"{where}, then re-run: {marker_rerun}"
+            )
+        return _failure("check_failed", why, fix)
     log_event(root, saved_event, saved_payload)
     return 0, json.dumps(success, separators=(",", ":")), ""
 
