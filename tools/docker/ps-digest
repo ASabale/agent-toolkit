@@ -12,15 +12,13 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run docker.ps-digest --state all --limit 25"
 _STATES = ("all", "running", "exited")
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
 
 
 def _field(row: dict, *keys: str) -> str:
@@ -55,44 +53,17 @@ def parse_ps(text: str) -> list[dict]:
 def main() -> int:
     state = (os.environ.get("TK_ARG_STATE") or "all").strip().lower()
     limit_raw = os.environ.get("TK_ARG_LIMIT") or "25"
-    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
-    if dry:
+    if is_dry_run():
         try:
             limit = int(limit_raw)
         except ValueError:
             limit = 25
         if state not in _STATES:
             state = "all"
-        return emit({"dry_run": True, "state": state, "limit": limit})
+        return dry_run_ok(state=state, limit=limit)
     if state not in _STATES:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"state must be all, running, or exited: {state}",
-                "fix": _FIX,
-            },
-            2,
-        )
-    try:
-        limit = int(limit_raw)
-    except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"limit is not an int: {limit_raw}",
-                "fix": _FIX,
-            },
-            2,
-        )
-    if limit < 1:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "limit must be >= 1",
-                "fix": _FIX,
-            },
-            2,
-        )
+        return fail("invalid_flag", f"state must be all, running, or exited: {state}", _FIX, 2)
+    limit = arg_int("LIMIT", 25, fix=_FIX)
     proc = subprocess.run(
         ["docker", "ps", "-a", "--format", "{{json .}}"],
         capture_output=True,
@@ -101,17 +72,11 @@ def main() -> int:
     )
     if proc.returncode != 0:
         why = (proc.stderr or proc.stdout or f"docker exited {proc.returncode}").strip()
-        return emit(
-            {"error": "docker_failed", "why": why[:500], "fix": "start the docker daemon and retry"},
-            1,
-        )
+        return fail("docker_failed", why[:500], "start the docker daemon and retry")
     try:
         parsed = parse_ps(proc.stdout)
     except (json.JSONDecodeError, ValueError) as exc:
-        return emit(
-            {"error": "docker_failed", "why": f"unreadable docker ps output: {exc}", "fix": _FIX},
-            1,
-        )
+        return fail("docker_failed", f"unreadable docker ps output: {exc}", _FIX)
     running = sum(1 for row in parsed if row["state"].lower() == "running")
     exited = sum(1 for row in parsed if row["state"].lower() == "exited")
     if state == "all":
@@ -134,34 +99,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except subprocess.TimeoutExpired:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "docker_failed", "why": "docker timed out after 15s", "fix": _FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("docker_failed", "docker timed out after 15s", _FIX))
     except FileNotFoundError as exc:
         name = exc.filename or "docker"
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "docker_unavailable",
-                    "why": f"{name} not found",
-                    "fix": "install docker and ensure it is on PATH",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("docker_unavailable", f"{name} not found", "install docker and ensure it is on PATH"))
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "tool_error", "why": str(exc), "fix": _FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))

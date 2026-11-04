@@ -9,9 +9,12 @@
 # @tk-example: tk run fs.tree-digest --path . --max-depth 2 --limit 40
 # @tk-verified: 2026-11-03
 
-import json
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, arg_str, dry_run_ok, emit, fail, is_dry_run
 
 _SKIP = {
     ".git",
@@ -24,12 +27,9 @@ _SKIP = {
 }
 _TOP_N = 8
 _DEFAULT_LIMIT = 40
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
+_FIX = "tk run fs.tree-digest --path <dir>"
+_FIX_DEPTH = "tk run fs.tree-digest --path <dir> --max-depth 2"
+_FIX_LIMIT = "tk run fs.tree-digest --path <dir> --limit 40"
 
 
 def digest(root: str, max_depth: int, limit: int) -> dict:
@@ -74,79 +74,22 @@ def digest(root: str, max_depth: int, limit: int) -> dict:
 
 
 def main() -> int:
-    path = os.environ.get("TK_ARG_PATH", "")
-    depth_raw = os.environ.get("TK_ARG_MAX_DEPTH") or "2"
-    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit(
-            {
-                "dry_run": True,
-                "path": path or "example",
-                "files": 0,
-                "dirs": 0,
-                "top_extensions": [],
-                "entries": [],
-                "truncated": 0,
-            }
+    path = arg_str("PATH")
+    if is_dry_run():
+        return dry_run_ok(
+            path=path or "example",
+            files=0,
+            dirs=0,
+            top_extensions=[],
+            entries=[],
+            truncated=0,
         )
     if not path:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_PATH is required",
-                "fix": "tk run fs.tree-digest --path <dir>",
-            },
-            2,
-        )
-    try:
-        max_depth = int(depth_raw)
-    except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"max-depth is not an int: {depth_raw}",
-                "fix": "tk run fs.tree-digest --path <dir> --max-depth 2",
-            },
-            2,
-        )
-    if max_depth < 0:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "max-depth must be >= 0",
-                "fix": "tk run fs.tree-digest --path <dir> --max-depth 2",
-            },
-            2,
-        )
-    try:
-        limit = int(limit_raw)
-    except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"limit is not an int: {limit_raw}",
-                "fix": "tk run fs.tree-digest --path <dir> --limit 40",
-            },
-            2,
-        )
-    if limit < 0:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "limit must be >= 0",
-                "fix": "tk run fs.tree-digest --path <dir> --limit 40",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_PATH is required", _FIX, 2)
+    max_depth = arg_int("MAX_DEPTH", 2, min_val=0, fix=_FIX_DEPTH)
+    limit = arg_int("LIMIT", _DEFAULT_LIMIT, min_val=0, fix=_FIX_LIMIT)
     if not os.path.isdir(path):
-        return emit(
-            {
-                "error": "not_a_directory",
-                "why": f"{path} is not a directory",
-                "fix": "tk run fs.tree-digest --path <dir>",
-            },
-            1,
-        )
+        return fail("not_a_directory", f"{path} is not a directory", _FIX, 1)
     return emit(digest(path, max_depth, limit))
 
 
@@ -154,15 +97,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run fs.tree-digest --path <dir>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))
