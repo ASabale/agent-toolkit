@@ -124,20 +124,29 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(dest.is_symlink(), dest)
         self.assertEqual(dest.resolve(), (self.repo / "skills" / "agent-toolkit").resolve())
 
-    def _stderr_diag(
-        self, proc: subprocess.CompletedProcess[str], error: str | None = None
-    ) -> dict:
-        found: list[dict] = []
+    def _stderr_objects(self, proc: subprocess.CompletedProcess[str]) -> list[dict]:
+        objects: list[dict] = []
         for line in proc.stderr.splitlines():
             text = line.strip()
             if not text.startswith("{"):
                 continue
             payload = json.loads(text)
             self.assertIsInstance(payload, dict)
-            if error is None or payload.get("error") == error:
+            objects.append(payload)
+        return objects
+
+    def _stderr_diag(
+        self,
+        proc: subprocess.CompletedProcess[str],
+        code: str | None = None,
+        key: str = "error",
+    ) -> dict:
+        found: list[dict] = []
+        for payload in self._stderr_objects(proc):
+            if code is None or payload.get(key) == code:
                 return payload
             found.append(payload)
-        self.fail(f"no JSON diagnostic {error or ''} on stderr: {proc.stderr!r} ({found})")
+        self.fail(f"no JSON {key} {code or ''} on stderr: {proc.stderr!r} ({found})")
 
     def test_no_claude_dir_links_only_agents_skill(self) -> None:
         payload = self._payload()
@@ -311,9 +320,27 @@ class InstallTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(_hooks_path(self.repo), "keep-me")
         self.assertNotIn("hooksPath", payload)
-        hint = self._stderr_diag(proc, "hooksPath_unchanged")
+        hint = self._stderr_diag(proc, "hooksPath_unchanged", key="note")
+        self.assertNotIn("error", hint)
         self.assertIn("core.hooksPath", hint["why"] + hint["fix"])
         self.assertIn(".githooks", hint["fix"])
+
+    def test_successful_install_stderr_has_note_without_error(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.repo, check=True, capture_output=True)
+        path = self._isolated_path(include=("python3",))
+        gh = Path(path) / "gh"
+        gh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gh.chmod(gh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        proc = self._install({"PATH": path})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(json.loads(proc.stdout)["installed"])
+        objects = self._stderr_objects(proc)
+        for payload in objects:
+            self.assertNotIn("error", payload, payload)
+        notes = [item for item in objects if item.get("note") == "hooksPath_unchanged"]
+        self.assertEqual(len(notes), 1, proc.stderr)
+        self.assertIn("core.hooksPath", notes[0]["why"] + notes[0]["fix"])
+        self.assertIn("config core.hooksPath .githooks", notes[0]["fix"])
 
     def test_default_install_leaves_unset_hooks_path(self) -> None:
         subprocess.run(["git", "init"], cwd=self.repo, check=True, capture_output=True)
