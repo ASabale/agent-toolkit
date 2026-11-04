@@ -222,6 +222,64 @@ class GhWriteToolTests(unittest.TestCase):
             {"repo": "acme/widgets", "number": 9, "kind": "pr", "added": "bug", "removed": None},
         )
 
+    def test_comment_invalid_kind_dry_run(self) -> None:
+        proc = self._run(
+            "run",
+            "gh.comment",
+            "--kind",
+            "nope",
+            "--repo",
+            "acme/widgets",
+            "--number",
+            "4",
+            "--body",
+            "hi",
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "invalid_flag")
+        self.assertNotIn("plan", proc.stdout)
+        self.assertEqual(self._calls(), [])
+
+    def test_label_invalid_kind_dry_run(self) -> None:
+        proc = self._run(
+            "run",
+            "gh.label",
+            "--kind",
+            "nope",
+            "--repo",
+            "acme/widgets",
+            "--number",
+            "9",
+            "--add",
+            "bug",
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "invalid_flag")
+        self.assertNotIn("plan", proc.stdout)
+        self.assertNotIn("example", proc.stdout)
+        self.assertEqual(self._calls(), [])
+
+    def test_label_requires_add_or_remove_on_dry_run(self) -> None:
+        proc = self._run(
+            "run",
+            "gh.label",
+            "--kind",
+            "issue",
+            "--repo",
+            "acme/widgets",
+            "--number",
+            "9",
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "missing_flag")
+        self.assertIn("acme/widgets", payload["fix"])
+        self.assertIn("9", payload["fix"])
+        self.assertNotIn("plan", proc.stdout)
+        self.assertEqual(self._calls(), [])
+
     def test_label_requires_add_or_remove(self) -> None:
         proc = self._run(
             "run",

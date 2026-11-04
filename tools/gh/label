@@ -22,10 +22,11 @@ from lib.tool_sdk import arg_int, arg_str, dry_run_plan, emit, fail, is_dry_run,
 _FIX = "tk run gh.label --kind issue --repo <owner/name> --number <n> --add <label>"
 
 
-def _kind(raw: str) -> str:
+def _kind(raw: str, smoke: bool) -> str:
     if raw in {"issue", "pr"}:
         return raw
-    if is_dry_run():
+    # Catalog smoke leaves required strings as "example". A real --kind never does.
+    if smoke or (is_dry_run() and raw == ""):
         return "issue"
     raise SystemExit(fail("invalid_flag", "kind must be issue or pr", _FIX, 2))
 
@@ -35,14 +36,24 @@ def _fix(repo: str, number: int, kind: str) -> str:
 
 
 def main() -> int:
-    repo = arg_str("REPO") or ("example" if is_dry_run() else "")
-    kind_raw = arg_str("KIND") or ("example" if is_dry_run() else "")
-    kind = _kind(kind_raw)
-    number = arg_int("NUMBER", 1, fix=_fix(repo or "<owner/name>", 1, kind if kind_raw in {"issue", "pr"} else "issue"))
+    kind_raw = arg_str("KIND")
+    repo = arg_str("REPO")
     add = arg_str("ADD")
     remove = arg_str("REMOVE")
-    smoke = kind_raw not in {"issue", "pr"} and is_dry_run()
-    if smoke and not add and not remove:
+    number_raw = arg_str("NUMBER")
+    smoke = (
+        is_dry_run()
+        and kind_raw == "example"
+        and repo == "example"
+        and number_raw in {"", "1"}
+        and not add
+        and not remove
+    )
+    if is_dry_run() and kind_raw == "":
+        repo = repo or "example"
+    kind = _kind(kind_raw, smoke)
+    number = arg_int("NUMBER", 1, fix=_fix(repo or "<owner/name>", 1, kind))
+    if smoke:
         add = "example"
     if not repo:
         return fail("missing_flag", "repo, number, and kind are required", _FIX, 2)

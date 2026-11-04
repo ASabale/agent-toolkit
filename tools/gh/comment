@@ -22,10 +22,11 @@ from lib.tool_sdk import arg_int, arg_str, dry_run_plan, emit, fail, is_dry_run,
 _FIX = "tk run gh.comment --kind issue --repo <owner/name> --number <n> --body <text>"
 
 
-def _kind(raw: str) -> str:
+def _kind(raw: str, smoke: bool) -> str:
     if raw in {"issue", "pr"}:
         return raw
-    if is_dry_run():
+    # Catalog smoke leaves required strings as "example". A real --kind never does.
+    if smoke or (is_dry_run() and raw == ""):
         return "issue"
     raise SystemExit(fail("invalid_flag", "kind must be issue or pr", _FIX, 2))
 
@@ -45,9 +46,14 @@ def _result(repo: str, number: int, kind: str, stdout: str) -> dict:
 
 
 def main() -> int:
-    repo = arg_str("REPO") or ("example" if is_dry_run() else "")
-    body = arg_str("BODY") or ("example" if is_dry_run() else "")
-    kind = _kind(arg_str("KIND") or ("example" if is_dry_run() else ""))
+    kind_raw = arg_str("KIND")
+    repo = arg_str("REPO")
+    body = arg_str("BODY")
+    smoke = is_dry_run() and kind_raw == "example" and repo == "example" and body == "example"
+    if is_dry_run() and kind_raw == "":
+        repo = repo or "example"
+        body = body or "example"
+    kind = _kind(kind_raw, smoke)
     number = arg_int("NUMBER", 1, fix=_FIX)
     if not repo or not body:
         return fail("missing_flag", "repo, number, kind, and body are required", _FIX, 2)
