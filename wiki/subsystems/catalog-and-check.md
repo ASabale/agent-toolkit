@@ -30,6 +30,8 @@ On 2026-11-04, `ASabale/agent-toolkit@c37e045` hardened `_example_ok` in `lib/ca
 
 On 2026-11-04, chain validation was extended to check `json.pick` and `json.query` keys against upstream `@tk-output`. `_parse_output_keys` extracts top-level field names from the `{a, b:[...], c}` shape in `@tk-output`. `_pick_query_key_errors` validates that keys requested by `json.pick --keys` or simple `json.query --expr` projections exist in the upstream tool's declared output. When the upstream `@tk-output` is not in `{...}` form, the check is skipped (no false positives). This caught `chains/gh.triage-pr.json` requesting a nonexistent `checks` key while dropping the valid `pass` key; the chain was corrected to use `repo,pr,fail,pending,pass`.
 
+2026-11-04 — a `TK_DRY_RUN` payload must echo the flags it received and mark itself with `dry_run: true`; result-shaped fields are null, never a plausible number (`ASabale/agent-toolkit/issues/88`, commit `1fe95508a4dac23e5fc105e565b0088d7fbc0383`).
+
 ## Related
 
 - [0001 — Clean-slate single-file contract](../decisions/0001-clean-slate-single-file-contract.md)

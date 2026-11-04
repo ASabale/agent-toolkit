@@ -1,4 +1,4 @@
-"""Seams for git.blame-slice and git.hotspots."""
+"""Seams for git.blame-slice, git.hotspots, git.branch-digest, and git.log-recent."""
 
 import json
 import os
@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BLAME = ROOT / "tools/git/blame-slice"
 HOTSPOTS = ROOT / "tools/git/hotspots"
+DIGEST = ROOT / "tools/git/branch-digest"
+LOG = ROOT / "tools/git/log-recent"
 
 
 def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
@@ -248,6 +250,59 @@ class HotspotTests(unittest.TestCase):
                 "limit": 10,
             },
         )
+
+
+class BranchDigestTests(unittest.TestCase):
+    def test_dry_run_echoes_flags_and_reports_no_results(self) -> None:
+        proc = _run(
+            DIGEST,
+            {
+                "TK_ARG_REPO": "example",
+                "TK_DRY_RUN": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(
+            payload,
+            {
+                "dry_run": True,
+                "repo": "example",
+                "branch": None,
+                "ahead": None,
+                "behind": None,
+                "dirty": None,
+                "detached": None,
+                "upstream": None,
+            },
+        )
+        self.assertIsNone(payload["branch"])
+        self.assertIsNone(payload["dirty"])
+
+
+class LogRecentTests(unittest.TestCase):
+    def test_dry_run_echoes_flags_and_reports_no_results(self) -> None:
+        proc = _run(
+            LOG,
+            {
+                "TK_ARG_REPO": "example",
+                "TK_ARG_LIMIT": "3",
+                "TK_DRY_RUN": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(
+            payload,
+            {
+                "dry_run": True,
+                "repo": "example",
+                "limit": 3,
+                "count": None,
+                "commits": [],
+            },
+        )
+        self.assertIsNone(payload["count"])
 
 
 if __name__ == "__main__":
