@@ -26,6 +26,7 @@ _VERIFIED_RE = re.compile(r"(?m)^#\s*@tk-verified\s*:.*$")
 _USAGE_EVENTS = {"run", "run_ok", "tool_run", "chain_run"}
 _ERROR_EVENTS = {"run_error", "error"}
 _OPTIONAL_ARG_RE = re.compile(r"\$\{TK_ARG_([A-Z][A-Z0-9_]*):-([^}]*)\}")
+_SHELL_SHEBANG_RE = re.compile(r"(^|[/\s])(bash|sh)(\s|$)")
 _MISS_EVENTS = {"search_miss", "miss"}
 _FAIL_EVENTS = {"run_error", "error"}
 _RUN_OBSERVATION_EVENTS = frozenset({"run_ok", "run_error"})
@@ -517,6 +518,11 @@ def _tool_source(
             return None, ("file_not_found", str(exc), "tk save <name> --file <path>")
         if _has_tool_header(raw):
             return _overlay_tool_header(raw, name, summary, safety, specs), None
+        kind = _headerless_file_kind(raw)
+        if kind == "python":
+            return _render_python_tool(name, summary, safety, specs, raw), None
+        if kind == "other":
+            return None, _unsupported_interpreter(name, summary, raw, file_path)
         return _render_wrapped_tool(name, summary, safety, specs, _strip_shebang(raw).rstrip() + "\n"), None
     command = from_cmd.strip() if isinstance(from_cmd, str) else ""
     if not command:
@@ -576,6 +582,84 @@ def _strip_shebang(text: str) -> str:
     lines = text.splitlines()
     if lines and lines[0].startswith("#!"):
         return "\n".join(lines[1:])
+    return text
+
+
+def _headerless_file_kind(raw: str) -> str:
+    lines = raw.splitlines()
+    first = lines[0].strip() if lines else ""
+    if not first.startswith("#!"):
+        return "shell"
+    lowered = first.lower()
+    if "python" in lowered:
+        return "python"
+    if _SHELL_SHEBANG_RE.search(first[2:]):
+        return "shell"
+    return "other"
+
+
+def _shebang_program(first: str) -> str:
+    rest = first[2:].strip() if first.startswith("#!") else first.strip()
+    parts = rest.split()
+    if not parts:
+        return "python3"
+    if Path(parts[0]).name == "env":
+        tokens = [part for part in parts[1:] if part != "-S"]
+        return tokens[0] if tokens else "python3"
+    return parts[0]
+
+
+def _unsupported_interpreter(
+    name: str, summary: str, raw: str, file_path: str
+) -> tuple[str, str, str]:
+    first = raw.splitlines()[0].strip() if raw.splitlines() else "#!"
+    command = f"{_shebang_program(first)} {file_path}"
+    return (
+        "unsupported_interpreter",
+        f"headerless --file with {first}; only bash/sh/python bodies can be wrapped",
+        _quoted_cli(["tk", "save", name, "--summary", summary, "--from-cmd", command]),
+    )
+
+
+def _split_python_prelude(body: str) -> tuple[str, str]:
+    lines = body.splitlines(keepends=True)
+    last_future = -1
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("from __future__"):
+            last_future = index
+            continue
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        break
+    if last_future < 0:
+        return "", body
+    return "".join(lines[: last_future + 1]), "".join(lines[last_future + 1 :])
+
+
+def _render_python_tool(name: str, summary: str, safety: str, specs: list[str], raw: str) -> str:
+    lines = raw.splitlines()
+    shebang = lines[0].rstrip("\r") if lines and lines[0].startswith("#!") else "#!/usr/bin/env python3"
+    body = _strip_shebang(raw)
+    if body and not body.endswith("\n"):
+        body += "\n"
+    header = _header_lines(name, summary, safety, specs, _build_example(name, _required_flags(specs)))
+    prelude, rest = _split_python_prelude(body)
+    plan_text = (rest or body).rstrip("\n") or name
+    if safety in {"mutating", "destructive"}:
+        payload = json.dumps({"dry_run": True, "plan": [plan_text]}, separators=(",", ":"))
+    else:
+        payload = '{"dry_run":true}'
+    text = "\n".join([shebang, *header[1:]]) + "\n\n"
+    if prelude:
+        text += prelude if prelude.endswith("\n") else prelude + "\n"
+    text += (
+        f"if __import__('os').environ.get('TK_DRY_RUN', '0') == '1':\n"
+        f"    print({payload!r})\n"
+        f"    raise SystemExit(0)\n"
+    )
+    if rest:
+        text += rest if rest.endswith("\n") else rest + "\n"
     return text
 
 
