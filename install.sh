@@ -41,12 +41,25 @@ quote_word() {
     printf "'%s'" "$quoted"
 }
 
+# A bare name (sh install.sh) is a PATH lookup and fails when pasted.
+# A $0 that already contains / is the invoked path; keep it.
+script_invocation() {
+    case "$0" in
+        */*)
+            quote_word "$0"
+            ;;
+        *)
+            quote_word "./$0"
+            ;;
+    esac
+}
+
 if [ "$saw_unknown" -eq 1 ]; then
+    usage=$(script_invocation)
     if [ "$dry_run" -eq 1 ]; then
-        printf 'usage: %s --dry-run\n' "$(quote_word "$0")" >&2
-    else
-        printf 'usage: %s\n' "$(quote_word "$0")" >&2
+        usage="${usage} --dry-run"
     fi
+    printf 'usage: %s\n' "$usage" >&2
     exit 1
 fi
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -163,6 +164,23 @@ class InstallTests(unittest.TestCase):
                 return payload
             found.append(payload)
         self.fail(f"no JSON {key} {code or ''} on stderr: {proc.stderr!r} ({found})")
+
+    def _run_at_repo_root(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            cwd=self.repo,
+            env=self._env(),
+            check=False,
+        )
+
+    def _command_from_usage(self, stderr: str) -> str:
+        lines = stderr.splitlines()
+        self.assertEqual(len(lines), 1, stderr)
+        prefix = "usage: "
+        self.assertTrue(lines[0].startswith(prefix), stderr)
+        return lines[0][len(prefix):]
 
     def test_no_claude_dir_links_only_agents_skill(self) -> None:
         payload = self._payload()
@@ -529,6 +547,29 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(proc.stdout, "")
         self.assertEqual(proc.stderr.splitlines(), [f"usage: '{script}'"])
         self.assertEqual(self._snapshot(self.home), before)
+
+    def test_bad_flag_usage_runs_verbatim_from_repo_root(self) -> None:
+        cases = (
+            (["sh", "install.sh", "--badflag"], ["./install.sh"]),
+            (["./install.sh", "--badflag"], ["./install.sh"]),
+            (["sh", "install.sh", "--badflag", "--dry-run"], ["./install.sh", "--dry-run"]),
+            (["./install.sh", "--dry-run", "--badflag"], ["./install.sh", "--dry-run"]),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                before = self._snapshot(self.home)
+                proc = self._run_at_repo_root(argv)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout, "")
+                self.assertEqual(self._snapshot(self.home), before)
+                command = self._command_from_usage(proc.stderr)
+                parsed = shlex.split(command)
+                self.assertEqual(parsed, expected, command)
+                replay_argv = parsed if "--dry-run" in parsed else [*parsed, "--dry-run"]
+                replay = self._run_at_repo_root(replay_argv)
+                self.assertEqual(replay.returncode, 0, replay.stderr)
+                self.assertNotIn("usage:", replay.stderr)
+                self.assertEqual(self._snapshot(self.home), before)
 
     def test_unknown_flag_keeps_dry_run_in_corrected_usage(self) -> None:
         script = str(self.repo / "install.sh")
