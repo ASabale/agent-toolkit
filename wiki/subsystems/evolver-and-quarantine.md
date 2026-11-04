@@ -22,9 +22,13 @@ On 2026-11-03, `_quarantine` wrote the rejected text to `state/quarantine/<safe-
 
 On 2026-11-03, `evolve_report` read the catalog and `state/events.jsonl`. For each item it ran `check_item`. Check errors and recorded `run_error` lines were listed under `failing_tools`. Names absent from the usage set were listed under `unused_tools` (the report did not delete those files). When `auto_promote` was true, a tool (not a chain) with safety `read-only`, a passing check, and `verified` empty or one of `none`, `unverified`, or `null` had its first `# @tk-verified:` line replaced with `# @tk-verified: <YYYY-MM-DD>` from `date.today()`, and the executable bits were set. `tk evolve --no-promote` passed `auto_promote=False`. An unexpected failure returned empty lists for `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates`.
 
-On 2026-11-03, `_overlap_candidates` tokenized each name and summary into lowercase words of length at least 3, dropped the stopword set `a`, `an`, `and`, `for`, `from`, `into`, `json`, `only`, `per`, `that`, `the`, `this`, `tool`, `tools`, `via`, `with`, `when`, `your`, and emitted a pair when the intersection had at least two tokens. `score` was the Jaccard ratio rounded to three decimals. The function did not drop pairs below a score cutoff, and it did not delete either tool.
+On 2026-11-03, `_overlap_candidates` tokenized each name and summary into lowercase words of length at least 3, dropped the stopword set `a`, `an`, `and`, `for`, `from`, `into`, `json`, `only`, `per`, `that`, `the`, `this`, `tool`, `tools`, `via`, `with`, `when`, `your`, and emitted a pair when the intersection had at least two tokens. `score` was the Jaccard ratio rounded to three decimals. The function did not drop pairs below a score cutoff, and it did not delete either tool. *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@c37e045`, which excluded structural stopwords like `digest`, `file`, `tree`, `get`, `list`, `path`, `repo`, skipped chain-to-own-step pairs, and required Jaccard `score >= 0.35`.)*
 
 On 2026-11-03, `chains/git.repo-health.json` still had `"verified": "none"` in `ASabale/agent-toolkit@9d469d7`. `evolve_report` promoted only `kind == "tool"`, so that chain was outside auto-promotion.
+
+## Prune and archive
+
+On 2026-11-04, `ASabale/agent-toolkit@c37e045` added `prune_tools(root_dir, names, dry_run=False)` in `lib/evolver.py` and `tk prune [<name> ...] [--unused] [--dry-run]` in `./tk` (superseding the `9d469d7` omission noted in the opening paragraph). When an active chain not in `names` referenced a target tool, `prune_tools` returned exit code `2` with `error="tool_in_use_by_chain"`. Otherwise it moved pruned items to `state/archive/<UTC-timestamp>-<name>`, removed empty parent directories under `tools/`, and logged `tool_pruned`.
 
 ## Related
 

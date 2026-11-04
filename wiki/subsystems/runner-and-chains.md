@@ -22,6 +22,8 @@ On 2026-11-03, `run_chain` at `ASabale/agent-toolkit@9d469d7` validated chain-le
 
 On 2026-11-03, `chains/git.repo-health.json` at `ASabale/agent-toolkit@9d469d7` named `git.repo-health`, safety `read-only`, one required `--repo` string, and two steps: `git.branch-digest` with `repo: "$input.repo"`, then `json.pick` with `keys: "branch,ahead,behind,dirty,detached,upstream"`. Its example was `tk run git.repo-health --repo .` and its `verified` field was `none`.
 
+On 2026-11-04, `ASabale/agent-toolkit@c37e045` updated `parse_cli_flags` in `lib/runner.py` so `--dry-run=0|false|no|off` evaluated to `dry_run=False`, added `TK_TIMEOUT` (default 60s) subprocess timeout protection in `run_tool` returning `error="tool_timeout"`, added `--arg`, `--example`, and `--force` flags to `tk chain save`, and added `chains/gh.triage-pr.json` (`gh.pr-failure-digest` piped into `json.pick` with `keys: "repo,pr,fail,pending,checks"`).
+
 Catalog lookup for those step names went through `discover_catalog`. See [Catalog and check](catalog-and-check.md).
 
 ## Related

@@ -12,7 +12,7 @@ On 2026-11-03, `ASabale/agent-toolkit@9d469d7` added `CODING_STANDARDS.md` (121 
 4. On 2026-11-03, `log_event` in `lib/evolver.py` was required to wrap file I/O so telemetry failure would not stop `tk find` or `tk run`.
 5. The core uses the Python 3.10+ standard library only. The committed list named `sys`, `os`, `json`, `re`, `subprocess`, `pathlib`, `shlex`, `datetime`, and `unittest`.
 
-On 2026-11-03, the `./tk` section of `CODING_STANDARDS.md` at `ASabale/agent-toolkit@9d469d7` listed `find`, `info`, `run`, `chain run`, `chain save`, `save`, `check`, and `evolve`. That committed section did not list a `prune` subcommand. `tk` at the same commit routed those same names and did not define a prune command. `lib/evolver.py` at the same commit defined `log_event`, `save_tool`, `save_chain`, and `evolve_report`, and it did not define `prune_tools`.
+On 2026-11-03, the `./tk` section of `CODING_STANDARDS.md` at `ASabale/agent-toolkit@9d469d7` listed `find`, `info`, `run`, `chain run`, `chain save`, `save`, `check`, and `evolve`. That committed section did not list a `prune` subcommand. `tk` at the same commit routed those same names and did not define a prune command. `lib/evolver.py` at the same commit defined `log_event`, `save_tool`, `save_chain`, and `evolve_report`, and it did not define `prune_tools`. *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@c37e045`, which added `prune_tools` in `lib/evolver.py`, `tk prune [<name> ...] [--unused] [--dry-run]` in `./tk`, `.github/workflows/ci.yml`, and `./install.sh` symlinking `~/.local/bin/tk` and `~/.agents/skills/toolkit`.)*
 
 ## Module seams the standards named
 

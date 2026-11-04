@@ -10,7 +10,7 @@ On 2026-11-03, `load_chain` at the same commit read `chains/<name>.json` and nor
 
 On 2026-11-03, `discover_catalog` scanned `root_dir/tools` recursively, skipped path parts starting with `.` or `__`, and scanned `root_dir/chains/*.json`. Keys were item names (or a relative path / filename when the name was empty), and the returned dict was sorted by key. An unexpected failure returned whatever items had already been collected, still sorted.
 
-On 2026-11-03 the catalog at `ASabale/agent-toolkit@9d469d7` included these tool files: `tools/fs/tree-digest`, `tools/gh/pr-failure-digest`, `tools/git/branch-digest`, `tools/git/diff-digest`, `tools/git/log-recent`, `tools/http/json-get`, `tools/json/pick`, and `tools/sys/port-owner`. `tools/git/branch-digest` carried `@tk-verified: 2026-11-03`. `chains/git.repo-health.json` carried `"verified": "none"`. `tools/.template` stayed a hidden-prefix file (`discover_catalog` skipped parts that start with `.`).
+On 2026-11-03 the catalog at `ASabale/agent-toolkit@9d469d7` included these tool files: `tools/fs/tree-digest`, `tools/gh/pr-failure-digest`, `tools/git/branch-digest`, `tools/git/diff-digest`, `tools/git/log-recent`, `tools/http/json-get`, `tools/json/pick`, and `tools/sys/port-owner`. `tools/git/branch-digest` carried `@tk-verified: 2026-11-03`. `chains/git.repo-health.json` carried `"verified": "none"`. `tools/.template` stayed a hidden-prefix file (`discover_catalog` skipped parts that start with `.`). *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@c37e045`, which added `tools/docs/python-symbol`, `tools/gh/issue-view`, `tools/gh/search-code`, `tools/py/test-digest`, and `chains/gh.triage-pr.json`, bringing the verified catalog to 14 items.)*
 
 ## Find ranking
 
@@ -23,6 +23,8 @@ On 2026-11-03, `tk` `_cmd_find` called this formatter and, when the formatted te
 On 2026-11-03, `check_item` at `ASabale/agent-toolkit@9d469d7` returned `{"name", "ok", "errors"}`. For tools it required the file to exist and to be executable, required header fields `name`, `summary`, `safety` in `{read-only, mutating, destructive}`, `output`, `example`, and `verified`, required the example to start with `tk run <name>` and to include every required flag, ran `bash -n` for a bash/sh shebang or `py_compile` for a Python shebang, and ran the file with `TK_DRY_RUN=1` plus dummy required values (`example`, `1`, or `true`). The dry-run had to exit 0 and print JSON on stdout. Other shebangs failed as unsupported. For chains, every step `tool` had to exist in `discover_catalog`. `check_all` aggregated `check_item` over the catalog into `{ok, checked, results, errors}`.
 
 On 2026-11-03, `CODING_STANDARDS.md` at `ASabale/agent-toolkit@9d469d7` documented that same checklist. The header contract itself was specified earlier the same day in `ARCHITECTURE.md` at `ASabale/agent-toolkit@4b0e69c`. See [0001](../decisions/0001-clean-slate-single-file-contract.md).
+
+On 2026-11-04, `ASabale/agent-toolkit@c37e045` hardened `_example_ok` in `lib/catalog.py` using `shlex.split` so every required non-bool `--flag` in `@tk-example` had to be followed by a non-empty value token (or `--flag=value`), and updated `tk check` in `./tk` to emit compact JSON on `stdout` even when `--json` was omitted.
 
 ## Related
 
