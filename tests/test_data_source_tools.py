@@ -28,6 +28,44 @@ def _run(script: Path, env: dict, stdin: str = "") -> subprocess.CompletedProces
     )
 
 
+def _install_fake_psql(directory: Path, stdout: str, code: int = 0) -> Path:
+    """A psql stand-in that records argv, PGOPTIONS, and stdin, then prints stdout."""
+    log = directory / "psql-capture.txt"
+    script = directory / "psql"
+    script.write_text(
+        "\n".join(
+            [
+                f"#!{sys.executable}",
+                "import os, sys",
+                "from pathlib import Path",
+                "log = Path(os.environ['PSQL_CAPTURE'])",
+                "stdin = sys.stdin.read()",
+                "log.write_text(",
+                "    'argv:' + '\\0'.join(sys.argv) + '\\n'",
+                "    + 'PGOPTIONS:' + os.environ.get('PGOPTIONS', '') + '\\n'",
+                "    + 'stdin:' + stdin",
+                ")",
+                f"sys.stdout.write({stdout!r})",
+                f"raise SystemExit({code})",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return log
+
+
+def _postgres_env(bin_dir: Path, log: Path, **extra: str) -> dict:
+    env = {
+        "PATH": str(bin_dir),
+        "PSQL_CAPTURE": str(log),
+        "TK_ARG_DB": "postgresql://app:supersecret@localhost:5432/appdb",
+    }
+    env.update(extra)
+    return env
+
+
 def _make_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     try:
@@ -91,6 +129,63 @@ class SqlSchemaTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertTrue(payload["dry_run"])
         self.assertEqual(payload["db"], "example")
+
+    def test_postgres_url_uses_psql_and_redacts_password(self) -> None:
+        tables = [
+            {
+                "name": "widgets",
+                "rows": 3,
+                "columns": [
+                    {"name": "id", "type": "integer", "pk": 1, "notnull": 0},
+                    {"name": "name", "type": "text", "pk": 0, "notnull": 1},
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            log = _install_fake_psql(bin_dir, json.dumps(tables))
+            proc = _run(
+                ROOT / "tools/sql/schema",
+                _postgres_env(bin_dir, log, TK_ARG_TABLE="all"),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("supersecret", proc.stdout)
+            self.assertNotIn("supersecret", proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["db"], "postgresql://app:***@localhost:5432/appdb")
+            self.assertEqual(payload["table_count"], 1)
+            self.assertEqual(payload["tables"], tables)
+            captured = log.read_text(encoding="utf-8")
+        self.assertIn("information_schema.columns", captured)
+        self.assertIn("-c default_transaction_read_only=on", captured)
+        self.assertIn("-c statement_timeout=15000", captured)
+        self.assertIn("-X", captured)
+        self.assertIn("-A", captured)
+        self.assertIn("-t", captured)
+
+    def test_postgres_schema_missing_psql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _run(
+                ROOT / "tools/sql/schema",
+                {
+                    "PATH": tmp,
+                    "TK_ARG_DB": "postgres://app:supersecret@localhost/appdb",
+                    "TK_ARG_TABLE": "all",
+                },
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("supersecret", proc.stdout)
+        self.assertNotIn("supersecret", proc.stderr)
+        err = json.loads(proc.stderr)
+        self.assertEqual(err["error"], "psql_unavailable")
+        self.assertEqual(err["fix"], "install postgresql-client")
+        self.assertTrue(err["why"])
+
+    def test_header_mentions_postgres_urls(self) -> None:
+        header = (ROOT / "tools/sql/schema").read_text(encoding="utf-8").splitlines()[:12]
+        text = "\n".join(header)
+        self.assertIn("Postgres", text)
+        self.assertIn("postgres://", text)
 
 
 class SqlQueryTests(unittest.TestCase):
@@ -231,6 +326,95 @@ class SqlQueryTests(unittest.TestCase):
             payload["next"],
             f"tk run sql.query --db {db} --sql 'SELECT id, name FROM widgets ORDER BY id' --limit 2",
         )
+
+    def test_postgres_url_shapes_rows_and_hides_password(self) -> None:
+        body = {
+            "columns": ["id", "name"],
+            "total": 3,
+            "rows": [
+                {"id": 1, "name": "alpha"},
+                {"id": 2, "name": "beta"},
+                {"id": 3, "name": "gamma"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            log = _install_fake_psql(bin_dir, json.dumps(body))
+            proc = _run(
+                ROOT / "tools/sql/query",
+                _postgres_env(
+                    bin_dir,
+                    log,
+                    TK_ARG_SQL="SELECT id, name FROM widgets ORDER BY id",
+                    TK_ARG_LIMIT="2",
+                ),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("supersecret", proc.stdout)
+            self.assertNotIn("supersecret", proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["db"], "postgresql://app:***@localhost:5432/appdb")
+            self.assertEqual(payload["columns"], ["id", "name"])
+            self.assertEqual(payload["count"], 2)
+            self.assertIsInstance(payload["truncated"], int)
+            self.assertNotIsInstance(payload["truncated"], bool)
+            self.assertEqual(payload["truncated"], 1)
+            self.assertEqual(
+                payload["rows"],
+                [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}],
+            )
+            captured = log.read_text(encoding="utf-8")
+        self.assertIn("json_agg", captured)
+        self.assertIn("row_to_json", captured)
+        self.assertIn("LIMIT 2", captured)
+        self.assertIn("-c default_transaction_read_only=on", captured)
+        self.assertIn("-c statement_timeout=15000", captured)
+        argv = captured.splitlines()[0]
+        self.assertIn("\0-X\0", argv)
+        self.assertIn("\0-A\0", argv)
+        self.assertTrue(argv.endswith("\0-t"))
+
+    def test_postgres_write_is_rejected_before_psql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            log = _install_fake_psql(bin_dir, "should-not-run")
+            proc = _run(
+                ROOT / "tools/sql/query",
+                _postgres_env(
+                    bin_dir,
+                    log,
+                    TK_ARG_SQL="DELETE FROM widgets",
+                    TK_ARG_LIMIT="25",
+                ),
+            )
+            self.assertFalse(log.exists())
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(json.loads(proc.stderr)["error"], "mutating_sql")
+        self.assertNotIn("supersecret", proc.stdout)
+        self.assertNotIn("supersecret", proc.stderr)
+
+    def test_postgres_missing_psql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _run(
+                ROOT / "tools/sql/query",
+                {
+                    "PATH": tmp,
+                    "TK_ARG_DB": "postgres://app:supersecret@localhost/appdb",
+                    "TK_ARG_SQL": "SELECT 1",
+                    "TK_ARG_LIMIT": "25",
+                },
+            )
+        self.assertEqual(proc.returncode, 1)
+        err = json.loads(proc.stderr)
+        self.assertEqual(err["error"], "psql_unavailable")
+        self.assertEqual(err["fix"], "install postgresql-client")
+        self.assertNotIn("supersecret", proc.stdout + proc.stderr)
+
+    def test_query_header_mentions_postgres_urls(self) -> None:
+        header = (ROOT / "tools/sql/query").read_text(encoding="utf-8").splitlines()[:12]
+        text = "\n".join(header)
+        self.assertIn("Postgres", text)
+        self.assertIn("postgres://", text)
 
 
 class WebReadTextTests(unittest.TestCase):

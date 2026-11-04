@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # @tk-name: sql.query
-# @tk-summary: Run one read-only SQLite statement and return rows
+# @tk-summary: Run one read-only SQLite or Postgres statement and return rows
 # @tk-safety: read-only
-# @tk-arg: --db    | required | string | Path to the SQLite database file
+# @tk-arg: --db    | required | string | SQLite path or postgres:// / postgresql:// URL
 # @tk-arg: --sql   | required | string | Single read-only SQL statement
 # @tk-arg: --limit | optional | int    | Maximum rows to return (default: 25)
 # @tk-output: json | {db, columns, count, truncated, rows:[object]}
@@ -14,10 +14,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 _FIX = 'tk run sql.query --db <path> --sql "SELECT 1"'
+_PSQL_FIX = "install postgresql-client"
+_PGOPTIONS = "-c default_transaction_read_only=on -c statement_timeout=15000"
 _MUTATING = re.compile(
     r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|REPLACE|VACUUM|REINDEX|DETACH|ANALYZE|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b",
     re.IGNORECASE,
@@ -66,6 +71,150 @@ def cell(value):
     return str(value)
 
 
+def is_postgres_url(value: str) -> bool:
+    lowered = value.lower()
+    return lowered.startswith("postgres://") or lowered.startswith("postgresql://")
+
+
+def password_tokens(url: str) -> list[str]:
+    tokens: list[str] = []
+    parts = urlsplit(url)
+    if "@" in parts.netloc:
+        userinfo = parts.netloc.rsplit("@", 1)[0]
+        if ":" in userinfo:
+            raw = userinfo.split(":", 1)[1]
+            tokens.extend([raw, unquote(raw)])
+    if parts.password:
+        tokens.append(parts.password)
+    unique: list[str] = []
+    for token in sorted(set(tokens), key=len, reverse=True):
+        if token and token not in unique:
+            unique.append(token)
+    return unique
+
+
+def redact_url(url: str) -> str:
+    if not is_postgres_url(url):
+        return url
+    parts = urlsplit(url)
+    if not password_tokens(url):
+        return url
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    username = parts.username or ""
+    netloc = f"{username}:***@{host}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def scrub(text: str, url: str) -> str:
+    redacted = text
+    for token in password_tokens(url):
+        redacted = redacted.replace(token, "***")
+    if url:
+        redacted = redacted.replace(url, redact_url(url))
+    return redacted
+
+
+def postgres_env() -> dict:
+    env = os.environ.copy()
+    current = env.get("PGOPTIONS", "").strip()
+    env["PGOPTIONS"] = f"{current} {_PGOPTIONS}".strip()
+    return env
+
+
+def psql_unavailable() -> int:
+    return emit(
+        {
+            "error": "psql_unavailable",
+            "why": "psql is not on PATH",
+            "fix": _PSQL_FIX,
+        },
+        1,
+    )
+
+
+def run_psql(url: str, sql: str) -> subprocess.CompletedProcess[str] | int:
+    if shutil.which("psql") is None:
+        return psql_unavailable()
+    try:
+        return subprocess.run(
+            ["psql", url, "-X", "-A", "-t"],
+            input=sql,
+            capture_output=True,
+            text=True,
+            env=postgres_env(),
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return fail("psql_error", "psql timed out")
+    except OSError as exc:
+        return fail("psql_error", scrub(str(exc), url))
+
+
+def wrapped_query(sql: str, limit: int) -> str:
+    statement = sql.strip()
+    if statement.endswith(";"):
+        statement = statement[:-1].rstrip()
+    return (
+        "SELECT json_build_object(\n"
+        "  'columns', COALESCE((\n"
+        "    SELECT json_agg(k ORDER BY ord)\n"
+        "    FROM (\n"
+        "      SELECT key AS k, row_number() OVER () AS ord\n"
+        "      FROM json_each_text((\n"
+        f"        SELECT row_to_json(s) FROM ({statement}) AS s LIMIT 1\n"
+        "      ))\n"
+        "    ) keyed\n"
+        "  ), '[]'::json),\n"
+        f"  'total', (SELECT count(*) FROM ({statement}) AS counted),\n"
+        "  'rows', COALESCE((\n"
+        "    SELECT json_agg(obj ORDER BY ord)\n"
+        "    FROM (\n"
+        "      SELECT row_to_json(s) AS obj, row_number() OVER () AS ord\n"
+        f"      FROM (SELECT * FROM ({statement}) AS s LIMIT {int(limit)}) AS s\n"
+        "    ) numbered\n"
+        "  ), '[]'::json)\n"
+        ")\n"
+    )
+
+
+def query_postgres(url: str, sql: str, limit: int) -> int:
+    result = run_psql(url, wrapped_query(sql, limit))
+    if isinstance(result, int):
+        return result
+    if result.returncode != 0:
+        why = scrub((result.stderr or result.stdout or "psql failed").strip(), url)
+        return fail("psql_error", why or "psql failed")
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return fail("psql_error", scrub("psql did not return JSON", url))
+    if not isinstance(parsed, dict):
+        return fail("psql_error", "psql JSON was not an object")
+    rows = parsed.get("rows")
+    if not isinstance(rows, list):
+        return fail("psql_error", "psql JSON is missing rows")
+    total = parsed.get("total", len(rows))
+    if isinstance(total, bool) or not isinstance(total, int):
+        total = len(rows)
+    columns = parsed.get("columns")
+    if not isinstance(columns, list):
+        columns = list(rows[0].keys()) if rows and isinstance(rows[0], dict) else []
+    visible = rows[:limit]
+    return emit(
+        {
+            "db": redact_url(url),
+            "columns": columns,
+            "count": len(visible),
+            "truncated": int(max(0, int(total) - len(visible))),
+            "rows": visible,
+        }
+    )
+
+
 def parse_limit(raw: str) -> int | None:
     try:
         limit = int(raw)
@@ -85,7 +234,7 @@ def main() -> int:
         return emit(
             {
                 "dry_run": True,
-                "db": db_path or "example",
+                "db": redact_url(db_path) if db_path else "example",
                 "sql": sql or "SELECT 1",
                 "limit": 25 if limit is None else limit,
             }
@@ -99,6 +248,8 @@ def main() -> int:
     reason = reject_reason(sql)
     if reason:
         return fail("mutating_sql", reason)
+    if is_postgres_url(db_path):
+        return query_postgres(db_path, sql, limit)
     if not os.path.isfile(db_path):
         return fail("missing_db", f"database not found: {db_path}")
     try:
