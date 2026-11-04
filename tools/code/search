@@ -5,7 +5,7 @@
 # @tk-arg: --path | required | string | File or directory path to search
 # @tk-arg: --pattern | required | string | Regular expression pattern to match
 # @tk-arg: --glob | optional | string | Optional filename glob filter like *.py (default: all)
-# @tk-arg: --limit | optional | int | Maximum matches to return (default: 30)
+# @tk-arg: --limit | optional | int | Maximum matches; explicit values above 30 are honored (default: 30)
 # @tk-output: json | {path, pattern, count, truncated, matches:[{file, line, text}]}
 # @tk-example: tk run code.search --path lib --pattern def --glob *.py --limit 30
 # @tk-verified: 2026-11-04
@@ -194,6 +194,8 @@ def main() -> int:
             1,
         )
     payload = search(path, pattern, glob, limit)
+    # The 2 KB cap applies to the default limit of 30. An explicit --limit
+    # above 30 is honored in full and is not clamped to 30.
     if limit == _DEFAULT_LIMIT:
         payload = _cap_default_payload(payload)
     return emit(payload)

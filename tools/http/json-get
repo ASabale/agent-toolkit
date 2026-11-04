@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # @tk-name: http.json-get
-# @tk-summary: Fetch JSON; keep dotted --keys; cap default output with truncated+fix
+# @tk-summary: Fetch JSON; dotted --keys; --max-bytes 0 returns the full document
 # @tk-safety: read-only
-# @tk-arg: --url     | required | string | http(s) URL that returns JSON
-# @tk-arg: --keys    | optional | string | Comma-separated dotted key paths, or all (default: all)
-# @tk-arg: --timeout | optional | int    | Socket timeout in seconds (default: 10)
-# @tk-output: json | Reduced object/array, or capped object with truncated+fix
-# @tk-example: tk run http.json-get --url https://example.com/data.json --keys owner.login,name --timeout 10
+# @tk-arg: --url       | required | string | http(s) URL that returns JSON
+# @tk-arg: --keys      | optional | string | Comma-separated dotted key paths, or all (default: all)
+# @tk-arg: --timeout   | optional | int    | Socket timeout in seconds (default: 10)
+# @tk-arg: --max-bytes | optional | int    | Output byte cap; 0 returns the full document (default: 2048)
+# @tk-output: json | Reduced object/array, or capped object with truncated, fix, and hint
+# @tk-example: tk run http.json-get --url https://example.com/data.json --keys name --max-bytes 0
 # @tk-verified: 2026-11-04
 
 import json
@@ -18,6 +19,7 @@ import urllib.parse
 import urllib.request
 
 _MAX_DEFAULT_BYTES = 2048
+_RUNNER_CAP_DEFAULT = 65536
 _HINT_NESTED = ("login", "name", "id", "full_name")
 
 
@@ -84,7 +86,7 @@ def filter_keys(data, keys_raw: str):
 def _dict_key_hints(data: dict) -> list[str]:
     hints: list[str] = []
     for key, value in data.items():
-        if key in {"truncated", "fix"}:
+        if key in {"truncated", "fix", "hint"}:
             continue
         if _is_scalar(value):
             if isinstance(value, str) and len(value) > 160:
@@ -100,47 +102,96 @@ def _dict_key_hints(data: dict) -> list[str]:
     return hints
 
 
-def _suggest_list_keys(items: list) -> str:
+def _runner_cap() -> int:
+    raw = os.environ.get("TK_MAX_OUTPUT_BYTES", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return _RUNNER_CAP_DEFAULT
+    if value <= 0:
+        return _RUNNER_CAP_DEFAULT
+    return value
+
+
+def _command(
+    url: str,
+    keys: str | None = None,
+    max_bytes: int | None = None,
+    *,
+    emit_size: int | None = None,
+) -> str:
+    parts = ["tk run http.json-get", f"--url {shlex.quote(url)}"]
+    if keys and keys != "all":
+        parts.append(f"--keys {shlex.quote(keys)}")
+    if max_bytes is not None:
+        parts.append(f"--max-bytes {shlex.quote(str(max_bytes))}")
+    command = " ".join(parts)
+    if emit_size is not None and emit_size > _runner_cap():
+        return f"TK_MAX_OUTPUT_BYTES={emit_size} {command}"
+    return command
+
+
+def _suggest_list_keys(items: list, cap: int) -> str:
     first = next((item for item in items if isinstance(item, dict)), None)
     if first is None:
         return "all"
+    hints = _dict_key_hints(first)
+    if not hints:
+        return "all"
     chosen: list[str] = []
-    for key in _dict_key_hints(first):
+    smallest = min(hints, key=lambda key: (_encoded_size(filter_keys(items, key)), key))
+    for key in hints:
         trial = [*chosen, key]
         filtered = filter_keys(items, ",".join(trial))
-        if _encoded_size(filtered) <= _MAX_DEFAULT_BYTES:
+        if _encoded_size(filtered) <= cap:
             chosen = trial
-        elif not chosen:
-            chosen = [key]
-            break
-        else:
-            break
-    return ",".join(chosen) if chosen else "all"
+            continue
+        if not chosen:
+            continue
+        break
+    return ",".join(chosen) if chosen else smallest
 
 
-def _suggest_keys(data) -> str:
+def _suggest_keys(data, cap: int) -> str:
     if isinstance(data, list):
-        return _suggest_list_keys(data)
+        return _suggest_list_keys(data, cap)
     if not isinstance(data, dict):
         return "all"
     hints = _dict_key_hints(data)
     return ",".join(hints) if hints else "all"
 
 
-def _narrow_fix(url: str, data) -> str:
-    return (
-        "tk run http.json-get"
-        f" --url {shlex.quote(url)}"
-        f" --keys {shlex.quote(_suggest_keys(data))}"
-    )
+def _narrow_fix(url: str, basis, cap: int, original) -> str:
+    keys = _suggest_keys(basis, cap)
+    narrowed = basis if keys == "all" else filter_keys(basis, keys)
+    size = _encoded_size(narrowed)
+    if keys != "all" and size <= cap:
+        return _command(url, keys, emit_size=size)
+    if keys != "all":
+        return _command(url, keys, size, emit_size=size)
+    full = original if original is not None else basis
+    full_size = _encoded_size(full)
+    if full_size > cap:
+        return _command(url, None, full_size, emit_size=full_size)
+    return _command(url, emit_size=full_size)
 
 
-def _with_truncation(kept, url: str, source=None) -> dict:
+def _capped_payload(kept, fix: str, hint: str) -> dict:
     payload = dict(kept) if isinstance(kept, dict) else {"items": list(kept)}
     payload["truncated"] = True
-    hint = source if isinstance(source, list) else kept
-    payload["fix"] = _narrow_fix(url, hint)
+    payload["fix"] = fix
+    payload["hint"] = hint
     return payload
+
+
+def _full_hint(url: str, source) -> str:
+    return _command(url, None, 0, emit_size=_encoded_size(source))
+
+
+def _with_truncation(kept, url: str, original, cap: int) -> dict:
+    basis = original if isinstance(original, list) else kept
+    source = original if original is not None else kept
+    return _capped_payload(kept, _narrow_fix(url, basis, cap, original), _full_hint(url, source))
 
 
 def _compact_value(value):
@@ -157,7 +208,7 @@ def _compact_value(value):
     return value
 
 
-def _cap_object(data: dict, url: str) -> dict:
+def _cap_object(data: dict, url: str, cap: int) -> dict:
     compacted = []
     for key, value in data.items():
         compact = _compact_value(value)
@@ -172,35 +223,111 @@ def _cap_object(data: dict, url: str) -> dict:
     for key, value in ranked:
         candidate = dict(kept)
         candidate[key] = value
-        if _encoded_size(_with_truncation(candidate, url)) <= _MAX_DEFAULT_BYTES:
+        if _encoded_size(_with_truncation(candidate, url, data, cap)) <= cap:
             kept = candidate
-    return _with_truncation(kept, url)
+    return _with_truncation(kept, url, data, cap)
 
 
-def _cap_list(data: list, url: str) -> dict:
+def _cap_list(data: list, url: str, cap: int) -> dict:
+    # The repair command depends on the source list, not on the kept prefix.
+    fix = _narrow_fix(url, data, cap, data)
+    hint = _full_hint(url, data)
     kept: list = []
     for item in data:
         candidate = [*kept, item]
-        if _encoded_size(_with_truncation(candidate, url, data)) > _MAX_DEFAULT_BYTES:
+        if _encoded_size(_capped_payload(candidate, fix, hint)) > cap:
             break
         kept = candidate
-    return _with_truncation(kept, url, data)
+    return _capped_payload(kept, fix, hint)
 
 
-def distill_default(data, url: str):
-    if _encoded_size(data) <= _MAX_DEFAULT_BYTES:
+def distill_default(data, url: str, cap: int = _MAX_DEFAULT_BYTES):
+    if cap == 0 or _encoded_size(data) <= cap:
         return data
     if isinstance(data, dict):
-        return _cap_object(data, url)
+        return _cap_object(data, url, cap)
     if isinstance(data, list):
-        return _cap_list(data, url)
-    return _with_truncation({}, url)
+        return _cap_list(data, url, cap)
+    return _with_truncation({}, url, data, cap)
+
+
+def _parse_max_bytes(raw: str | None) -> tuple[int, dict | None]:
+    if raw is None or raw == "":
+        return _MAX_DEFAULT_BYTES, None
+    try:
+        value = int(raw)
+    except ValueError:
+        return _MAX_DEFAULT_BYTES, {
+            "error": "invalid_flag",
+            "why": f"max-bytes is not an int: {raw}",
+            "fix": "tk run http.json-get --url <https://...> --max-bytes 2048",
+        }
+    if value < 0:
+        return _MAX_DEFAULT_BYTES, {
+            "error": "invalid_flag",
+            "why": "max-bytes must be >= 0",
+            "fix": "tk run http.json-get --url <https://...> --max-bytes 0",
+        }
+    return value, None
+
+
+def _cap_explicit(filtered, cap: int, fix: str, hint: str) -> dict:
+    if isinstance(filtered, list):
+        kept: list = []
+        for item in filtered:
+            candidate = [*kept, item]
+            if _encoded_size(_capped_payload(candidate, fix, hint)) > cap:
+                break
+            kept = candidate
+        return _capped_payload(kept, fix, hint)
+    if isinstance(filtered, dict):
+        compacted = []
+        for key, value in filtered.items():
+            compact = _compact_value(value)
+            if compact is None:
+                continue
+            compacted.append((key, compact))
+        ranked = sorted(
+            compacted,
+            key=lambda item: (0 if _is_scalar(item[1]) else 1, _encoded_size(item[1]), str(item[0])),
+        )
+        kept_obj: dict = {}
+        for key, value in ranked:
+            candidate = dict(kept_obj)
+            candidate[key] = value
+            if _encoded_size(_capped_payload(candidate, fix, hint)) <= cap:
+                kept_obj = candidate
+        return _capped_payload(kept_obj, fix, hint)
+    return _capped_payload({}, fix, hint)
+
+
+def _deliver(data, url: str, keys_raw: str, max_bytes: int):
+    if max_bytes == 0:
+        if keys_raw.strip() == "all":
+            return data
+        return filter_keys(data, keys_raw)
+    if keys_raw.strip() == "all":
+        return distill_default(data, url, max_bytes)
+    filtered = filter_keys(data, keys_raw)
+    size = _encoded_size(filtered)
+    if size <= max_bytes:
+        return filtered
+    keys = keys_raw.strip()
+    return _cap_explicit(
+        filtered,
+        max_bytes,
+        _command(url, keys, size, emit_size=size),
+        _command(url, keys, 0, emit_size=size),
+    )
 
 
 def main() -> int:
     url = os.environ.get("TK_ARG_URL", "")
     keys_raw = os.environ.get("TK_ARG_KEYS") or "all"
     timeout_raw = os.environ.get("TK_ARG_TIMEOUT") or "10"
+    max_bytes, max_err = _parse_max_bytes(os.environ.get("TK_ARG_MAX_BYTES"))
+    if max_err:
+        return emit(max_err, 2)
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         timeout = int(timeout_raw) if str(timeout_raw).isdigit() else 10
         return emit(
@@ -209,6 +336,7 @@ def main() -> int:
                 "url": url or "example",
                 "keys": keys_raw,
                 "timeout": timeout,
+                "max_bytes": max_bytes,
             }
         )
     if not url:
@@ -287,9 +415,7 @@ def main() -> int:
             },
             1,
         )
-    if keys_raw.strip() == "all":
-        return emit(distill_default(data, url))
-    return emit(filter_keys(data, keys_raw))
+    return emit(_deliver(data, url, keys_raw, max_bytes))
 
 
 if __name__ == "__main__":
