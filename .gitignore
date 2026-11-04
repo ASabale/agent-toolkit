@@ -12,3 +12,6 @@ __pycache__/
 
 # Code review graph local DB
 .code-review-graph/
+
+# Local worktrees. The clone is the only project root.
+.worktrees/
