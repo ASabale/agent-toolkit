@@ -17,7 +17,7 @@ import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from lib.catalog import check_item, discover_catalog, _parse_output_keys, _referenced_arg_names
+from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -1110,9 +1110,10 @@ def _no_op_upstream(catalog: dict[str, dict], steps: object) -> tuple[str, set[s
     upstream = catalog.get(upstream_name)
     if not isinstance(upstream, dict) or upstream.get("kind") == "chain":
         return "", None
-    declared = _parse_output_keys(str(upstream.get("output") or ""))
-    if not declared:
+    declared_keys = output_keys(str(upstream.get("output") or ""))
+    if not declared_keys:
         return "", None
+    declared = set(declared_keys)
     if not all(_step_keeps_all_keys(step, declared) for step in steps[1:]):
         return "", None
     return upstream_name, declared

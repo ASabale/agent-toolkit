@@ -864,13 +864,14 @@ _CHAIN_INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
 _CHAIN_STEP_REF = re.compile(r"^\$step\[(-?\d+)\](?:\..*)?$")
 
 
-def _parse_output_keys(output: str) -> set[str] | None:
-    """Extract top-level field names from an @tk-output like ``json | {a, b:[...], c}``.
+def output_keys(output: object) -> list[str] | None:
+    """Return the top-level field names of an @tk-output like ``json | {a, b:[...], c}``.
 
-    Returns the set of key names if the output has a ``{...}`` shape, or None
-    if it doesn't (which means the check should be skipped, not failed).
+    ``None`` means the text has no ``{...}`` shape, so callers skip the key check.
+    A list is the keys in source order; an empty list means the braces held no keys.
+    Nested ``{}``, ``[]`` and ``()`` stay inside the key that opened them.
     """
-    text = output.strip()
+    text = str(output or "").strip()
     if "|" in text:
         text = text.split("|", 1)[1].strip()
     if not text.startswith("{"):
@@ -888,7 +889,7 @@ def _parse_output_keys(output: str) -> set[str] | None:
     if end < 0:
         return None
     inner = text[1:end]
-    keys: set[str] = set()
+    keys: list[str] = []
     depth = 0
     start = 0
     for idx, char in enumerate(inner):
@@ -897,18 +898,14 @@ def _parse_output_keys(output: str) -> set[str] | None:
         elif char in ")]}":
             depth -= 1
         elif char == "," and depth == 0:
-            segment = inner[start:idx].strip()
-            if segment:
-                key = segment.split(":")[0].split("[")[0].strip()
-                if key:
-                    keys.add(key)
+            key = inner[start:idx].split(":")[0].split("[")[0].strip()
+            if key and key not in keys:
+                keys.append(key)
             start = idx + 1
-    segment = inner[start:].strip()
-    if segment:
-        key = segment.split(":")[0].split("[")[0].strip()
-        if key:
-            keys.add(key)
-    return keys if keys else None
+    key = inner[start:].split(":")[0].split("[")[0].strip()
+    if key and key not in keys:
+        keys.append(key)
+    return keys
 
 
 def _pick_query_key_errors(
@@ -920,7 +917,7 @@ def _pick_query_key_errors(
 ) -> list[str]:
     """Validate json.pick/json.query keys against upstream @tk-output."""
     errors: list[str] = []
-    upstream_keys = _parse_output_keys(upstream_output)
+    upstream_keys = output_keys(upstream_output)
     if upstream_keys is None:
         return errors
 
