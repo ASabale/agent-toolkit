@@ -34,6 +34,8 @@ On 2026-11-04, `ASabale/agent-toolkit@7001f67` deleted `chains/sec.repo-hygiene.
 
 On 2026-11-04, `ASabale/agent-toolkit@e2de2ec` deleted `chains/git.repo-health.json`, `chains/sql.inspect-db.json`, `chains/code.module-surface.json`, and `chains/code.blast-radius.json`. Each chain was one tool (`git.branch-digest`, `sql.schema`, `code.symbols`, or `code.dependents`) followed by `json.pick` and did not collapse a multi-tool workflow. Those four tools remain. This supersedes the `git.repo-health` description at `ASabale/agent-toolkit@9d469d7` without rewriting that claim. The same commit reports a pick-all-keys chain from `tk evolve --no-promote` under `overlap_candidates` with reason `no_op_chain`; see [Evolver and quarantine](evolver-and-quarantine.md).
 
+On 2026-11-04, `ASabale/agent-toolkit@6e0160a` deleted `chains/gh.pr-overview.json`. That chain had run `gh.pr-diff-digest` and then `json.pick` with keys `repo,pr,title,state,files_changed,additions,deletions,files`, which dropped `truncated`, and it rejected `--limit`. `gh.pr-diff-digest` remains and still reports `truncated`. This supersedes the chain's presence at `ASabale/agent-toolkit@5aece9a` without rewriting that claim.
+
 ## Related
 
 - [0002 — Minimum cognitive load and tokens](../decisions/0002-minimum-cognitive-load-and-tokens.md)
