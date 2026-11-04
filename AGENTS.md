@@ -16,7 +16,7 @@ Every agent touching this repository must uphold four non-negotiable laws:
 
 - Evaluating product scope, why this replaces MCPs, or core principles → read [`VISION.md`](VISION.md).
 - Designing CLI commands, module seams, tool header metadata, or token budgets → read [`ARCHITECTURE.md`](ARCHITECTURE.md).
-- Editing the portable agent skill consumed by external harnesses → read [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md).
+- Editing the portable agent skill consumed by external harnesses → read [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md).
 - Multi-agent coordination (claiming work, avoiding collisions, steward review) → read [`COORDINATION.md`](COORDINATION.md).
 
 ## Architectural Invariants
@@ -43,4 +43,4 @@ Every agent touching this repository must uphold four non-negotiable laws:
 4. **Done criteria for any feature or tool**:
    - `tk check` exits `0` with zero contract warnings.
    - All automated tests in `tests/` pass.
-   - If the user-facing CLI surface or skill workflow changed, [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md) is updated in the same commit.
+   - If the user-facing CLI surface or skill workflow changed, [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md) is updated in the same commit.
