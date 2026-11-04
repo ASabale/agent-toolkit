@@ -83,6 +83,8 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
      - Every `$prev` or `$prev.<path>` reference appears only in step index `>= 1` (never step `0`).
      - Every `$step[k]` or `$step[k].<path>` reference satisfies `0 <= k < i`.
      - Dry-run smoke check: running `run_chain(root_dir, item, dummy_required_flags, dry_run=True)` exits `0` and produces valid JSON on `stdout`.
+  8. Catalog names are unique: if more than one file claims the same `name`, report `duplicate name: <name> (<path1>, <path2>)` listing every claimant path relative to `root_dir` in first-seen order. `check_all` surfaces this through `check_item` on the affected names.
+  9. Name/path layout: a tool's `@tk-name` must equal `<namespace>.<file>` derived from `tools/<namespace>/<file>`; a chain's `name` must equal the `chains/<name>.json` stem. Error: `name/path mismatch: @tk-name <x> but path implies <y>`.
 - **`check_all(root_dir: Path) -> dict`**
   Runs `check_item` concurrently across every item in `discover_catalog(root_dir)` (using `concurrent.futures.ThreadPoolExecutor` while preserving deterministic catalog key order) and returns `{"ok": bool, "checked": int, "results": list[dict], "errors": list[str]}`.
 

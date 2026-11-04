@@ -166,32 +166,102 @@ def _hidden_part(part: str) -> bool:
     return part.startswith(".") or part.startswith("__")
 
 
+def _catalog_relpath(root_dir: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path(root_dir).resolve()).as_posix()
+    except (OSError, ValueError):
+        try:
+            return path.resolve().as_posix()
+        except OSError:
+            return str(path)
+
+
+def _iter_catalog_files(root_dir: Path):
+    """Yield ``(key, item, relpath)`` in deterministic first-wins scan order."""
+    tools_dir = root_dir / "tools"
+    if tools_dir.is_dir():
+        for path in sorted(tools_dir.rglob("*")):
+            try:
+                relative = path.relative_to(tools_dir)
+            except ValueError:
+                continue
+            if any(_hidden_part(part) for part in relative.parts):
+                continue
+            if not path.is_file():
+                continue
+            item = parse_tool_header(path)
+            key = item["name"] or relative.as_posix()
+            yield key, item, _catalog_relpath(root_dir, path)
+    chains_dir = root_dir / "chains"
+    if chains_dir.is_dir():
+        for path in sorted(chains_dir.glob("*.json")):
+            if _hidden_part(path.name) or not path.is_file():
+                continue
+            item = load_chain(path)
+            key = item["name"] or path.name
+            yield key, item, _catalog_relpath(root_dir, path)
+
+
+def _name_claimants(root_dir: Path) -> dict[str, list[str]]:
+    """Map each claimed name to every file path that uses it, first-seen order."""
+    claimants: dict[str, list[str]] = {}
+    for _key, item, relpath in _iter_catalog_files(root_dir):
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        claimants.setdefault(name, []).append(relpath)
+    return claimants
+
+
+def _implied_catalog_name(root_dir: Path, path: Path, is_chain: bool) -> str | None:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if is_chain:
+        try:
+            resolved.relative_to((root_dir / "chains").resolve())
+        except (OSError, ValueError):
+            return None
+        return path.stem
+    try:
+        relative = resolved.relative_to((root_dir / "tools").resolve())
+    except (OSError, ValueError):
+        return None
+    return ".".join(relative.parts)
+
+
+def _layout_errors(root_dir: Path, path: Path, item: dict, is_chain: bool) -> list[str]:
+    implied = _implied_catalog_name(root_dir, path, is_chain)
+    if implied is None:
+        return []
+    actual = str(item.get("name") or "")
+    if actual == implied:
+        return []
+    return [f"name/path mismatch: @tk-name {actual} but path implies {implied}"]
+
+
+def _duplicate_name_errors(root_dir: Path, name: str) -> list[str]:
+    claimed = str(name or "").strip()
+    if not claimed:
+        return []
+    paths = _name_claimants(root_dir).get(claimed) or []
+    if len(paths) < 2:
+        return []
+    return [f"duplicate name: {claimed} ({', '.join(paths)})"]
+
+
 def discover_catalog(root_dir: Path) -> dict[str, dict]:
-    """Scan ``tools/`` recursively and ``chains/*.json``. Keys are sorted."""
+    """Scan ``tools/`` recursively and ``chains/*.json``. Keys are sorted.
+
+    Duplicate names keep the first file in scan order (tools, then chains;
+    each sorted). The return shape stays ``dict[name, item]``.
+    """
     root_dir = Path(root_dir)
     items: dict[str, dict] = {}
     try:
-        tools_dir = root_dir / "tools"
-        if tools_dir.is_dir():
-            for path in sorted(tools_dir.rglob("*")):
-                try:
-                    relative = path.relative_to(tools_dir)
-                except ValueError:
-                    continue
-                if any(_hidden_part(part) for part in relative.parts):
-                    continue
-                if not path.is_file():
-                    continue
-                item = parse_tool_header(path)
-                key = item["name"] or relative.as_posix()
-                items[key] = item
-        chains_dir = root_dir / "chains"
-        if chains_dir.is_dir():
-            for path in sorted(chains_dir.glob("*.json")):
-                if _hidden_part(path.name) or not path.is_file():
-                    continue
-                item = load_chain(path)
-                key = item["name"] or path.name
+        for key, item, _relpath in _iter_catalog_files(root_dir):
+            if key not in items:
                 items[key] = item
     except Exception:
         return dict(sorted(items.items()))
@@ -850,6 +920,8 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                 dry = _chain_dry_run_error(root_dir, item)
                 if dry:
                     errors.append(dry)
+        errors.extend(_layout_errors(root_dir, path, item, is_chain))
+        errors.extend(_duplicate_name_errors(root_dir, str(item.get("name") or "")))
         return {"name": name, "ok": not errors, "errors": errors}
     except Exception as exc:
         return {"name": label, "ok": False, "errors": [f"internal_error: {exc}"]}
