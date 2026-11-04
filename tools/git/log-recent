@@ -4,7 +4,7 @@
 # @tk-safety: read-only
 # @tk-arg: --repo  | required | string | Path to the git working tree
 # @tk-arg: --limit | optional | int    | Maximum commits to return (default: 5)
-# @tk-output: json | {repo, count, commits:[{sha, date, author, subject}]}
+# @tk-output: json | {dry_run, repo, limit, count, commits:[{sha, date, author, subject}]}
 # @tk-example: tk run git.log-recent --repo . --limit 5
 # @tk-verified: 2026-11-03
 
@@ -45,7 +45,15 @@ def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     limit_raw = os.environ.get("TK_ARG_LIMIT") or "5"
     if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit({"repo": repo or "example", "count": 0, "commits": []})
+        return emit(
+            {
+                "dry_run": True,
+                "repo": repo or "example",
+                "limit": int(limit_raw) if limit_raw.isdigit() else 5,
+                "count": None,
+                "commits": [],
+            }
+        )
     if not repo:
         return emit(
             {

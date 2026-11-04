@@ -3,7 +3,7 @@
 # @tk-summary: Branch, upstream drift, and dirty-file count for a git working tree
 # @tk-safety: read-only
 # @tk-arg: --repo | required | string | Path to the git working tree
-# @tk-output: json | {branch, ahead, behind, dirty, detached, upstream}
+# @tk-output: json | {dry_run, repo, branch, ahead, behind, dirty, detached, upstream}
 # @tk-example: tk run git.branch-digest --repo .
 # @tk-verified: 2026-11-03
 
@@ -33,11 +33,13 @@ def main() -> int:
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
-                "branch": "example",
-                "ahead": 0,
-                "behind": 0,
-                "dirty": 0,
-                "detached": False,
+                "dry_run": True,
+                "repo": repo or "example",
+                "branch": None,
+                "ahead": None,
+                "behind": None,
+                "dirty": None,
+                "detached": None,
                 "upstream": None,
             }
         )

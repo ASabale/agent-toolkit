@@ -140,6 +140,57 @@ class GitSyncTests(unittest.TestCase):
             )
             self.assertIn("push", " ".join(payload["plan"]))
 
+    def _assert_dry_run_matches_refusal(
+        self,
+        clone: Path,
+        origin: Path,
+        base: str,
+        error: str,
+        branch: str,
+    ) -> None:
+        before = _git(origin, "rev-parse", "refs/heads/main").stdout
+        env = {"TK_ARG_REPO": str(clone), "TK_ARG_BRANCH": base}
+        dry = _run({**env, "TK_DRY_RUN": "1"})
+        real = _run({**env, "TK_DRY_RUN": "0"})
+        self.assertNotEqual(dry.returncode, 0, dry.stdout)
+        self.assertEqual(dry.returncode, real.returncode)
+        self.assertEqual(dry.stdout.strip(), "")
+        self.assertEqual(real.stdout.strip(), "")
+        dry_payload = json.loads(dry.stderr)
+        self.assertEqual(dry_payload, json.loads(real.stderr))
+        self.assertEqual(dry_payload["error"], error)
+        self.assertTrue(dry_payload["why"])
+        self.assertIn(branch, dry_payload["why"])
+        fix = str(dry_payload["fix"])
+        self.assertIn("git checkout -b fix/sync && tk run git.sync --repo ", fix)
+        self.assertNotIn("<", fix)
+        self.assertNotIn(">", fix)
+        self.assertEqual(_git(origin, "rev-parse", "refs/heads/main").stdout, before)
+        self.assertEqual(_git(clone, "symbolic-ref", "--short", "HEAD").stdout.strip(), branch)
+        checkout = fix.split(" && ", 1)[0]
+        ran = subprocess.run(
+            checkout,
+            shell=True,
+            cwd=str(clone),
+            capture_output=True,
+            text=True,
+            env={**os.environ, **_identity()},
+            check=False,
+        )
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertEqual(_git(clone, "symbolic-ref", "--short", "HEAD").stdout.strip(), "fix/sync")
+
+    def test_dry_run_on_main_matches_real_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, _clone_a, clone_b = _pair(Path(tmp))
+            self._assert_dry_run_matches_refusal(clone_b, origin, "main", "on_main", "main")
+
+    def test_dry_run_on_base_matches_real_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, _clone_a, clone_b = _pair(Path(tmp))
+            _ok(clone_b, "checkout", "-b", "develop")
+            self._assert_dry_run_matches_refusal(clone_b, origin, "develop", "on_base", "develop")
+
     def test_conflict_aborts_rebase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _origin, clone_a, clone_b = _pair(Path(tmp))

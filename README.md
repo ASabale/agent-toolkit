@@ -17,10 +17,16 @@ tk find wiki
 tk run wiki.lint --path wiki
 ```
 
-`./install.sh` creates `~/.local/bin` and `~/.agents/skills` if needed, symlinks `tk` and `skills/agent-toolkit` (and `~/.claude/skills/agent-toolkit` when `~/.claude` exists), sets `core.hooksPath` to `.githooks` in this clone, and runs `tk check`. It prints one JSON object:
+`./install.sh` requires `python3` (a missing `python3` exits non-zero with a stderr diagnostic). `gh` is recommended: a missing `gh` prints a stderr warning and install continues. The script creates `~/.local/bin` and `~/.agents/skills` if needed, symlinks `tk` and `skills/agent-toolkit` (and `~/.claude/skills/agent-toolkit` when `~/.claude` exists), and runs `tk check`. It does not set `core.hooksPath`. Stdout is one JSON object:
 
 ```text
-{"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/agent-toolkit","skill_links":["$HOME/.agents/skills/agent-toolkit"],"skill_links_skipped":[],"hooksPath":".githooks","check":{"ok":true,"checked":...}}
+{"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/agent-toolkit","skill_links":["$HOME/.agents/skills/agent-toolkit"],"skill_links_skipped":[],"check":{"ok":true,"checked":...}}
+```
+
+Stderr prints the opt-in command for the tracked pre-commit hooks only when `./install.sh` runs inside a git work tree. To enable them:
+
+```sh
+git -C <repo> config core.hooksPath .githooks
 ```
 
 `tk find wiki` prints two lines per match (the runnable command is on the second line):

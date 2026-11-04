@@ -2,6 +2,7 @@
 # Idempotent install: symlink tk and the agent-toolkit skill into the user paths.
 # Does not change git core.hooksPath; prints the command to opt in.
 set -eu
+# shellcheck disable=SC1007 # empty CDPATH= prefix so cd ignores a caller CDPATH
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 SKILL_SRC="${REPO_ROOT}/skills/agent-toolkit"
 skill_links=""
@@ -21,6 +22,13 @@ emit_diag() {
     printf '%s\n' "{\"error\":\"${err}\",\"why\":\"${why}\",\"fix\":\"${fix}\"}" >&2
 }
 
+emit_note() {
+    note=$(json_escape "$1")
+    why=$(json_escape "$2")
+    fix=$(json_escape "$3")
+    printf '%s\n' "{\"note\":\"${note}\",\"why\":\"${why}\",\"fix\":\"${fix}\"}" >&2
+}
+
 json_escape() {
     out=
     bytes=$(printf '%s' "$1" | od -An -tu1)
@@ -35,6 +43,7 @@ json_escape() {
                 if [ "$ord" -lt 32 ]; then
                     out="${out}$(printf '\\u%04x' "$ord")"
                 else
+                    # shellcheck disable=SC2059 # octal printf format emits one JSON byte
                     out="${out}$(printf "\\$(printf '%03o' "$ord")")"
                 fi
                 ;;
@@ -70,7 +79,10 @@ encode_dir() {
         case $ord in
             92) out="${out}\\\\" ;;
             10) out="${out}\\n" ;;
-            *) out="${out}$(printf "\\$(printf '%03o' "$ord")")" ;;
+            *)
+                # shellcheck disable=SC2059 # octal printf format encodes one path byte
+                out="${out}$(printf "\\$(printf '%03o' "$ord")")"
+                ;;
         esac
     done
     printf '%s' "$out"
@@ -156,7 +168,7 @@ while IFS= read -r encoded || [ -n "$encoded" ]; do
 done < "$skill_dirs_file"
 
 if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    emit_diag \
+    emit_note \
         "hooksPath_unchanged" \
         "default install does not change core.hooksPath" \
         "git -C \"${REPO_ROOT}\" config core.hooksPath .githooks"

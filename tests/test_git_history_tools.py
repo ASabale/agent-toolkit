@@ -1,4 +1,4 @@
-"""Seams for git.blame-slice and git.hotspots."""
+"""Seams for git.blame-slice, git.hotspots, git.branch-digest, and git.log-recent."""
 
 import json
 import os
@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BLAME = ROOT / "tools/git/blame-slice"
 HOTSPOTS = ROOT / "tools/git/hotspots"
+DIGEST = ROOT / "tools/git/branch-digest"
+LOG = ROOT / "tools/git/log-recent"
 
 
 def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
@@ -248,6 +250,86 @@ class HotspotTests(unittest.TestCase):
                 "limit": 10,
             },
         )
+
+
+class BranchDigestTests(unittest.TestCase):
+    def test_dry_run_echoes_flags_and_reports_no_results(self) -> None:
+        proc = _run(
+            DIGEST,
+            {
+                "TK_ARG_REPO": "example",
+                "TK_DRY_RUN": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(
+            payload,
+            {
+                "dry_run": True,
+                "repo": "example",
+                "branch": None,
+                "ahead": None,
+                "behind": None,
+                "dirty": None,
+                "detached": None,
+                "upstream": None,
+            },
+        )
+        self.assertIs(payload["dry_run"], True)
+        self.assertIsNone(payload["branch"])
+        self.assertIsNone(payload["dirty"])
+
+
+class LogRecentTests(unittest.TestCase):
+    def test_dry_run_echoes_flags_and_reports_no_results(self) -> None:
+        proc = _run(
+            LOG,
+            {
+                "TK_ARG_REPO": "example",
+                "TK_ARG_LIMIT": "3",
+                "TK_DRY_RUN": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(
+            payload,
+            {
+                "dry_run": True,
+                "repo": "example",
+                "limit": 3,
+                "count": None,
+                "commits": [],
+            },
+        )
+        self.assertIs(payload["dry_run"], True)
+        self.assertIsNone(payload["count"])
+
+    def test_real_repo_returns_newest_subjects_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _sample_repo(Path(tmp))
+            extra = repo / "gamma.txt"
+            extra.write_text("gamma\n", encoding="utf-8")
+            _git(repo, "add", "gamma.txt", author="Carol")
+            _git(repo, "commit", "-m", "third note", author="Carol")
+            proc = _run(
+                LOG,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_LIMIT": "2",
+                    "TK_DRY_RUN": "0",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertNotIn("dry_run", payload)
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(len(payload["commits"]), 2)
+        self.assertEqual(payload["commits"][0]["subject"], "third note")
+        self.assertEqual(payload["commits"][1]["subject"], "second note")
+        self.assertEqual(len(payload["commits"][0]["sha"]), 40)
+        self.assertEqual(payload["commits"][0]["author"], "Carol")
 
 
 if __name__ == "__main__":
