@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import stat
 import sys
 import tempfile
@@ -92,6 +93,17 @@ class EvolverTests(unittest.TestCase):
             self.assertFalse((readonly / "events.jsonl").exists())
         finally:
             readonly.chmod(stat.S_IRWXU)
+
+    def _assert_copyable_force_hint(self, fix: str, *required: str) -> list[str]:
+        self.assertTrue(fix.startswith("tk "), f"fix must start with 'tk ': {fix}")
+        self.assertIn("--force", fix, f"fix must contain '--force': {fix}")
+        argv = shlex.split(fix)
+        self.assertGreaterEqual(len(argv), 3, f"fix must parse to a command: {fix}")
+        self.assertEqual(argv[0], "tk")
+        self.assertIn("--force", argv)
+        for token in required:
+            self.assertIn(token, argv, f"fix must contain {token!r}: {fix}")
+        return argv
 
     def test_save_tool_writes_executable_header_and_logs(self) -> None:
         code, out, err = save_tool(
@@ -223,17 +235,58 @@ class EvolverTests(unittest.TestCase):
         self.assertEqual(first, 0, err)
         original = (self.root / "tools" / "demo" / "echo").read_text(encoding="utf-8")
 
+        from_cmd = "printf '%s\\n' '{\"ok\":true}'"
         again, _, err = save_tool(
             self.root,
             "demo.echo",
             "Second summary",
-            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+            from_cmd=from_cmd,
         )
         self.assertEqual(again, 1)
         err_body = json.loads(err)
         self.assertEqual(err_body["error"], "already_exists")
-        self.assertTrue(err_body["fix"].startswith("tk "), f"fix must start with 'tk ': {err_body['fix']}")
-        self.assertIn("--force", err_body["fix"], f"fix must contain '--force': {err_body['fix']}")
+        argv = self._assert_copyable_force_hint(
+            err_body["fix"],
+            "save",
+            "demo.echo",
+            "--summary",
+            "--from-cmd",
+            "--safety",
+            "--force",
+        )
+        self.assertEqual(argv[argv.index("--summary") + 1], "Second summary")
+        self.assertEqual(argv[argv.index("--from-cmd") + 1], from_cmd)
+        self.assertEqual(argv[argv.index("--safety") + 1], "read-only")
+        self.assertEqual((self.root / "tools" / "demo" / "echo").read_text(encoding="utf-8"), original)
+
+        source = self.root / "echo.sh"
+        source.write_text("printf '%s\\n' '{\"ok\":true}'\n", encoding="utf-8")
+        arg_spec = "--token | required | string | Token to echo"
+        from_file, _, err = save_tool(
+            self.root,
+            "demo.echo",
+            "File summary",
+            safety="mutating",
+            file_path=str(source),
+            args_spec=[arg_spec],
+        )
+        self.assertEqual(from_file, 1)
+        file_body = json.loads(err)
+        self.assertEqual(file_body["error"], "already_exists")
+        file_argv = self._assert_copyable_force_hint(
+            file_body["fix"],
+            "save",
+            "demo.echo",
+            "--summary",
+            "--file",
+            "--safety",
+            "--arg",
+            "--force",
+        )
+        self.assertEqual(file_argv[file_argv.index("--summary") + 1], "File summary")
+        self.assertEqual(file_argv[file_argv.index("--file") + 1], str(source))
+        self.assertEqual(file_argv[file_argv.index("--safety") + 1], "mutating")
+        self.assertEqual(file_argv[file_argv.index("--arg") + 1], arg_spec)
         self.assertEqual((self.root / "tools" / "demo" / "echo").read_text(encoding="utf-8"), original)
 
         broken = self.root / "broken.sh"
@@ -306,16 +359,33 @@ class EvolverTests(unittest.TestCase):
         self.assertFalse((self.root / "chains" / "demo.missing.json").exists())
 
         original = chain_path.read_text(encoding="utf-8")
+        refused_steps = [{"tool": "demo.echo", "args": {"token": "$input.token"}}]
         refused, _, err = save_chain(
             self.root,
             "demo.pipe",
             "Nope",
-            steps=[{"tool": "demo.echo"}],
+            steps=refused_steps,
+            args=[{"flag": "--token", "required": True, "type": "string", "description": "Token"}],
+            safety="read-only",
         )
         err_body = json.loads(err)
         self.assertEqual(err_body["error"], "already_exists")
-        self.assertTrue(err_body["fix"].startswith("tk "), f"fix must start with 'tk ': {err_body['fix']}")
-        self.assertIn("--force", err_body["fix"], f"fix must contain '--force': {err_body['fix']}")
+        argv = self._assert_copyable_force_hint(
+            err_body["fix"],
+            "chain",
+            "save",
+            "demo.pipe",
+            "--summary",
+            "--steps",
+            "--safety",
+            "--arg",
+            "--force",
+        )
+        self.assertEqual(argv[1:3], ["chain", "save"])
+        self.assertEqual(argv[argv.index("--summary") + 1], "Nope")
+        self.assertEqual(json.loads(argv[argv.index("--steps") + 1]), refused_steps)
+        self.assertEqual(argv[argv.index("--safety") + 1], "read-only")
+        self.assertEqual(argv[argv.index("--arg") + 1], "--token | required | string | Token")
         self.assertEqual(chain_path.read_text(encoding="utf-8"), original)
 
         bad_force, _, err = save_chain(
