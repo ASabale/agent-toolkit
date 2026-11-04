@@ -26,7 +26,7 @@ On 2026-11-04, `ASabale/agent-toolkit@c37e045` updated `parse_cli_flags` in `lib
 
 Catalog lookup for those step names went through `discover_catalog`. See [Catalog and check](catalog-and-check.md).
 
-On 2026-11-04, `ASabale/agent-toolkit@c28d41a` deleted `chains/sec.repo-hygiene.json`. That chain had run `sec.secret-scan` and then `json.pick` with keys `clean,count,findings`, which dropped `truncated`. `sec.secret-scan` remained and still reports `truncated`. This supersedes the chain's presence at `ASabale/agent-toolkit@5a57fcd` and `ASabale/agent-toolkit@5aece9a` without rewriting those claims.
+On 2026-11-04, `ASabale/agent-toolkit@7001f67` deleted `chains/sec.repo-hygiene.json`. That chain had run `sec.secret-scan` and then `json.pick` with keys `clean,count,findings`, which dropped `truncated`. `sec.secret-scan` remained and still reports `truncated`. This supersedes the chain's presence at `ASabale/agent-toolkit@5a57fcd` and `ASabale/agent-toolkit@5aece9a` without rewriting those claims.
 
 ## Related
 
