@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# @tk-name: gh.label
+# @tk-summary: Add or remove a label on a GitHub issue or pull request
+# @tk-safety: mutating
+# @tk-arg: --kind | required | string | Target kind: issue or pr
+# @tk-arg: --repo | required | string | Repository in owner/name form
+# @tk-arg: --number | required | int | Issue or pull request number
+# @tk-arg: --add | optional | string | Label to add
+# @tk-arg: --remove | optional | string | Label to remove
+# @tk-output: json | {repo, number, kind, added, removed}
+# @tk-example: tk run gh.label --kind issue --repo cli/cli --number 1 --add bug
+# @tk-verified: none
+
+"""Edit GitHub labels. Branches on TK_DRY_RUN via is_dry_run and dry_run_plan."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, arg_str, dry_run_plan, emit, fail, is_dry_run, run_cmd, run_main
+
+_FIX = "tk run gh.label --kind issue --repo <owner/name> --number <n> --add <label>"
+
+
+def _kind(raw: str) -> str:
+    if raw in {"issue", "pr"}:
+        return raw
+    if is_dry_run():
+        return "issue"
+    raise SystemExit(fail("invalid_flag", "kind must be issue or pr", _FIX, 2))
+
+
+def _fix(repo: str, number: int, kind: str) -> str:
+    return f"tk run gh.label --kind {kind} --repo {repo} --number {number} --add <label>"
+
+
+def main() -> int:
+    repo = arg_str("REPO") or ("example" if is_dry_run() else "")
+    kind_raw = arg_str("KIND") or ("example" if is_dry_run() else "")
+    kind = _kind(kind_raw)
+    number = arg_int("NUMBER", 1, fix=_fix(repo or "<owner/name>", 1, kind if kind_raw in {"issue", "pr"} else "issue"))
+    add = arg_str("ADD")
+    remove = arg_str("REMOVE")
+    smoke = kind_raw not in {"issue", "pr"} and is_dry_run()
+    if smoke and not add and not remove:
+        add = "example"
+    if not repo:
+        return fail("missing_flag", "repo, number, and kind are required", _FIX, 2)
+    if not add and not remove:
+        return fail(
+            "missing_flag",
+            "at least one of --add or --remove is required",
+            _fix(repo, number, kind),
+            2,
+        )
+    plan = ["gh", kind, "edit", str(number), "--repo", repo]
+    if add:
+        plan.extend(["--add-label", add])
+    if remove:
+        plan.extend(["--remove-label", remove])
+    if is_dry_run():
+        return dry_run_plan(plan)
+    run_cmd(plan, fix=_fix(repo, number, kind), error_code="gh_failed")
+    return emit(
+        {
+            "repo": repo,
+            "number": number,
+            "kind": kind,
+            "added": add or None,
+            "removed": remove or None,
+        }
+    )
+
+
+if __name__ == "__main__":
+    run_main(main, default_fix=_FIX)
