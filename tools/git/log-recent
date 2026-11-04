@@ -10,6 +10,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -41,8 +42,25 @@ def parse_log(text: str) -> list[dict]:
     return commits
 
 
+def _limit_fix() -> str:
+    """Copy-pasteable command: caller flags, with only --limit corrected."""
+    repo = os.environ.get("TK_ARG_REPO", "")
+    argv = [
+        "tk",
+        "run",
+        "git.log-recent",
+        "--repo",
+        repo if repo else ".",
+        "--limit",
+        "5",
+    ]
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        argv.append("--dry-run")
+    return shlex.join(argv)
+
+
 def resolve_limit(limit_raw: str) -> int | dict:
-    fix = "tk run git.log-recent --limit 5"
+    fix = _limit_fix()
     try:
         limit = int(limit_raw)
     except ValueError:
