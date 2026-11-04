@@ -111,7 +111,7 @@ class SectionTests(unittest.TestCase):
             )
             outline = _run(
                 SECTION,
-                {"TK_ARG_PATH": str(path), "TK_ARG_HEADING": "outline", "TK_ARG_MAX_LINES": "1"},
+                {"TK_ARG_PATH": str(path), "TK_ARG_OUTLINE": "true", "TK_ARG_MAX_LINES": "1"},
             )
             literal = _run(
                 SECTION,

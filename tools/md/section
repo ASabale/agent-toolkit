@@ -3,10 +3,11 @@
 # @tk-summary: Outline ATX headings or extract one markdown section
 # @tk-safety: read-only
 # @tk-arg: --path | required | string | Path to markdown file
-# @tk-arg: --heading | optional | string | Heading substring to extract, or outline for heading tree (default: outline)
+# @tk-arg: --heading | optional | string | Heading substring to extract
+# @tk-arg: --outline | optional | bool | Return heading tree (default when --heading is omitted)
 # @tk-arg: --max-lines | optional | int | Maximum section lines to return (default: 60)
 # @tk-output: json | {path, mode, count, headings} or {path, heading, level, start_line, end_line, truncated, content}
-# @tk-example: tk run md.section --path VISION.md --heading outline --max-lines 40
+# @tk-example: tk run md.section --path VISION.md --outline --max-lines 40
 # @tk-verified: 2026-11-04
 
 import json
@@ -14,7 +15,8 @@ import os
 import re
 import sys
 
-FIX = "tk run md.section --path VISION.md --heading outline --max-lines 40"
+FIX = "tk run md.section --path VISION.md --outline --max-lines 40"
+_TRUE = {"true", "1", "yes"}
 _ATX = re.compile(r"^(#{1,6})[ \t]+(.*)$")
 _FENCE = re.compile(r"^[ \t]{0,3}(```+|~~~+)")
 
@@ -63,6 +65,10 @@ def outline(path: str, heads: list[dict], max_lines: int) -> dict:
     }
 
 
+def want_tree(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in _TRUE
+
+
 def section(path: str, text: str, heads: list[dict], query: str, max_lines: int) -> dict | None:
     needle = query.casefold()
     match = next((item for item in heads if needle in item["title"].casefold()), None)
@@ -91,7 +97,8 @@ def section(path: str, text: str, heads: list[dict], query: str, max_lines: int)
 
 def main() -> int:
     path = os.environ.get("TK_ARG_PATH", "")
-    heading = os.environ.get("TK_ARG_HEADING") or "outline"
+    heading = (os.environ.get("TK_ARG_HEADING") or "").strip()
+    tree = want_tree(os.environ.get("TK_ARG_OUTLINE"))
     raw_limit = os.environ.get("TK_ARG_MAX_LINES") or "60"
     dry = os.environ.get("TK_DRY_RUN", "0") == "1"
     try:
@@ -107,6 +114,7 @@ def main() -> int:
                 "dry_run": True,
                 "path": path,
                 "heading": heading,
+                "outline": tree,
                 "max_lines": max_lines,
             }
         )
@@ -119,13 +127,14 @@ def main() -> int:
     except OSError as exc:
         return fail("not_found", str(exc), 1)
     heads = headings_of(text)
-    titled_outline = any("outline" in item["title"].casefold() for item in heads)
-    if heading == "outline" or (heading.casefold() == "outline" and not titled_outline):
+    if tree or not heading:
         return emit(outline(path, heads, max_lines))
     payload = section(path, text, heads, heading, max_lines)
-    if payload is None:
-        return fail("heading_not_found", f"no heading contains: {heading}", 1)
-    return emit(payload)
+    if payload is not None:
+        return emit(payload)
+    if heading.casefold() == "outline":
+        return emit(outline(path, heads, max_lines))
+    return fail("heading_not_found", f"no heading contains: {heading}", 1)
 
 
 if __name__ == "__main__":
