@@ -1,7 +1,55 @@
 #!/bin/sh
 # Idempotent install: symlink tk and the agent-toolkit skill into the user paths.
 # Does not change git core.hooksPath; prints the command to opt in.
+# --dry-run prints each planned directory and each symlink (source -> target) and writes nothing.
 set -eu
+
+dry_run=0
+saw_unknown=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)
+            dry_run=1
+            ;;
+        *)
+            saw_unknown=1
+            ;;
+    esac
+done
+
+# Single-quote a word so the usage line is one copy-pasteable command.
+quote_word() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._@/:+=,-]*)
+            ;;
+        *)
+            printf '%s' "$1"
+            return 0
+            ;;
+    esac
+    quoted=
+    rest=$1
+    while [ -n "$rest" ]; do
+        first=${rest%"${rest#?}"}
+        rest=${rest#?}
+        if [ "$first" = "'" ]; then
+            quoted="${quoted}'\\''"
+        else
+            quoted="${quoted}${first}"
+        fi
+    done
+    printf "'%s'" "$quoted"
+}
+
+if [ "$saw_unknown" -eq 1 ]; then
+    if [ "$dry_run" -eq 1 ]; then
+        printf 'usage: %s --dry-run\n' "$(quote_word "$0")" >&2
+    else
+        printf 'usage: %s\n' "$(quote_word "$0")" >&2
+    fi
+    exit 1
+fi
+
 # shellcheck disable=SC1007 # empty CDPATH= prefix so cd ignores a caller CDPATH
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 SKILL_SRC="${REPO_ROOT}/skills/agent-toolkit"
@@ -88,6 +136,41 @@ encode_dir() {
     printf '%s' "$out"
 }
 
+make_dir() {
+    if [ "$dry_run" -eq 1 ]; then
+        if [ -d "$1" ]; then
+            return 0
+        fi
+        parent=$(dirname -- "$1")
+        if [ "$parent" != "$1" ]; then
+            make_dir "$parent"
+        fi
+        # $1 is scoped to this call; a global would be clobbered by the recursive call.
+        printf 'mkdir %s\n' "$1"
+        return 0
+    fi
+    mkdir -p "$1"
+}
+
+make_link() {
+    src=$1
+    dest=$2
+    if [ "$dry_run" -eq 1 ]; then
+        printf '%s -> %s\n' "$src" "$dest"
+        return 0
+    fi
+    ln -sfn "$src" "$dest"
+}
+
+remove_path() {
+    path=$1
+    if [ "$dry_run" -eq 1 ]; then
+        printf 'rm %s\n' "$path"
+        return 0
+    fi
+    rm -f "$path"
+}
+
 dir_listed() {
     needle=$1
     [ -s "$skill_dirs_file" ] || return 1
@@ -112,7 +195,7 @@ link_skill() {
         old_target=$(readlink "$old_dest")
         old_ours="${REPO_ROOT}/skills/toolkit"
         if [ "$old_target" = "$old_ours" ] || [ "$old_target" = "${SKILL_SRC}" ]; then
-            rm -f "$old_dest"
+            remove_path "$old_dest"
         fi
     fi
     if [ -e "$dest" ] && [ ! -L "$dest" ]; then
@@ -123,8 +206,8 @@ link_skill() {
         fi
         return 0
     fi
-    mkdir -p "$dest_parent"
-    ln -sfn "${SKILL_SRC}" "$dest"
+    make_dir "$dest_parent"
+    make_link "${SKILL_SRC}" "$dest"
     append_link "$dest"
 }
 
@@ -136,8 +219,8 @@ if ! command -v gh >/dev/null 2>&1; then
     emit_diag "gh_missing" "gh is not on PATH; GitHub tools will fail" "$(install_hint gh)"
 fi
 
-mkdir -p "${HOME}/.local/bin"
-ln -sfn "${REPO_ROOT}/tk" "${HOME}/.local/bin/tk"
+make_dir "${HOME}/.local/bin"
+make_link "${REPO_ROOT}/tk" "${HOME}/.local/bin/tk"
 
 skill_dirs_file=$(mktemp)
 trap 'rm -f "$skill_dirs_file"' EXIT
@@ -172,6 +255,9 @@ if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         "hooksPath_unchanged" \
         "default install does not change core.hooksPath" \
         "git -C \"${REPO_ROOT}\" config core.hooksPath .githooks"
+fi
+if [ "$dry_run" -eq 1 ]; then
+    exit 0
 fi
 check_out=$("${REPO_ROOT}/tk" check --json)
 bin_json=$(json_escape "${HOME}/.local/bin/tk")
