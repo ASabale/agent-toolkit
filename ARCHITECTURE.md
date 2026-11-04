@@ -31,7 +31,8 @@ flowchart LR
 | `tk info <name>` | Consumer (Optional) | Prints full argument table and safety details only when deeper inspection is needed. |
 | `tk chain <name> [steps...]` | Consumer / Evolver | Runs or saves a deterministic pipeline where step $N$'s JSON output feeds step $N+1$. |
 | `tk save <name> ...` | Evolver | Turns a working command or script into a single-file tool in `tools/` and validates it with `tk check`. |
-| `tk evolve` | Evolver | Inspects `state/events.jsonl` to promote recurring patterns and prune/consolidate unused or overlapping tools. |
+| `tk evolve` | Evolver | Inspects `state/events.jsonl` to promote recurring patterns and consolidate unused or overlapping tools. |
+| `tk prune [<name> ...] [--unused] [--dry-run]` | Evolver | Removes tools by name, or with `--unused` removes tools flagged by `tk evolve` as unused (protecting those referenced by chains). |
 | `tk check [name]` | Maintainer | Validates header completeness, flag parity, dry-run support, and output compactness. |
 
 ### Global Modifiers (Order-Independent)
