@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -103,15 +104,31 @@ class InstallTests(unittest.TestCase):
                 dest.symlink_to(src)
         return str(bin_dir)
 
-    def _install(self, extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def _install(
+        self,
+        extra: dict[str, str] | None = None,
+        args: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["sh", str(self.repo / "install.sh")],
+            ["sh", str(self.repo / "install.sh"), *args],
             capture_output=True,
             text=True,
             cwd=self.repo,
             env=self._env(extra),
             check=False,
         )
+
+    def _snapshot(self, root: Path) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        for path in sorted(root.rglob("*")):
+            rel = str(path.relative_to(root))
+            if path.is_symlink():
+                rows.append((rel, f"link:{os.readlink(path)}"))
+            elif path.is_dir():
+                rows.append((rel, "dir"))
+            else:
+                rows.append((rel, path.read_text(encoding="utf-8")))
+        return rows
 
     def _payload(self, extra: dict[str, str] | None = None) -> dict:
         proc = self._install(extra)
@@ -147,6 +164,23 @@ class InstallTests(unittest.TestCase):
                 return payload
             found.append(payload)
         self.fail(f"no JSON {key} {code or ''} on stderr: {proc.stderr!r} ({found})")
+
+    def _run_at_repo_root(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            cwd=self.repo,
+            env=self._env(),
+            check=False,
+        )
+
+    def _command_from_usage(self, stderr: str) -> str:
+        lines = stderr.splitlines()
+        self.assertEqual(len(lines), 1, stderr)
+        prefix = "usage: "
+        self.assertTrue(lines[0].startswith(prefix), stderr)
+        return lines[0][len(prefix):]
 
     def test_no_claude_dir_links_only_agents_skill(self) -> None:
         payload = self._payload()
@@ -341,6 +375,210 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(len(notes), 1, proc.stderr)
         self.assertIn("core.hooksPath", notes[0]["why"] + notes[0]["fix"])
         self.assertIn("config core.hooksPath .githooks", notes[0]["fix"])
+
+    def test_dry_run_creates_nothing_in_temp_home(self) -> None:
+        before = self._snapshot(self.home)
+        marker = self.repo / "tk-ran"
+        tk = self.repo / "tk"
+        tk.write_text(
+            "#!/bin/sh\n"
+            "touch \"$(dirname \"$0\")/tk-ran\"\n"
+            "printf '%s\\n' '{\"ok\":true}'\n",
+            encoding="utf-8",
+        )
+        tk.chmod(tk.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        proc = self._install(args=("--dry-run",))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._snapshot(self.home), before)
+        self.assertFalse(marker.exists())
+        self.assertFalse((self.home / ".local").exists())
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_dry_run_output_lists_expected_targets(self) -> None:
+        proc = self._install(args=("--dry-run",))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        home = str(self.home)
+        repo = str(self.repo)
+        self.assertEqual(
+            proc.stdout.splitlines(),
+            [
+                f"mkdir {home}/.local",
+                f"mkdir {home}/.local/bin",
+                f"{repo}/tk -> {home}/.local/bin/tk",
+                f"mkdir {home}/.agents",
+                f"mkdir {home}/.agents/skills",
+                f"{repo}/skills/agent-toolkit -> {home}/.agents/skills/agent-toolkit",
+            ],
+        )
+
+    def test_dry_run_lists_claude_and_extra_skill_dirs(self) -> None:
+        (self.home / ".claude").mkdir()
+        extra = self.tmp / "extra skills"
+        proc = self._install(args=("--dry-run",), extra={"TK_SKILL_DIRS": str(extra)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        home = str(self.home)
+        repo = str(self.repo)
+        self.assertEqual(
+            proc.stdout.splitlines(),
+            [
+                f"mkdir {home}/.local",
+                f"mkdir {home}/.local/bin",
+                f"{repo}/tk -> {home}/.local/bin/tk",
+                f"mkdir {home}/.agents",
+                f"mkdir {home}/.agents/skills",
+                f"{repo}/skills/agent-toolkit -> {home}/.agents/skills/agent-toolkit",
+                f"mkdir {home}/.claude/skills",
+                f"{repo}/skills/agent-toolkit -> {home}/.claude/skills/agent-toolkit",
+                f"mkdir {extra}",
+                f"{repo}/skills/agent-toolkit -> {extra}/agent-toolkit",
+            ],
+        )
+        self.assertFalse((self.home / ".local").exists())
+        self.assertFalse(extra.exists())
+        self.assertEqual(self._snapshot(self.home), [(".claude", "dir")])
+
+    def test_real_run_still_creates_bin_and_skill_paths(self) -> None:
+        proc = self._install()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        tk_link = self.home / ".local" / "bin" / "tk"
+        skill = self.home / ".agents" / "skills" / "agent-toolkit"
+        self.assertTrue(tk_link.is_symlink(), tk_link)
+        self.assertEqual(tk_link.resolve(), (self.repo / "tk").resolve())
+        self._assert_skill_link(skill)
+        self.assertEqual(payload["installed"], True)
+        self.assertEqual(payload["bin"], str(tk_link))
+        self.assertEqual(payload["skill"], str(skill))
+        self.assertEqual(payload["skill_links"], [str(skill)])
+        self.assertEqual(payload["skill_links_skipped"], [])
+
+    def test_dry_run_then_real_run_creates_the_planned_paths(self) -> None:
+        preview = self._install(args=("--dry-run",))
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(self._snapshot(self.home), [])
+        proc = self._install()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((self.home / ".local" / "bin" / "tk").is_symlink())
+        self._assert_skill_link(self.home / ".agents" / "skills" / "agent-toolkit")
+        for line in preview.stdout.splitlines():
+            if line.startswith("mkdir "):
+                self.assertTrue(Path(line.removeprefix("mkdir ")).is_dir(), line)
+            elif " -> " in line:
+                _src, dest = line.split(" -> ", 1)
+                self.assertTrue(Path(dest).is_symlink(), line)
+
+    def test_dry_run_leaves_existing_tree_unchanged(self) -> None:
+        first = self._install()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = self._snapshot(self.home)
+        proc = self._install(args=("--dry-run",))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._snapshot(self.home), before)
+        home = str(self.home)
+        repo = str(self.repo)
+        self.assertEqual(
+            proc.stdout.splitlines(),
+            [
+                f"{repo}/tk -> {home}/.local/bin/tk",
+                f"{repo}/skills/agent-toolkit -> {home}/.agents/skills/agent-toolkit",
+            ],
+        )
+
+    def test_dry_run_does_not_remove_old_toolkit_symlink(self) -> None:
+        parent = self.home / ".agents" / "skills"
+        parent.mkdir(parents=True)
+        old = parent / "toolkit"
+        old.symlink_to(self.repo / "skills" / "toolkit")
+        before = self._snapshot(self.home)
+        proc = self._install(args=("--dry-run",))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._snapshot(self.home), before)
+        self.assertTrue(old.is_symlink())
+        self.assertIn(f"rm {old}", proc.stdout.splitlines())
+        self.assertIn(
+            f"{self.repo}/skills/agent-toolkit -> {parent / 'agent-toolkit'}",
+            proc.stdout.splitlines(),
+        )
+
+    def test_dry_run_does_not_replace_real_skill_dir(self) -> None:
+        dest = self.home / ".agents" / "skills" / "agent-toolkit"
+        dest.mkdir(parents=True)
+        marker = dest / "keep-me"
+        marker.write_text("owned\n", encoding="utf-8")
+        before = self._snapshot(self.home)
+        proc = self._install(args=("--dry-run",))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._snapshot(self.home), before)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "owned\n")
+        self.assertNotIn(
+            f"{self.repo}/skills/agent-toolkit -> {dest}",
+            proc.stdout.splitlines(),
+        )
+        self.assertIn(
+            f"{self.repo}/tk -> {self.home}/.local/bin/tk",
+            proc.stdout.splitlines(),
+        )
+
+    def test_unknown_flag_exits_nonzero_with_corrected_usage(self) -> None:
+        script = str(self.repo / "install.sh")
+        before = self._snapshot(self.home)
+        proc = self._install(args=("--not-a-flag",))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr.splitlines(), [f"usage: {script}"])
+        self.assertEqual(self._snapshot(self.home), before)
+        self.assertFalse((self.home / ".local").exists())
+
+    def test_unknown_flag_quotes_corrected_command_when_path_has_spaces(self) -> None:
+        spaced = self.tmp / "dir with space"
+        spaced.mkdir()
+        script = spaced / "install.sh"
+        shutil.copy2(self.repo / "install.sh", script)
+        before = self._snapshot(self.home)
+        proc = subprocess.run(
+            ["sh", str(script), "--nope"],
+            capture_output=True,
+            text=True,
+            cwd=spaced,
+            env=self._env(),
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr.splitlines(), [f"usage: '{script}'"])
+        self.assertEqual(self._snapshot(self.home), before)
+
+    def test_bad_flag_usage_runs_verbatim_from_repo_root(self) -> None:
+        cases = (
+            (["sh", "install.sh", "--badflag"], ["./install.sh"]),
+            (["./install.sh", "--badflag"], ["./install.sh"]),
+            (["sh", "install.sh", "--badflag", "--dry-run"], ["./install.sh", "--dry-run"]),
+            (["./install.sh", "--dry-run", "--badflag"], ["./install.sh", "--dry-run"]),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                before = self._snapshot(self.home)
+                proc = self._run_at_repo_root(argv)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout, "")
+                self.assertEqual(self._snapshot(self.home), before)
+                command = self._command_from_usage(proc.stderr)
+                parsed = shlex.split(command)
+                self.assertEqual(parsed, expected, command)
+                replay_argv = parsed if "--dry-run" in parsed else [*parsed, "--dry-run"]
+                replay = self._run_at_repo_root(replay_argv)
+                self.assertEqual(replay.returncode, 0, replay.stderr)
+                self.assertNotIn("usage:", replay.stderr)
+                self.assertEqual(self._snapshot(self.home), before)
+
+    def test_unknown_flag_keeps_dry_run_in_corrected_usage(self) -> None:
+        script = str(self.repo / "install.sh")
+        before = self._snapshot(self.home)
+        proc = self._install(args=("--bogus", "--dry-run"))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr.splitlines(), [f"usage: {script} --dry-run"])
+        self.assertEqual(self._snapshot(self.home), before)
 
     def test_default_install_leaves_unset_hooks_path(self) -> None:
         subprocess.run(["git", "init"], cwd=self.repo, check=True, capture_output=True)
