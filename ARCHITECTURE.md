@@ -63,6 +63,8 @@ Sidecar manifests (`.yaml` + `.sh`) inevitably drift. In `agent-toolkit`, **the 
 ### Runtime Environment Passed to Tools
 Before invoking a tool script, `tk run` parses and validates all `@tk-arg` flags and injects them as normalized environment variables (`TK_ARG_<UPPER_NAME>`, plus `TK_DRY_RUN=0|1`). Tools never need to write fragile `getopts` or `argparse` boilerplate—the dispatcher handles validation and help generation for every language (`.sh`, `.py`, `.ts`).
 
+Python tools may import `lib.tool_sdk` (opt-in, stdlib only). The Python example in `tools/.template` reaches the repo root with `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`, which assumes the tool lives at `tools/<ns>/<file>.py`. The tool stays a single file: the import is not a sidecar manifest, and the `# @tk-*` header remains the contract.
+
 ---
 
 ## 3. Composition Engine (`chains/`)
