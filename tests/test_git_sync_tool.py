@@ -114,27 +114,31 @@ class GitSyncTests(unittest.TestCase):
             self.assertIn("local.txt", porcelain.stdout)
 
     def test_dry_run_plan_is_fetch_and_pull_rebase_autostash(self) -> None:
-        proc = _run(
-            {
-                "TK_ARG_REPO": ".",
-                "TK_ARG_REMOTE": "origin",
-                "TK_ARG_BRANCH": "main",
-                "TK_DRY_RUN": "1",
-            }
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        payload = json.loads(proc.stdout)
-        self.assertIs(payload["dry_run"], True)
-        self.assertEqual(len(payload["plan"]), 3)
-        self.assertEqual(
-            payload["plan"],
-            [
-                "git fetch origin main",
-                "git pull --rebase --autostash origin main",
-                "git push --force-with-lease --set-upstream origin <current-feature-branch>",
-            ],
-        )
-        self.assertIn("push", " ".join(payload["plan"]))
+        with tempfile.TemporaryDirectory() as tmp:
+            _origin, _clone_a, clone_b = _pair(Path(tmp))
+            _ok(clone_b, "checkout", "-b", "feature")
+            proc = _run(
+                {
+                    "TK_ARG_REPO": str(clone_b),
+                    "TK_ARG_REMOTE": "origin",
+                    "TK_ARG_BRANCH": "main",
+                    "TK_DRY_RUN": "1",
+                }
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertIs(payload["dry_run"], True)
+            self.assertEqual(payload["branch"], "feature")
+            self.assertEqual(len(payload["plan"]), 3)
+            self.assertEqual(
+                payload["plan"],
+                [
+                    "git fetch origin main",
+                    "git pull --rebase --autostash origin main",
+                    "git push --force-with-lease --set-upstream origin feature",
+                ],
+            )
+            self.assertIn("push", " ".join(payload["plan"]))
 
     def test_conflict_aborts_rebase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
