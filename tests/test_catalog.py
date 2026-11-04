@@ -615,6 +615,89 @@ exit 2
         self.assertIn("invalid default for --verbose: maybe is not bool", result["errors"])
         self.assertFalse(any("ratio" in err and "invalid default" in err for err in result["errors"]))
 
+    def _chain_with_json_pick(self, root: Path, pick_keys: str, tool_output: str):
+        """Create a tool with explicit output and a chain that pipes to json.pick."""
+        tool_text = (
+            "#!/usr/bin/env bash\n"
+            "# @tk-name: producer.tool\n"
+            "# @tk-summary: Produces structured output\n"
+            "# @tk-safety: read-only\n"
+            "# @tk-arg: --target | required | string | Target\n"
+            f"# @tk-output: {tool_output}\n"
+            "# @tk-example: tk run producer.tool --target example\n"
+            "# @tk-verified: none\n"
+            "\n"
+            "if [[ \"${TK_DRY_RUN:-0}\" == \"1\" ]]; then\n"
+            "  printf '%s\\n' '{\"dry_run\":true}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "printf '%s\\n' '{\"a\":1}'\n"
+        )
+        _write(root / "tools" / "producer" / "tool", tool_text, executable=True)
+        _write(
+            root / "tools" / "json" / "pick",
+            _bash_tool(
+                "json.pick",
+                "Keep only named keys",
+                args=[("--keys", "required", "string", "Comma-separated keys")],
+                example="tk run json.pick --keys a,b",
+            ),
+            executable=True,
+        )
+        chain = root / "chains" / "test.pipeline.json"
+        chain.parent.mkdir(parents=True, exist_ok=True)
+        chain.write_text(json.dumps({
+            "name": "test.pipeline",
+            "summary": "Producer then pick",
+            "safety": "read-only",
+            "args": [{"flag": "--target", "required": True, "type": "string", "description": "Target"}],
+            "steps": [
+                {"tool": "producer.tool", "args": {"target": "$input.target"}},
+                {"tool": "json.pick", "args": {"keys": pick_keys}},
+            ],
+            "output": "json | object",
+            "example": "tk run test.pipeline --target example",
+            "verified": "none",
+        }), encoding="utf-8")
+
+    def test_check_item_chain_json_pick_missing_key_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_json_pick(root, "a,b,missing", "json | {a, b, c}")
+            result = check_item(root, "test.pipeline")
+        self.assertFalse(result["ok"])
+        self.assertIn("step 1 (json.pick) key 'missing' not in upstream producer.tool output", result["errors"])
+
+    def test_check_item_chain_json_pick_all_keys_present_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_json_pick(root, "a,b", "json | {a, b, c}")
+            result = check_item(root, "test.pipeline")
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(result["errors"], [])
+
+    def test_check_item_chain_upstream_output_not_braces_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_json_pick(root, "missing,keys", "json | distilled object")
+            result = check_item(root, "test.pipeline")
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_check_item_chain_json_pick_nested_output_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_json_pick(root, "repo,pr,fail,pass", "json | {repo, pr, fail:[{name, url}], pending, pass}")
+            result = check_item(root, "test.pipeline")
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_check_item_chain_json_pick_nested_missing_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_json_pick(root, "repo,checks", "json | {repo, pr, fail:[{name, url}], pending, pass}")
+            result = check_item(root, "test.pipeline")
+        self.assertFalse(result["ok"])
+        self.assertIn("step 1 (json.pick) key 'checks' not in upstream producer.tool output", result["errors"])
+
 
 class SuggestClosestItemTests(unittest.TestCase):
     def test_close_name_then_token_fallback_then_none(self):
