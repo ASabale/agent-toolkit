@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -62,15 +63,32 @@ def _repo_fixture() -> dict:
 
 
 REPO_FIXTURE = _repo_fixture()
+OVERSIZE_REPO_FIXTURE = {
+    "name": "Hello-World",
+    "full_name": "octocat/Hello-World",
+    "owner": {"login": "octocat", "id": 1},
+    "description": "GitHub repo fixture used to measure default json-get size.",
+    "stargazers_count": 1842,
+    "blob": "x" * 3000,
+}
+OVERSIZE_ARRAY_FIXTURE = [
+    {"id": index, "name": f"item-{index:02d}", "desc": "y" * 80}
+    for index in range(50)
+]
 
 
 class _RepoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path == "/repos":
+        path = self.path.split("?", 1)[0]
+        if path == "/repos":
             body = json.dumps(REPO_FIXTURE).encode("utf-8")
-        elif self.path == "/tiny":
+        elif path == "/repo":
+            body = json.dumps(OVERSIZE_REPO_FIXTURE).encode("utf-8")
+        elif path == "/list":
+            body = json.dumps(OVERSIZE_ARRAY_FIXTURE).encode("utf-8")
+        elif path == "/tiny":
             body = json.dumps({"ok": True, "n": 1}).encode("utf-8")
-        elif self.path == "/items":
+        elif path == "/items":
             body = json.dumps(
                 [
                     {"owner": {"login": "ada"}, "stargazers_count": 3, "name": "a"},
@@ -168,6 +186,80 @@ class JsonGetDistillTests(unittest.TestCase):
                 {"owner": {"login": "grace"}, "stargazers_count": 9},
             ],
         )
+
+    def _oversize_query_url(self) -> str:
+        return f"{self.base}/repo?a=1&b=2"
+
+    def _oversize_array_url(self) -> str:
+        return f"{self.base}/list?a=1&b=2"
+
+    def _run_fix_through_shell(self, fix: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        for key in list(env):
+            if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+                env.pop(key, None)
+        env["TK_NO_TELEMETRY"] = "1"
+        env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
+        return subprocess.run(
+            fix,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+        )
+
+    def test_fix_quotes_url_with_query_ampersand(self) -> None:
+        url = self._oversize_query_url()
+        proc = _run(JSON_GET, {"TK_ARG_URL": url})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["truncated"])
+        argv = shlex.split(payload["fix"])
+        self.assertEqual(argv[0], "tk")
+        self.assertIn("--url", argv)
+        self.assertEqual(argv[argv.index("--url") + 1], url)
+        self.assertIn("--keys", argv)
+        keys = argv[argv.index("--keys") + 1]
+        self.assertTrue(keys)
+        self.assertNotEqual(keys, "all")
+        self.assertIn(shlex.quote(url), payload["fix"])
+        self.assertIn(shlex.quote(keys), payload["fix"])
+
+    def _assert_verbatim_fix_narrows(self, url: str) -> dict:
+        proc = _run(JSON_GET, {"TK_ARG_URL": url})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["truncated"])
+        argv = shlex.split(payload["fix"])
+        self.assertEqual(argv[argv.index("--url") + 1], url)
+        self.assertIn("--keys", argv)
+        keys = argv[argv.index("--keys") + 1]
+        self.assertNotEqual(keys, "all")
+        healed = self._run_fix_through_shell(payload["fix"])
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+        raw = healed.stdout.encode("utf-8")
+        narrowed = json.loads(healed.stdout)
+        under_cap = len(raw.rstrip(b"\n")) <= _MAX_DEFAULT_BYTES
+        not_truncated = not (isinstance(narrowed, dict) and narrowed.get("truncated"))
+        self.assertTrue(
+            under_cap or not_truncated,
+            f"fix {payload['fix']!r} returned {len(raw)} B truncated={isinstance(narrowed, dict) and narrowed.get('truncated')}",
+        )
+        return {"payload": payload, "keys": keys, "narrowed": narrowed, "raw": raw}
+
+    def test_fix_command_run_verbatim_stays_under_cap(self) -> None:
+        object_case = self._assert_verbatim_fix_narrows(self._oversize_query_url())
+        self.assertNotIn("blob", object_case["payload"])
+        self.assertNotIn("blob", object_case["keys"].split(","))
+        self.assertLessEqual(len(object_case["raw"].rstrip(b"\n")), _MAX_DEFAULT_BYTES)
+        self.assertNotIn("blob", object_case["narrowed"])
+        self.assertNotIn("truncated", object_case["narrowed"])
+
+        array_case = self._assert_verbatim_fix_narrows(self._oversize_array_url())
+        self.assertNotEqual(array_case["keys"], "all")
+        if isinstance(array_case["narrowed"], dict):
+            self.assertNotIn("truncated", array_case["narrowed"])
 
 
 class CodeSearchBoundTests(unittest.TestCase):

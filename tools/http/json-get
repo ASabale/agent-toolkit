@@ -11,6 +11,7 @@
 
 import json
 import os
+import shlex
 import sys
 import urllib.error
 import urllib.parse
@@ -80,12 +81,14 @@ def filter_keys(data, keys_raw: str):
     return data
 
 
-def _suggest_keys(data) -> str:
-    if not isinstance(data, dict):
-        return "all"
+def _dict_key_hints(data: dict) -> list[str]:
     hints: list[str] = []
     for key, value in data.items():
+        if key in {"truncated", "fix"}:
+            continue
         if _is_scalar(value):
+            if isinstance(value, str) and len(value) > 160:
+                continue
             hints.append(key)
         elif isinstance(value, dict):
             nested = next(
@@ -94,19 +97,49 @@ def _suggest_keys(data) -> str:
             )
             if nested:
                 hints.append(f"{key}.{nested}")
-        if len(hints) >= 6:
+    return hints
+
+
+def _suggest_list_keys(items: list) -> str:
+    first = next((item for item in items if isinstance(item, dict)), None)
+    if first is None:
+        return "all"
+    chosen: list[str] = []
+    for key in _dict_key_hints(first):
+        trial = [*chosen, key]
+        filtered = filter_keys(items, ",".join(trial))
+        if _encoded_size(filtered) <= _MAX_DEFAULT_BYTES:
+            chosen = trial
+        elif not chosen:
+            chosen = [key]
             break
+        else:
+            break
+    return ",".join(chosen) if chosen else "all"
+
+
+def _suggest_keys(data) -> str:
+    if isinstance(data, list):
+        return _suggest_list_keys(data)
+    if not isinstance(data, dict):
+        return "all"
+    hints = _dict_key_hints(data)
     return ",".join(hints) if hints else "all"
 
 
 def _narrow_fix(url: str, data) -> str:
-    return f"tk run http.json-get --url {url} --keys {_suggest_keys(data)}"
+    return (
+        "tk run http.json-get"
+        f" --url {shlex.quote(url)}"
+        f" --keys {shlex.quote(_suggest_keys(data))}"
+    )
 
 
-def _with_truncation(kept, url: str, source) -> dict:
+def _with_truncation(kept, url: str, source=None) -> dict:
     payload = dict(kept) if isinstance(kept, dict) else {"items": list(kept)}
     payload["truncated"] = True
-    payload["fix"] = _narrow_fix(url, source)
+    hint = source if isinstance(source, list) else kept
+    payload["fix"] = _narrow_fix(url, hint)
     return payload
 
 
@@ -139,9 +172,9 @@ def _cap_object(data: dict, url: str) -> dict:
     for key, value in ranked:
         candidate = dict(kept)
         candidate[key] = value
-        if _encoded_size(_with_truncation(candidate, url, data)) <= _MAX_DEFAULT_BYTES:
+        if _encoded_size(_with_truncation(candidate, url)) <= _MAX_DEFAULT_BYTES:
             kept = candidate
-    return _with_truncation(kept, url, data)
+    return _with_truncation(kept, url)
 
 
 def _cap_list(data: list, url: str) -> dict:
@@ -161,7 +194,7 @@ def distill_default(data, url: str):
         return _cap_object(data, url)
     if isinstance(data, list):
         return _cap_list(data, url)
-    return _with_truncation({}, url, data)
+    return _with_truncation({}, url)
 
 
 def main() -> int:
