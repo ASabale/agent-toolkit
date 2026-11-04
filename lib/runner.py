@@ -546,12 +546,7 @@ def run_tool(
 
         env = os.environ.copy()
         env.update(built)
-        root = str(root_dir)
-        env["TK_ROOT_DIR"] = root
-        prior_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            root if not prior_pythonpath else root + os.pathsep + prior_pythonpath
-        )
+        env["TK_ROOT_DIR"] = str(root_dir)
         timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)
         proc = subprocess.Popen(
             [str(item["path"])],
