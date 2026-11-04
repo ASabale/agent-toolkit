@@ -12,11 +12,21 @@ ROOT = Path(__file__).resolve().parents[1]
 SYNC = ROOT / "tools/git/sync"
 
 
+def _identity() -> dict[str, str]:
+    return {
+        "GIT_AUTHOR_NAME": "Ada",
+        "GIT_AUTHOR_EMAIL": "ada@example.com",
+        "GIT_COMMITTER_NAME": "Ada",
+        "GIT_COMMITTER_EMAIL": "ada@example.com",
+    }
+
+
 def _run(env: dict) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     for key in list(merged):
         if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
             merged.pop(key, None)
+    merged.update(_identity())
     merged.update(env)
     merged.setdefault("TK_DRY_RUN", "0")
     return subprocess.run(
@@ -29,10 +39,7 @@ def _run(env: dict) -> subprocess.CompletedProcess[str]:
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"] = "Ada"
-    env["GIT_AUTHOR_EMAIL"] = "ada@example.com"
-    env["GIT_COMMITTER_NAME"] = "Ada"
-    env["GIT_COMMITTER_EMAIL"] = "ada@example.com"
+    env.update(_identity())
     return subprocess.run(
         ["git", "-C", str(repo), *args],
         capture_output=True,
@@ -58,6 +65,8 @@ def _pair(tmp: Path) -> tuple[Path, Path, Path]:
     )
     clone_a = tmp / "clone_a"
     _ok(tmp, "init", "-b", "main", str(clone_a))
+    _ok(clone_a, "config", "user.name", "Ada")
+    _ok(clone_a, "config", "user.email", "ada@example.com")
     (clone_a / "shared.txt").write_text("base\n", encoding="utf-8")
     (clone_a / "local.txt").write_text("keep\n", encoding="utf-8")
     _ok(clone_a, "add", "shared.txt", "local.txt")
@@ -71,6 +80,8 @@ def _pair(tmp: Path) -> tuple[Path, Path, Path]:
         capture_output=True,
         text=True,
     )
+    _ok(clone_b, "config", "user.name", "Ada")
+    _ok(clone_b, "config", "user.email", "ada@example.com")
     return origin, clone_a, clone_b
 
 
@@ -82,6 +93,7 @@ class GitSyncTests(unittest.TestCase):
             _ok(clone_a, "add", "shared.txt")
             _ok(clone_a, "commit", "-m", "ahead on a")
             _ok(clone_a, "push", "origin", "main")
+            _ok(clone_b, "checkout", "-b", "feature")
             dirty = clone_b / "local.txt"
             dirty.write_text("keep\ndirty\n", encoding="utf-8")
             proc = _run(
@@ -108,6 +120,7 @@ class GitSyncTests(unittest.TestCase):
             _ok(clone_a, "add", "shared.txt")
             _ok(clone_a, "commit", "-m", "a edit")
             _ok(clone_a, "push", "origin", "main")
+            _ok(clone_b, "checkout", "-b", "feature")
             (clone_b / "shared.txt").write_text("from-b\n", encoding="utf-8")
             _ok(clone_b, "add", "shared.txt")
             _ok(clone_b, "commit", "-m", "b edit")
@@ -116,7 +129,7 @@ class GitSyncTests(unittest.TestCase):
             self.assertIn("rebase_conflict", proc.stderr)
             self.assertEqual(proc.stdout.strip(), "")
             head = _git(clone_b, "symbolic-ref", "--short", "HEAD")
-            self.assertEqual(head.stdout.strip(), "main")
+            self.assertEqual(head.stdout.strip(), "feature")
             rebase = _git(clone_b, "rev-parse", "--git-path", "rebase-merge")
             path = Path(rebase.stdout.strip())
             if not path.is_absolute():
