@@ -52,8 +52,11 @@ class EvolverTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        self._env_patcher = patch.dict(os.environ, {"TK_NO_TELEMETRY": ""}, clear=False)
+        self._env_patcher.start()
 
     def tearDown(self) -> None:
+        self._env_patcher.stop()
         self._tmp.cleanup()
 
     def test_log_event_appends_jsonl_record(self) -> None:
@@ -531,7 +534,7 @@ class EvolverTests(unittest.TestCase):
 
     def test_state_dir_and_telemetry_switch_isolate_writes(self) -> None:
         custom = self.root / "custom-state"
-        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom), "TK_NO_TELEMETRY": ""}):
             log_event(self.root, "search_miss", {"query": "deploy"})
         self.assertFalse((self.root / "state" / "events.jsonl").exists())
         records = [
@@ -547,7 +550,7 @@ class EvolverTests(unittest.TestCase):
 
         broken = self.root / "broken.sh"
         broken.write_text("#!/usr/bin/env bash\nif [;\n", encoding="utf-8")
-        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom), "TK_NO_TELEMETRY": ""}):
             code, _, err = save_tool(
                 self.root,
                 "demo.broken",
@@ -558,7 +561,7 @@ class EvolverTests(unittest.TestCase):
         self.assertFalse((self.root / "state" / "quarantine").exists())
         self.assertTrue(any((custom / "quarantine").iterdir()))
 
-        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom), "TK_NO_TELEMETRY": ""}):
             report = evolve_report(self.root)
         self.assertEqual(report["search_misses"], [{"query": "deploy", "count": 1}])
 
@@ -569,7 +572,7 @@ class EvolverTests(unittest.TestCase):
             from_cmd="printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(ok, 0, err)
-        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom), "TK_NO_TELEMETRY": ""}):
             code, out, err = prune_tools(self.root, ["lab.echo"])
         self.assertEqual(code, 0, err)
         archived = Path(json.loads(out)["archived_to"][0])

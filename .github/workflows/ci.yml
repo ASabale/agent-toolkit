@@ -19,3 +19,5 @@ jobs:
           python3 -c 'import json, subprocess, sys; r = json.loads(subprocess.check_output(["./tk", "run", "wiki.lint", "--path", "wiki"])); sys.exit(0 if r.get("ok") else 1)'
       - name: Unit and token budget tests
         run: python3 -m unittest discover -s tests -v
+        env:
+          TK_NO_TELEMETRY: "1"
