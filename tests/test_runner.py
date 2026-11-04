@@ -245,7 +245,11 @@ class ValidateAndBuildEnvTests(unittest.TestCase):
 
 class RunToolTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._env_patcher = patch.dict(os.environ, {"TK_NO_TELEMETRY": ""}, clear=False)
+        self._env_patcher = patch.dict(
+            os.environ,
+            {"TK_NO_TELEMETRY": "", "TK_STATE_DIR": ""},
+            clear=False,
+        )
         self._env_patcher.start()
 
     def tearDown(self) -> None:
@@ -605,7 +609,11 @@ class RunToolTests(unittest.TestCase):
 
 class RunChainTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._env_patcher = patch.dict(os.environ, {"TK_NO_TELEMETRY": ""}, clear=False)
+        self._env_patcher = patch.dict(
+            os.environ,
+            {"TK_NO_TELEMETRY": "", "TK_STATE_DIR": ""},
+            clear=False,
+        )
         self._env_patcher.start()
 
     def tearDown(self) -> None:

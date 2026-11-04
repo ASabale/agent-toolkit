@@ -33,6 +33,7 @@ class CliIntegrationTests(unittest.TestCase):
         self.tk.chmod(self.tk.stat().st_mode | 0o755)
         self._base_env = os.environ.copy()
         self._base_env["TK_NO_TELEMETRY"] = ""
+        self._base_env["TK_STATE_DIR"] = ""
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
