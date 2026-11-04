@@ -563,6 +563,62 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertNotIn(str(ROOT), rendered)
             self.assertNotIn(str(self.root), rendered)
 
+    def test_caller_lib_is_not_shadowed_by_toolkit(self) -> None:
+        with tempfile.TemporaryDirectory() as external:
+            project = Path(external)
+            src = project / "src"
+            package = src / "lib"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text(
+                '"""caller-lib-value-42"""\nVALUE = 42\n',
+                encoding="utf-8",
+            )
+            tests = project / "tests"
+            tests.mkdir()
+            (tests / "test_caller_lib.py").write_text(
+                "import unittest\n"
+                "import lib\n"
+                "\n"
+                "class CallerLibTests(unittest.TestCase):\n"
+                "    def test_value(self):\n"
+                "        self.assertEqual(lib.VALUE, 42)\n",
+                encoding="utf-8",
+            )
+            env = self._base_env.copy()
+            env["PYTHONPATH"] = str(src)
+            env["TK_NO_TELEMETRY"] = "1"
+
+            digest = self._run(
+                "run",
+                "py.test-digest",
+                "--path",
+                "tests",
+                cwd=project,
+                env=env,
+            )
+            self.assertEqual(digest.returncode, 0, digest.stderr)
+            report = json.loads(digest.stdout)
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(report["ran"], 1)
+            self.assertEqual(report["failed"], 0)
+            self.assertEqual(report["failures"], [])
+            self.assertNotIn(str(self.root / "lib"), json.dumps(report))
+
+            symbol = self._run(
+                "run",
+                "docs.python-symbol",
+                "--target",
+                "lib",
+                cwd=project,
+                env=env,
+            )
+            self.assertEqual(symbol.returncode, 0, symbol.stderr)
+            resolved = json.loads(symbol.stdout)
+            self.assertEqual(resolved["kind"], "module")
+            self.assertEqual(resolved["summary"], "caller-lib-value-42")
+            self.assertNotIn("Agent Toolkit", resolved["doc"])
+            self.assertNotIn(str(self.root), json.dumps(resolved))
+
 
 if __name__ == "__main__":
     unittest.main()

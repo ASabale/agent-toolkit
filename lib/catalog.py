@@ -630,10 +630,7 @@ def _dry_run_error(
             env_var = str(arg.get("env_var") or "")
             if env_var:
                 env[env_var] = _dummy(str(arg.get("type") or "string"))
-    root = str(root_dir if root_dir is not None else path.resolve().parents[2])
-    env["TK_ROOT_DIR"] = root
-    prior_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = root if not prior_pythonpath else root + os.pathsep + prior_pythonpath
+    env["TK_ROOT_DIR"] = str(root_dir if root_dir is not None else path.resolve().parents[2])
 
     def invoke(cwd: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
