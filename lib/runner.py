@@ -493,6 +493,27 @@ def run_tool(
                 _failure(1, err or {"error": "internal_error", "why": "validation failed", "fix": "tk check"}),
             )
 
+        if dry_run:
+            # Lazy import: lib.catalog already imports run_chain from this module.
+            from lib.catalog import _dry_run_guard_error
+
+            guard = _dry_run_guard_error(Path(str(item.get("path") or "")))
+            if guard:
+                name = str(item.get("name") or "")
+                return _record_and_return(
+                    root_dir,
+                    item,
+                    dry_run,
+                    _failure(
+                        1,
+                        {
+                            "error": "dry_run_unsupported",
+                            "why": guard,
+                            "fix": f"tk check {name}".rstrip(),
+                        },
+                    ),
+                )
+
         env = os.environ.copy()
         env.update(built)
         timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)

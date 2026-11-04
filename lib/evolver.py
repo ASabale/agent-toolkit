@@ -528,7 +528,15 @@ def _render_wrapped_tool(name: str, summary: str, safety: str, specs: list[str],
     header = _header_lines(name, summary, safety, specs, _build_example(name, _required_flags(specs)))
     script = "\n".join(header) + "\n\nset -euo pipefail\n"
     script += 'if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then\n'
-    script += "  printf '%s\\n' '{\"dry_run\":true}'\n"
+    if safety in {"mutating", "destructive"}:
+        payload = json.dumps(
+            {"dry_run": True, "plan": [body.rstrip("\n")]},
+            separators=(",", ":"),
+        )
+        quoted = payload.replace("'", "'\\''")
+        script += f"  printf '%s\\n' '{quoted}'\n"
+    else:
+        script += "  printf '%s\\n' '{\"dry_run\":true}'\n"
     script += "  exit 0\n"
     script += "fi\n"
     script += body

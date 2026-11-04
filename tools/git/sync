@@ -50,16 +50,17 @@ def current_branch(repo: str) -> str:
 
 
 def dry_run_payload(repo: str, remote: str, base: str) -> dict:
+    current = current_branch(repo)
     return {
         "dry_run": True,
         "repo": repo,
         "remote": remote,
         "base": base,
-        "branch": "<current-feature-branch>",
+        "branch": current,
         "plan": [
-            f"fetch {remote}/{base}",
-            f"rebase current feature branch onto {remote}/{base}",
-            f"push current feature branch to {remote} (refuse if on main)",
+            f"git fetch {remote} {base}",
+            f"git pull --rebase --autostash {remote} {base}",
+            f"git push --force-with-lease --set-upstream {remote} {current}",
         ],
     }
 
