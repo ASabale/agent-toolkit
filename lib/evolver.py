@@ -28,6 +28,9 @@ _ERROR_EVENTS = {"run_error", "error"}
 _OPTIONAL_ARG_RE = re.compile(r"\$\{TK_ARG_([A-Z][A-Z0-9_]*):-([^}]*)\}")
 _MISS_EVENTS = {"search_miss", "miss"}
 _FAIL_EVENTS = {"run_error", "error"}
+_RUN_OBSERVATION_EVENTS = frozenset({"run_ok", "run_error"})
+# Absence of telemetry is not evidence of non-use. Unused listing starts here.
+MIN_UNUSED_RUN_EVENTS = 50
 _STOPWORDS = {
     "a",
     "an",
@@ -261,6 +264,8 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         "unused_tools": [],
         "overlap_candidates": [],
         "chain_candidates": [],
+        "telemetry": {"events": 0, "run_events": 0, "first_ts": None},
+        "unused_reason": "insufficient_telemetry",
     }
     try:
         root = Path(root_dir)
@@ -294,15 +299,19 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
                     promoted.append(name)
                 elif kind == "chain" and path.is_file() and _promote_chain(path, today):
                     promoted.append(name)
-        unused = sorted(name for name in catalog if name not in used)
-        return {
+        unused, telemetry, unused_reason = _unused_tools(catalog, used, events)
+        report = {
             "promoted": promoted,
             "search_misses": misses,
             "failing_tools": failing,
             "unused_tools": unused,
             "overlap_candidates": _overlap_candidates(catalog),
             "chain_candidates": _chain_candidates(catalog, events),
+            "telemetry": telemetry,
         }
+        if unused_reason:
+            report["unused_reason"] = unused_reason
+        return report
     except Exception:
         return empty
 
@@ -771,6 +780,72 @@ def _read_events(path: Path) -> list[dict]:
         if isinstance(record, dict):
             events.append(record)
     return events
+
+
+def _event_ts(record: dict) -> str | None:
+    value = record.get("ts")
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _parse_event_ts(ts: str | None) -> float | None:
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    text = ts.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def _telemetry_block(events: list[dict]) -> dict:
+    first_ts = None
+    run_events = 0
+    for record in events:
+        if first_ts is None:
+            first_ts = _event_ts(record)
+        if record.get("event") in _RUN_OBSERVATION_EVENTS:
+            run_events += 1
+    return {"events": len(events), "run_events": run_events, "first_ts": first_ts}
+
+
+def _first_run_ts(events: list[dict]) -> str | None:
+    for record in events:
+        if record.get("event") in _RUN_OBSERVATION_EVENTS:
+            ts = _event_ts(record)
+            if ts is not None:
+                return ts
+    return None
+
+
+def _mtime_on_or_before(path: Path, deadline: float) -> bool:
+    try:
+        return path.stat().st_mtime <= deadline
+    except OSError:
+        return False
+
+
+def _unused_tools(
+    catalog: dict[str, dict],
+    used: set[str],
+    events: list[dict],
+) -> tuple[list[str], dict, str | None]:
+    telemetry = _telemetry_block(events)
+    if telemetry["run_events"] < MIN_UNUSED_RUN_EVENTS:
+        return [], telemetry, "insufficient_telemetry"
+    first_run = _parse_event_ts(_first_run_ts(events))
+    unused: list[str] = []
+    for name in sorted(catalog):
+        if name in used:
+            continue
+        path = Path(str(catalog[name].get("path") or ""))
+        if first_run is not None and not _mtime_on_or_before(path, first_run):
+            continue
+        unused.append(name)
+    return unused, telemetry, None
 
 
 def _summarize_events(events: list[dict]) -> tuple[set[str], dict[str, list[str]], list[dict]]:

@@ -6,12 +6,16 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from lib.evolver import MIN_UNUSED_RUN_EVENTS  # noqa: E402
 
 
 class CliIntegrationTests(unittest.TestCase):
@@ -54,6 +58,25 @@ class CliIntegrationTests(unittest.TestCase):
         if not path.is_file():
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def _seed_run_events(self, count: int, name: str = "lab.keep") -> None:
+        path = self.root / "state" / "events.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat()
+        with path.open("a", encoding="utf-8") as handle:
+            for _ in range(count):
+                handle.write(
+                    json.dumps({"ts": ts, "event": "run_ok", "name": name}, separators=(",", ":"))
+                    + "\n"
+                )
+
+    def _assert_insufficient_telemetry(self, proc: subprocess.CompletedProcess[str], run_events: int = 0) -> None:
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout.strip(), "")
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "insufficient_telemetry")
+        self.assertEqual(payload["why"], f"{run_events} run events < {MIN_UNUSED_RUN_EVENTS}")
+        self.assertEqual(payload["fix"], "tk prune <name> --dry-run")
 
     def test_find_logs_misses_and_not_hits(self) -> None:
         hit = self._run("find", "json.pick")
@@ -337,7 +360,9 @@ class CliIntegrationTests(unittest.TestCase):
         before = self._run("evolve")
         self.assertEqual(before.returncode, 0, before.stderr)
         report = json.loads(before.stdout)
-        self.assertIn("lab.echo", report["unused_tools"])
+        self.assertEqual(report["unused_tools"], [])
+        self.assertEqual(report["unused_reason"], "insufficient_telemetry")
+        self.assertEqual(report["telemetry"]["run_events"], 0)
         self.assertIn("lab.echo", report["promoted"])
         self.assertIn(
             {"query": "deploy-status-missing", "count": 1},
@@ -351,6 +376,8 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(ran.returncode, 0, ran.stderr)
         after = json.loads(self._run("evolve").stdout)
         self.assertNotIn("lab.echo", after["unused_tools"])
+        self.assertEqual(after["unused_reason"], "insufficient_telemetry")
+        self.assertEqual(after["telemetry"]["run_events"], 1)
         self.assertIn(
             {"query": "deploy-status-missing", "count": 1},
             after["search_misses"],
@@ -388,6 +415,7 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(chained.returncode, 0, chained.stderr)
         ran = self._run("run", "lab.pipe")
         self.assertEqual(ran.returncode, 0, ran.stderr)
+        self._seed_run_events(MIN_UNUSED_RUN_EVENTS - 1, "lab.pipe")
 
         preview = self._run("prune", "--unused", "--dry-run")
         self.assertEqual(preview.returncode, 0, preview.stderr)
@@ -399,6 +427,64 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertTrue((self.root / "tools" / "lab" / "echo").is_file())
         self.assertTrue((self.root / "tools" / "lab" / "keep").is_file())
         self.assertTrue((self.root / "chains" / "lab.pipe.json").is_file())
+
+    def test_prune_unused_refuses_cold_start_and_archives_nothing(self) -> None:
+        echo = self.root / "tools" / "json" / "pick"
+        chain = self.root / "chains" / "gh.triage-pr.json"
+        self.assertTrue(echo.is_file())
+        self.assertTrue(chain.is_file())
+
+        preview = self._run("prune", "--unused", "--dry-run")
+        self._assert_insufficient_telemetry(preview)
+        self.assertFalse((self.root / "state" / "archive").exists())
+        self.assertTrue(echo.is_file())
+        self.assertTrue(chain.is_file())
+
+        real = self._run("prune", "--unused")
+        self._assert_insufficient_telemetry(real)
+        self.assertFalse((self.root / "state" / "archive").exists())
+        self.assertTrue(echo.is_file())
+        self.assertTrue(chain.is_file())
+
+        named = self._run(
+            "save",
+            "lab.echo",
+            "--summary",
+            "Echo a fixed JSON object",
+            "--from-cmd",
+            "printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(named.returncode, 0, named.stderr)
+        explicit = self._run("prune", "lab.echo", "--dry-run")
+        self.assertEqual(explicit.returncode, 0, explicit.stderr)
+        payload = json.loads(explicit.stdout)
+        self.assertEqual(payload["pruned"], ["lab.echo"])
+        self.assertTrue((self.root / "tools" / "lab" / "echo").is_file())
+
+        archived = self._run("prune", "lab.echo")
+        self.assertEqual(archived.returncode, 0, archived.stderr)
+        self.assertFalse((self.root / "tools" / "lab" / "echo").exists())
+
+        below = self._run("prune", "--unused", "--dry-run")
+        # lab.echo prune may have logged tool_pruned; still no run_ok/run_error.
+        self._assert_insufficient_telemetry(below, 0)
+        self._seed_run_events(MIN_UNUSED_RUN_EVENTS - 1, "json.pick")
+        almost = self._run("prune", "--unused")
+        self._assert_insufficient_telemetry(almost, MIN_UNUSED_RUN_EVENTS - 1)
+        self.assertTrue(echo.is_file())
+        self.assertTrue(chain.is_file())
+
+    def test_evolve_no_promote_fresh_state_prints_telemetry(self) -> None:
+        env = self._base_env.copy()
+        env["TK_STATE_DIR"] = str(self.root / "fresh-state")
+        evolved = self._run("evolve", "--no-promote", env=env)
+        self.assertEqual(evolved.returncode, 0, evolved.stderr)
+        report = json.loads(evolved.stdout)
+        self.assertEqual(report["unused_tools"], [])
+        self.assertEqual(report["unused_reason"], "insufficient_telemetry")
+        self.assertEqual(report["telemetry"]["events"], 0)
+        self.assertEqual(report["telemetry"]["run_events"], 0)
+        self.assertIsNone(report["telemetry"]["first_ts"])
 
 
 if __name__ == "__main__":

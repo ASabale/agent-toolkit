@@ -9,7 +9,7 @@ import stat
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.evolver import (  # noqa: E402
+    MIN_UNUSED_RUN_EVENTS,
     _build_example,
     _overlap_candidates,
     evolve_report,
@@ -63,6 +64,17 @@ class EvolverTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._env_patcher.stop()
         self._tmp.cleanup()
+
+    def _seed_run_events(self, count: int, name: str = "alpha.list-prs") -> None:
+        path = self.root / "state" / "events.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat()
+        with path.open("a", encoding="utf-8") as handle:
+            for _ in range(count):
+                handle.write(
+                    json.dumps({"ts": ts, "event": "run_ok", "name": name}, separators=(",", ":"))
+                    + "\n"
+                )
 
     def test_log_event_appends_jsonl_record(self) -> None:
         log_event(self.root, "search_miss", {"query": "deploy status"})
@@ -445,6 +457,7 @@ class EvolverTests(unittest.TestCase):
         log_event(self.root, "search_miss", {"query": "budget"})
         log_event(self.root, "run", {"name": "alpha.list-prs"})
         log_event(self.root, "run_error", {"name": "beta.ship", "why": "rejected"})
+        self._seed_run_events(MIN_UNUSED_RUN_EVENTS - 1, "alpha.list-prs")
 
         report = evolve_report(self.root, auto_promote=True)
         today = date.today().isoformat()
@@ -703,8 +716,91 @@ class EvolverTests(unittest.TestCase):
                 "unused_tools": [],
                 "overlap_candidates": [],
                 "chain_candidates": [],
+                "telemetry": {"events": 0, "run_events": 0, "first_ts": None},
+                "unused_reason": "insufficient_telemetry",
             },
         )
+
+    def test_evolve_report_cold_start_does_not_list_unused(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "lab.echo",
+            "Echo a fixed JSON object",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        ok, _, err = save_tool(
+            self.root,
+            "lab.stale",
+            "Never-run helper",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+
+        cold = evolve_report(self.root, auto_promote=False)
+        self.assertEqual(cold["unused_tools"], [])
+        self.assertEqual(cold["unused_reason"], "insufficient_telemetry")
+        self.assertEqual(cold["telemetry"]["run_events"], 0)
+        self.assertGreaterEqual(cold["telemetry"]["events"], 1)
+        self.assertIsInstance(cold["telemetry"]["first_ts"], str)
+
+        self._seed_run_events(MIN_UNUSED_RUN_EVENTS - 1, "lab.echo")
+        below = evolve_report(self.root, auto_promote=False)
+        self.assertEqual(below["unused_tools"], [])
+        self.assertEqual(below["unused_reason"], "insufficient_telemetry")
+        self.assertEqual(below["telemetry"]["run_events"], MIN_UNUSED_RUN_EVENTS - 1)
+
+        self._seed_run_events(1, "lab.echo")
+        above = evolve_report(self.root, auto_promote=False)
+        self.assertNotIn("unused_reason", above)
+        self.assertEqual(above["telemetry"]["run_events"], MIN_UNUSED_RUN_EVENTS)
+        self.assertIn("lab.stale", above["unused_tools"])
+        self.assertNotIn("lab.echo", above["unused_tools"])
+
+    def test_evolve_report_skips_tools_newer_than_first_run(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "lab.keep",
+            "Used tool",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        ok, _, err = save_tool(
+            self.root,
+            "lab.stale",
+            "Predates telemetry",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        past = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+        for name in ("keep", "stale"):
+            os.utime(self.root / "tools" / "lab" / name, (past, past))
+
+        first_run = "2020-06-01T00:00:00+00:00"
+        path = self.root / "state" / "events.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            for _ in range(MIN_UNUSED_RUN_EVENTS):
+                handle.write(
+                    json.dumps(
+                        {"ts": first_run, "event": "run_ok", "name": "lab.keep"},
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+
+        ok, _, err = save_tool(
+            self.root,
+            "lab.fresh",
+            "Added after observation started",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+
+        report = evolve_report(self.root, auto_promote=False)
+        self.assertNotIn("unused_reason", report)
+        self.assertIn("lab.stale", report["unused_tools"])
+        self.assertNotIn("lab.keep", report["unused_tools"])
+        self.assertNotIn("lab.fresh", report["unused_tools"])
 
     def test_save_tool_infers_undeclared_tk_arg_headers(self) -> None:
         code, out, err = save_tool(
