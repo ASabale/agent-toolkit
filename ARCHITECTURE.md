@@ -92,9 +92,10 @@ The toolkit evolves from real agent work rather than speculative upfront design:
    - Checks header fields, required flag coverage, and output compactness.
    - Guard: a `mutating` or `destructive` tool with no non-comment `TK_DRY_RUN` reference fails with `<safety> tool must branch on TK_DRY_RUN` and is never executed.
    - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). Every JSON-object dry-run payload must include `"dry_run": true`. `plan` stays required only for `mutating` and `destructive` tools: stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
-3. **Promote (`tk evolve`)**:
-   - **Read-only (`@tk-safety: read-only`)**: Auto-verified via live/smoke execution and marked `@tk-verified: <date>`.
-   - **Mutating (`@tk-safety: mutating`)**: Verifies `--dry-run` output and prompts human/agent confirmation before marking verified.
-   - **Destructive (`@tk-safety: destructive`)**: Requires explicit human sign-off and mandatory `--dry-run` support.
+3. **Promote (`tk evolve` and `tk check <name> --verify`)**:
+   - **Read-only (`@tk-safety: read-only`)**: `tk check` is the verification. `tk evolve` stamps `@tk-verified: <YYYY-MM-DD>` after a passing check and a `run_ok`. `tk check <name> --verify` reports that result and does not rewrite the header.
+   - **Mutating (`@tk-safety: mutating`)**: `tk evolve` never stamps these. `tk check <name> --verify` (exactly one name) runs the tool with `TK_DRY_RUN=1` in a scratch directory and, on a non-empty `plan`, stamps `# @tk-verified: <YYYY-MM-DD>`, logs `tool_verified`, and prints `{"ok":true,"name","safety","verified","plan"}`. A second run is a no-op (exit 0, header unchanged).
+   - **Destructive (`@tk-safety: destructive`)**: `tk evolve` never stamps these. `tk check <name> --verify` exits 2 with `human_signoff_required` and leaves the file unchanged. A human opens a PR that sets `# @tk-verified: <YYYY-MM-DD>`.
+   - `tk check --verify` and `tk check a b --verify` exit 2 with `fix` `tk check <name> --verify`. A name that fails `tk check` exits 1 with `check_failed` and the check errors in `why`.
 4. **Consolidate & Prune (`tk evolve`)**:
    - Flags zero-use or superseded tools for removal and merges overlapping tools so the catalog stays small and low-token.

@@ -4,6 +4,7 @@ Public seam (CODING_STANDARDS.md §2.3):
 - log_event: append-only telemetry; never raises
 - save_tool / save_chain: write a draft, validate with check_item, roll back on failure
 - evolve_report: promote verified-passing read-only tools and chains and summarize friction
+- verify_item: stamp a mutating tool after a scratch dry-run; never stamp destructive
 - prune_tools: archive tools or chains, refusing to break a live chain
 """
 
@@ -14,6 +15,8 @@ import os
 import re
 import shlex
 import stat
+import subprocess
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -892,6 +895,131 @@ def _prune_empty_dirs(start: Path, stop: Path) -> None:
 
 def _check_item(root: Path, name_or_path: str | Path) -> dict:
     return check_item(root, name_or_path)
+
+
+def _verify_error(error: str, why: str, fix: str, code: int) -> tuple[int, dict]:
+    return code, {"error": error, "why": why, "fix": fix}
+
+
+def _display_path(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _dummy_arg(arg: dict) -> str:
+    typ = str(arg.get("type") or "string")
+    if typ in {"int", "float"}:
+        return "1"
+    if typ == "bool":
+        return "true"
+    return "example"
+
+
+def _mutating_dry_run(path: Path, args: list, root: Path) -> tuple[str | None, list]:
+    """Run a mutating tool with TK_DRY_RUN=1 in a scratch directory. Return (error, plan)."""
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+            env.pop(key, None)
+    env["TK_DRY_RUN"] = "1"
+    env["TK_ROOT_DIR"] = str(root)
+    for arg in args:
+        if isinstance(arg, dict) and arg.get("required"):
+            env_var = str(arg.get("env_var") or "")
+            if env_var:
+                env[env_var] = _dummy_arg(arg)
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            env["HOME"] = scratch
+            proc = subprocess.run(
+                [str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+                cwd=scratch,
+                check=False,
+            )
+    except subprocess.TimeoutExpired:
+        return "dry-run timed out", []
+    except OSError as exc:
+        return f"dry-run failed: {exc}", []
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        suffix = (": " + detail[0]) if detail else ""
+        return f"dry-run exited {proc.returncode}{suffix}", []
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return "dry-run produced empty stdout; expected JSON", []
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        return f"dry-run stdout is not valid JSON: {exc.msg}", []
+    if not isinstance(payload, dict) or payload.get("dry_run") is not True:
+        return 'dry-run payload is not marked "dry_run": true', []
+    plan = payload.get("plan")
+    if not isinstance(plan, list) or not plan:
+        return "dry-run stdout missing non-empty plan", []
+    return None, plan
+
+
+def verify_item(root_dir: Path, name: str) -> tuple[int, dict]:
+    """Verify one catalog name.
+
+    Read-only items are already covered by ``tk check`` and are not stamped.
+    Mutating tools are dry-run in a scratch directory, then stamped
+    ``# @tk-verified: <YYYY-MM-DD>`` on the first success. Destructive items
+    require a human to edit that header; this function does not write the file.
+    """
+    root = Path(root_dir)
+    label = str(name)
+    fix = f"tk check {label}"
+    check = check_item(root, label)
+    if not check.get("ok"):
+        errors = [str(err) for err in (check.get("errors") or [])] or ["validation failed"]
+        return _verify_error("check_failed", "; ".join(errors), fix, 1)
+    catalog = discover_catalog(root)
+    item = catalog.get(label)
+    if not isinstance(item, dict):
+        return _verify_error("check_failed", f"{label} is not in the catalog", fix, 1)
+    safety = str(item.get("safety") or "")
+    verified = str(item.get("verified") or "none")
+    path = Path(str(item.get("path") or ""))
+    if safety == "destructive":
+        shown = _display_path(root, path)
+        return _verify_error(
+            "human_signoff_required",
+            f"{label} is destructive and is not stamped by tk check --verify",
+            f"open a PR changing # @tk-verified: <YYYY-MM-DD> in {shown} and request human review",
+            2,
+        )
+    if safety == "read-only":
+        return 0, {"ok": True, "name": label, "safety": safety, "verified": verified}
+    if safety != "mutating" or item.get("kind") != "tool":
+        return _verify_error(
+            "verify_failed",
+            f"{label} safety {safety or 'unknown'} is not verifiable",
+            fix,
+            1,
+        )
+    reason, plan = _mutating_dry_run(path, list(item.get("args") or []), root)
+    if reason:
+        return _verify_error("verify_failed", reason, fix, 1)
+    today = date.today().isoformat()
+    if _is_unverified(verified):
+        if not _promote_tool(path, today):
+            return _verify_error("verify_failed", "could not stamp @tk-verified", fix, 1)
+        verified = today
+        log_event(root, "tool_verified", {"name": label, "safety": safety, "plan": plan})
+    return 0, {
+        "ok": True,
+        "name": label,
+        "safety": safety,
+        "verified": verified,
+        "plan": plan,
+    }
 
 
 def _discover(root: Path) -> dict[str, dict]:
