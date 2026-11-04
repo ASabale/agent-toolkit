@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import types
@@ -566,36 +567,40 @@ class RunToolTests(unittest.TestCase):
                     os.environ["TK_MAX_OUTPUT_BYTES"] = previous
 
     def test_output_too_large_without_limit_pipes_to_json_pick(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            script = _write_script(
-                root,
-                "big-nolimit",
-                "#!/usr/bin/env python3\n"
-                "import json, sys\n"
-                "json.dump({'blob': 'x' * 40, 'keep': 1}, sys.stdout)\n",
-            )
-            item = _item()
-            item["args"] = [arg for arg in item["args"] if arg["flag"] != "--limit"]
-            item["path"] = str(script)
-            previous = os.environ.get("TK_MAX_OUTPUT_BYTES")
-            os.environ["TK_MAX_OUTPUT_BYTES"] = "16"
-            try:
-                code, out, err = run_tool(root, item, {"--name": "ada"})
-            finally:
-                if previous is None:
-                    os.environ.pop("TK_MAX_OUTPUT_BYTES", None)
-                else:
-                    os.environ["TK_MAX_OUTPUT_BYTES"] = previous
-        self.assertEqual(code, 1)
-        self.assertEqual(out, "")
-        payload = json.loads(err)
-        self.assertEqual(payload["error"], "output_too_large")
-        self.assertTrue(payload["fix"].startswith("tk run "))
-        self.assertEqual(
-            payload["fix"],
-            "tk run demo.echo --name ada | tk run json.pick --keys blob,keep",
+        root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        env["TK_MAX_OUTPUT_BYTES"] = "16"
+        env["TK_NO_TELEMETRY"] = "1"
+        env["PATH"] = str(root) + os.pathsep + env.get("PATH", "")
+        failed = subprocess.run(
+            [sys.executable, str(root / "tk"), "run", "env.check"],
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+            env=env,
+            check=False,
         )
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        payload = json.loads(failed.stderr)
+        self.assertEqual(payload["error"], "output_too_large")
+        fix = payload["fix"]
+        self.assertTrue(fix.startswith("TK_MAX_OUTPUT_BYTES="), fix)
+        self.assertIn("tk run env.check", fix)
+        self.assertIn("| tk run json.pick --keys ", fix)
+        self.assertNotIn("ok,binaries,variables,missing_bins,missing_vars", fix)
+        healed = subprocess.run(
+            fix,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+        reduced = json.loads(healed.stdout)
+        self.assertIsInstance(reduced, dict)
+        self.assertLessEqual(len(json.dumps(reduced, separators=(",", ":")).encode()), 16)
 
 
 class RunChainTests(unittest.TestCase):

@@ -36,6 +36,36 @@ class TokenBudgetTests(unittest.TestCase):
         self.assertLessEqual(len(raw.splitlines()), 46)
         self.assertLessEqual(len(raw), 1800)
 
+    def test_printed_next_command_runs_as_is(self):
+        env = os.environ.copy()
+        env["TK_NO_TELEMETRY"] = "1"
+        env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
+        first = subprocess.run(
+            [sys.executable, str(TK), "run", "code.search", "--path", "lib", "--pattern", "def", "--limit", "3"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        payload = json.loads(first.stdout)
+        nxt = payload["next"]
+        self.assertEqual(nxt, "tk run code.search --path lib --pattern def --limit 6")
+        healed = subprocess.run(
+            nxt,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(healed.returncode, 0, healed.stderr)
+        more = json.loads(healed.stdout)
+        self.assertEqual(more["count"], 6)
+        self.assertGreaterEqual(more["truncated"], 1)
+
     def test_find_output_is_two_short_lines_per_item(self):
         items = find_items(ROOT)
         lines = format_find_output(items).splitlines()

@@ -371,25 +371,96 @@ def _command_with_limit(item: dict, flags: dict[str, str], limit: int) -> str:
     return _fix_command(item, {**flags, "--limit": str(limit)})
 
 
+_NEXT_LIMIT_CAP = 200
+
+
 def _maybe_next_payload(item: dict, flags: dict[str, str], parsed: object) -> object:
     if not isinstance(parsed, dict) or not _declares_flag(item, "--limit"):
         return parsed
     truncated = parsed.get("truncated")
     if type(truncated) is not int or truncated <= 0:
         return parsed
-    next_limit = max(_effective_limit(item, flags) * 2, 1)
+    current = _effective_limit(item, flags)
+    next_limit = min(max(current * 2, 1), current + truncated, _NEXT_LIMIT_CAP)
     return {**parsed, "next": _command_with_limit(item, flags, next_limit)}
 
 
-def _output_too_large_fix(item: dict, flags: dict[str, str], parsed: object) -> str:
+def _declared_output_keys(output: object) -> list[str]:
+    text = str(output or "").strip()
+    if "|" in text:
+        text = text.split("|", 1)[1].strip()
+    if not text.startswith("{"):
+        return []
+    depth = 0
+    end = -1
+    for idx, char in enumerate(text):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+    if end < 0:
+        return []
+    inner = text[1:end]
+    keys: list[str] = []
+    depth = 0
+    start = 0
+    for idx, char in enumerate(inner):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            key = inner[start:idx].strip().split(":")[0].split("[")[0].strip()
+            if key and key not in keys:
+                keys.append(key)
+            start = idx + 1
+    key = inner[start:].strip().split(":")[0].split("[")[0].strip()
+    if key and key not in keys:
+        keys.append(key)
+    return keys
+
+
+def _pick_fix_keys(item: dict, parsed: dict, max_bytes: int) -> list[str]:
+    def value_bytes(key: str) -> int:
+        return len(_compact(parsed.get(key)).encode("utf-8"))
+
+    def fits(keys: list[str]) -> bool:
+        subset = {key: parsed[key] for key in keys if key in parsed}
+        return len(_compact(subset).encode("utf-8")) <= max_bytes
+
+    declared = [key for key in _declared_output_keys(item.get("output")) if key in parsed]
+    if declared:
+        keys = declared[:3]
+    else:
+        names = [str(key) for key in parsed]
+        keys = names if len(names) <= 1 else [key for key in names if key != max(names, key=value_bytes)]
+    while len(keys) > 1 and not fits(keys):
+        drop = max(keys, key=value_bytes)
+        keys = [key for key in keys if key != drop]
+    return keys
+
+
+def _output_too_large_fix(
+    item: dict,
+    flags: dict[str, str],
+    parsed: object,
+    size: int,
+    max_bytes: int,
+) -> str:
     if _declares_flag(item, "--limit"):
         halved = max(_effective_limit(item, flags) // 2, 1)
         return _command_with_limit(item, flags, halved)
     command = _fix_command(item, flags)
+    raised = f"TK_MAX_OUTPUT_BYTES={size} {command}"
     if not isinstance(parsed, dict) or not parsed:
-        return command
-    keys = ",".join(str(key) for key in parsed)
-    return f"{command} | tk run json.pick --keys {keys}"
+        return raised
+    keys = _pick_fix_keys(item, parsed, max_bytes)
+    if not keys:
+        return raised
+    return f"{raised} | tk run json.pick --keys {','.join(keys)}"
 
 
 def run_tool(
@@ -465,7 +536,7 @@ def run_tool(
                     {
                         "error": "output_too_large",
                         "why": f"output {size} bytes exceeds TK_MAX_OUTPUT_BYTES ({max_bytes})",
-                        "fix": _output_too_large_fix(item, flags, parsed),
+                        "fix": _output_too_large_fix(item, flags, parsed, size, max_bytes),
                     },
                 ),
             )
