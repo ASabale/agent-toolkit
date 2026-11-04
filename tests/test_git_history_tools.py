@@ -276,6 +276,7 @@ class BranchDigestTests(unittest.TestCase):
                 "upstream": None,
             },
         )
+        self.assertIs(payload["dry_run"], True)
         self.assertIsNone(payload["branch"])
         self.assertIsNone(payload["dirty"])
 
@@ -302,7 +303,33 @@ class LogRecentTests(unittest.TestCase):
                 "commits": [],
             },
         )
+        self.assertIs(payload["dry_run"], True)
         self.assertIsNone(payload["count"])
+
+    def test_real_repo_returns_newest_subjects_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _sample_repo(Path(tmp))
+            extra = repo / "gamma.txt"
+            extra.write_text("gamma\n", encoding="utf-8")
+            _git(repo, "add", "gamma.txt", author="Carol")
+            _git(repo, "commit", "-m", "third note", author="Carol")
+            proc = _run(
+                LOG,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_LIMIT": "2",
+                    "TK_DRY_RUN": "0",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertNotIn("dry_run", payload)
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(len(payload["commits"]), 2)
+        self.assertEqual(payload["commits"][0]["subject"], "third note")
+        self.assertEqual(payload["commits"][1]["subject"], "second note")
+        self.assertEqual(len(payload["commits"][0]["sha"]), 40)
+        self.assertEqual(payload["commits"][0]["author"], "Carol")
 
 
 if __name__ == "__main__":
