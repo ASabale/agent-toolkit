@@ -8,21 +8,18 @@
 # @tk-example: tk run py.test-digest --path tests --pattern test*.py
 # @tk-verified: 2026-11-03
 
-import json
 import os
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _HEADER = re.compile(r"^(FAIL|ERROR): (.+)$", re.MULTILINE)
 _RAN = re.compile(r"^Ran (\d+) tests?", re.MULTILINE)
 _FAILED = re.compile(r"^FAILED \((.+)\)\s*$", re.MULTILINE)
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
 
 
 def count_field(blob: str, name: str) -> int:
@@ -77,26 +74,12 @@ def distill(text: str, returncode: int) -> dict:
 def main() -> int:
     path = os.environ.get("TK_ARG_PATH", "")
     pattern = os.environ.get("TK_ARG_PATTERN") or "test*.py"
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit({"dry_run": True, "path": path or "example", "pattern": pattern})
+    if is_dry_run():
+        return dry_run_ok(path=path or "example", pattern=pattern)
     if not path:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_PATH is required",
-                "fix": "tk run py.test-digest --path <dir>",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_PATH is required", "tk run py.test-digest --path <dir>", 2)
     if not os.path.isdir(path):
-        return emit(
-            {
-                "error": "not_a_directory",
-                "why": f"{path} is not a directory",
-                "fix": "tk run py.test-digest --path <dir>",
-            },
-            1,
-        )
+        return fail("not_a_directory", f"{path} is not a directory", "tk run py.test-digest --path <dir>")
     child_env = {k: v for k, v in os.environ.items() if not k.startswith("TK_")}
     proc = subprocess.run(
         [
@@ -115,13 +98,10 @@ def main() -> int:
     )
     text = (proc.stderr or "") + "\n" + (proc.stdout or "")
     if proc.returncode != 0 and not _RAN.search(text):
-        return emit(
-            {
-                "error": "unittest_failed",
-                "why": text.strip() or f"unittest exited {proc.returncode}",
-                "fix": "tk run py.test-digest --path <dir> --pattern test*.py",
-            },
-            1,
+        return fail(
+            "unittest_failed",
+            text.strip() or f"unittest exited {proc.returncode}",
+            "tk run py.test-digest --path <dir> --pattern test*.py",
         )
     return emit(distill(text, proc.returncode))
 
@@ -130,15 +110,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run py.test-digest --path <dir>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), "tk run py.test-digest --path <dir>"))

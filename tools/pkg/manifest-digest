@@ -12,6 +12,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 FIX = "tk run pkg.manifest-digest --path . --limit 20"
 _NAMES = (
@@ -23,16 +27,6 @@ _NAMES = (
 )
 _STRING = re.compile(r"""^\s*([A-Za-z0-9_-]+)\s*=\s*["']([^"']*)["']\s*$""")
 _DEP = re.compile(r"""^\s*([A-Za-z0-9_.-]+)\s*=\s*["']([^"']*)["']""")
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
-
-
-def fail(error: str, why: str, code: int = 1) -> int:
-    return emit({"error": error, "why": why, "fix": FIX}, code)
 
 
 def _read(path: str) -> str:
@@ -290,45 +284,31 @@ def digest(path: str, limit: int) -> dict:
 def main() -> int:
     path = os.environ.get("TK_ARG_PATH", "")
     raw_limit = os.environ.get("TK_ARG_LIMIT") or "30"
-    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
+    dry = is_dry_run()
     try:
         limit = int(raw_limit)
     except ValueError:
         if dry:
             limit = 30
         else:
-            return fail("invalid_flag", f"limit is not an int: {raw_limit}", 2)
+            return fail("invalid_flag", f"limit is not an int: {raw_limit}", FIX, 2)
     if dry:
-        return emit({"dry_run": True, "path": path, "limit": limit})
+        return dry_run_ok(path=path, limit=limit)
     if limit < 0:
-        return fail("invalid_flag", "limit must be >= 0", 2)
+        return fail("invalid_flag", "limit must be >= 0", FIX, 2)
     if not path or not os.path.exists(path):
-        return fail("not_found", f"path not found: {path}", 1)
+        return fail("not_found", f"path not found: {path}", FIX)
     raw_path = path
     if not _targets(raw_path):
-        return emit(
-            {
-                "error": "no_manifest_found",
-                "why": f"no supported manifest found in {raw_path}",
-                "fix": FIX,
-            },
-            1,
-        )
+        return fail("no_manifest_found", f"no supported manifest found in {raw_path}", FIX)
     try:
         return emit(digest(path, limit))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return fail("manifest_error", str(exc), 1)
+        return fail("manifest_error", str(exc), FIX)
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "tool_error", "why": str(exc), "fix": FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), FIX))

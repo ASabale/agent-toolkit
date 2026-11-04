@@ -7,16 +7,16 @@
 # @tk-example: tk run sys.port-owner --port 80
 # @tk-verified: 2026-11-03
 
-import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
+_FIX = "tk run sys.port-owner --port <port>"
+_FIX_PORT = "tk run sys.port-owner --port 80"
 
 
 def parse_lsof(text: str) -> list[dict]:
@@ -41,38 +41,17 @@ def parse_lsof(text: str) -> list[dict]:
 
 def main() -> int:
     raw = os.environ.get("TK_ARG_PORT", "")
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
+    if is_dry_run():
         port = int(raw) if raw.isdigit() else 1
-        return emit({"dry_run": True, "port": port, "listen": []})
+        return dry_run_ok(port=port, listen=[])
     if not raw:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_PORT is required",
-                "fix": "tk run sys.port-owner --port <port>",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_PORT is required", _FIX, 2)
     try:
         port = int(raw)
     except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"port is not an int: {raw}",
-                "fix": "tk run sys.port-owner --port 80",
-            },
-            2,
-        )
+        return fail("invalid_flag", f"port is not an int: {raw}", _FIX_PORT, 2)
     if port < 1 or port > 65535:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "port must be 1-65535",
-                "fix": "tk run sys.port-owner --port 80",
-            },
-            2,
-        )
+        return fail("invalid_flag", "port must be 1-65535", _FIX_PORT, 2)
     proc = subprocess.run(
         ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-F", "pcu"],
         capture_output=True,
@@ -80,13 +59,10 @@ def main() -> int:
         timeout=30,
     )
     if proc.returncode not in (0, 1):
-        return emit(
-            {
-                "error": "lsof_failed",
-                "why": proc.stderr.strip() or f"lsof exited {proc.returncode}",
-                "fix": "tk run sys.port-owner --port <port>",
-            },
-            1,
+        return fail(
+            "lsof_failed",
+            proc.stderr.strip() or f"lsof exited {proc.returncode}",
+            _FIX,
         )
     return emit({"port": port, "listen": parse_lsof(proc.stdout)})
 
@@ -95,41 +71,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except subprocess.TimeoutExpired:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "timeout",
-                    "why": "lsof timed out after 30s",
-                    "fix": "tk run sys.port-owner --port <port>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("timeout", "lsof timed out after 30s", _FIX))
     except FileNotFoundError as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "not_found",
-                    "why": f"{exc.filename or 'lsof'} not found",
-                    "fix": "tk run sys.port-owner --port <port>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("not_found", f"{exc.filename or 'lsof'} not found", _FIX))
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run sys.port-owner --port <port>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))

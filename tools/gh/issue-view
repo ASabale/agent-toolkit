@@ -13,15 +13,15 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _BODY_CAP = 500
 _COMMENT_CAP = 280
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
+_FIX = "tk run gh.issue-view --repo <owner/name> --number <n>"
+_FIX_INT = "tk run gh.issue-view --repo <owner/name> --number 1 --comments 5"
 
 
 def clip(text: str, cap: int) -> str:
@@ -35,47 +35,24 @@ def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     number_raw = os.environ.get("TK_ARG_NUMBER", "")
     comments_raw = os.environ.get("TK_ARG_COMMENTS") or "5"
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
+    if is_dry_run():
         number = int(number_raw) if number_raw.isdigit() else 1
         comments = int(comments_raw) if comments_raw.isdigit() else 5
-        return emit(
-            {
-                "dry_run": True,
-                "repo": repo or "example",
-                "number": number,
-                "comments": comments,
-            }
-        )
+        return dry_run_ok(repo=repo or "example", number=number, comments=comments)
     if not repo or not number_raw:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_REPO and TK_ARG_NUMBER are required",
-                "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
-            },
+        return fail(
+            "missing_flag",
+            "TK_ARG_REPO and TK_ARG_NUMBER are required",
+            _FIX,
             2,
         )
     try:
         number = int(number_raw)
         comments = int(comments_raw)
     except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "number and comments must be ints",
-                "fix": "tk run gh.issue-view --repo <owner/name> --number 1 --comments 5",
-            },
-            2,
-        )
+        return fail("invalid_flag", "number and comments must be ints", _FIX_INT, 2)
     if comments < 0:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "comments must be >= 0",
-                "fix": "tk run gh.issue-view --repo <owner/name> --number 1 --comments 5",
-            },
-            2,
-        )
+        return fail("invalid_flag", "comments must be >= 0", _FIX_INT, 2)
     proc = subprocess.run(
         [
             "gh",
@@ -92,13 +69,10 @@ def main() -> int:
         timeout=30,
     )
     if proc.returncode != 0:
-        return emit(
-            {
-                "error": "gh_failed",
-                "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
-                "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
-            },
-            1,
+        return fail(
+            "gh_failed",
+            (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
+            _FIX,
         )
     payload = json.loads(proc.stdout or "{}")
     author = payload.get("author") or {}
@@ -134,41 +108,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except subprocess.TimeoutExpired:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "timeout",
-                    "why": "gh timed out after 30s",
-                    "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("timeout", "gh timed out after 30s", _FIX))
     except FileNotFoundError as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "not_found",
-                    "why": f"{exc.filename or 'gh'} not found",
-                    "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("not_found", f"{exc.filename or 'gh'} not found", _FIX))
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))

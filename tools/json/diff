@@ -12,14 +12,12 @@
 import json
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run json.diff --left <a.json> --right <b.json> --limit 30"
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
 
 
 def _same_container(left, right) -> bool:
@@ -88,60 +86,33 @@ def main() -> int:
     left_path = os.environ.get("TK_ARG_LEFT", "")
     right_path = os.environ.get("TK_ARG_RIGHT", "")
     limit_raw = os.environ.get("TK_ARG_LIMIT") or "30"
-    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
-    if dry:
+    if is_dry_run():
         try:
             limit = int(limit_raw)
         except ValueError:
             limit = 30
-        return emit(
-            {
-                "dry_run": True,
-                "left": left_path or "example",
-                "right": right_path or "example",
-                "limit": limit,
-            }
+        return dry_run_ok(
+            left=left_path or "example",
+            right=right_path or "example",
+            limit=limit,
         )
     if not left_path or not right_path:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_LEFT and TK_ARG_RIGHT are required",
-                "fix": _FIX,
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_LEFT and TK_ARG_RIGHT are required", _FIX, 2)
     try:
         limit = int(limit_raw)
     except ValueError:
-        return emit(
-            {"error": "invalid_flag", "why": f"limit is not an int: {limit_raw}", "fix": _FIX},
-            2,
-        )
+        return fail("invalid_flag", f"limit is not an int: {limit_raw}", _FIX, 2)
     if limit < 1:
-        return emit(
-            {"error": "invalid_flag", "why": "limit must be >= 1", "fix": _FIX},
-            2,
-        )
+        return fail("invalid_flag", "limit must be >= 1", _FIX, 2)
     try:
         with open(left_path, encoding="utf-8") as handle:
             left = json.load(handle)
         with open(right_path, encoding="utf-8") as handle:
             right = json.load(handle)
     except FileNotFoundError as exc:
-        return emit(
-            {
-                "error": "not_found",
-                "why": f"{exc.filename} not found",
-                "fix": _FIX,
-            },
-            2,
-        )
+        return fail("not_found", f"{exc.filename} not found", _FIX, 2)
     except json.JSONDecodeError as exc:
-        return emit(
-            {"error": "invalid_json", "why": str(exc), "fix": _FIX},
-            2,
-        )
+        return fail("invalid_json", str(exc), _FIX, 2)
     added, removed, changed = diff_docs(left, right)
     total = len(added) + len(removed) + len(changed)
     truncated = len(added) > limit or len(removed) > limit or len(changed) > limit
@@ -161,11 +132,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "tool_error", "why": str(exc), "fix": _FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))

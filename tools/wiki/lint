@@ -7,22 +7,18 @@
 # @tk-example: tk run wiki.lint --path wiki
 # @tk-verified: 2026-11-04
 
-import json
 import os
 import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
+
 _DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
 _COMMIT = re.compile(r"@[0-9a-f]{7,40}")
 _LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _FIX = "tk run wiki.lint --path wiki"
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
 
 
 def _link_target(raw: str) -> str:
@@ -105,18 +101,11 @@ def lint(root: Path, display_path: str) -> dict:
 
 def main() -> int:
     display = os.environ.get("TK_ARG_PATH") or "wiki"
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit({"dry_run": True, "path": display})
+    if is_dry_run():
+        return dry_run_ok(path=display)
     root = Path(display)
     if not root.is_dir():
-        return emit(
-            {
-                "error": "not_a_directory",
-                "why": f"{display} is not a directory",
-                "fix": _FIX,
-            },
-            1,
-        )
+        return fail("not_a_directory", f"{display} is not a directory", _FIX)
     return emit(lint(root, display))
 
 
@@ -124,11 +113,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "tool_error", "why": str(exc), "fix": _FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))

@@ -8,22 +8,15 @@
 # @tk-example: tk run sql.schema --db example.db
 # @tk-verified: 2026-11-03
 
-import json
 import os
 import sqlite3
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run sql.schema --db <path> [--table all]"
-
-
-def emit(payload, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
-
-
-def fail(error: str, why: str) -> int:
-    return emit({"error": error, "why": why, "fix": _FIX}, 1)
 
 
 def quote_ident(name: str) -> str:
@@ -47,16 +40,16 @@ def column_specs(conn: sqlite3.Connection, table: str) -> list[dict]:
 def main() -> int:
     db_path = os.environ.get("TK_ARG_DB", "")
     table = os.environ.get("TK_ARG_TABLE") or "all"
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit({"dry_run": True, "db": db_path or "example", "table": table})
+    if is_dry_run():
+        return dry_run_ok(db=db_path or "example", table=table)
     if not db_path:
-        return fail("missing_flag", "TK_ARG_DB is required")
+        return fail("missing_flag", "TK_ARG_DB is required", _FIX)
     if not os.path.isfile(db_path):
-        return fail("missing_db", f"database not found: {db_path}")
+        return fail("missing_db", f"database not found: {db_path}", _FIX)
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     except sqlite3.Error as exc:
-        return fail("sqlite_error", str(exc))
+        return fail("sqlite_error", str(exc), _FIX)
     try:
         names = [
             row[0]
@@ -68,7 +61,7 @@ def main() -> int:
         ]
         if table and table != "all":
             if table not in names:
-                return fail("unknown_table", f"no such table: {table}")
+                return fail("unknown_table", f"no such table: {table}", _FIX)
             names = [table]
         tables = []
         for name in names:
@@ -83,7 +76,7 @@ def main() -> int:
                 }
             )
     except sqlite3.Error as exc:
-        return fail("sqlite_error", str(exc))
+        return fail("sqlite_error", str(exc), _FIX)
     finally:
         conn.close()
     return emit({"db": db_path, "table_count": len(tables), "tables": tables})
@@ -93,11 +86,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "tool_error", "why": str(exc), "fix": _FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))
