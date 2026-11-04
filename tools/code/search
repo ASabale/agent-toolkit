@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# @tk-name: code.search
+# @tk-summary: Search UTF-8 source files for a regular expression
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | File or directory path to search
+# @tk-arg: --pattern | required | string | Regular expression pattern to match
+# @tk-arg: --glob | optional | string | Optional filename glob filter like *.py (default: all)
+# @tk-arg: --limit | optional | int | Maximum matches to return (default: 30)
+# @tk-output: json | {path, pattern, count, truncated, matches:[{file, line, text}]}
+# @tk-example: tk run code.search --path lib --pattern def --glob *.py --limit 30
+# @tk-verified: 2026-11-04
+
+import fnmatch
+import json
+import os
+import re
+import sys
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_DEFAULT_LIMIT = 30
+_TEXT_CAP = 160
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _iter_files(root: str):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _SKIP_DIRS and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if name.startswith(".") or name in _SKIP_DIRS:
+                continue
+            yield os.path.join(dirpath, name)
+
+
+def _rel(root: str, path: str) -> str:
+    if os.path.isfile(root):
+        return os.path.basename(path)
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _glob_ok(name: str, pattern: str) -> bool:
+    if pattern in {"", "all", "*"}:
+        return True
+    return fnmatch.fnmatch(name, pattern)
+
+
+def search(root: str, pattern: str, glob: str, limit: int) -> dict:
+    compiled = re.compile(pattern)
+    matches: list[dict] = []
+    for path in _iter_files(root):
+        name = os.path.basename(path)
+        if not _glob_ok(name, glob):
+            continue
+        try:
+            raw = open(path, "rb").read()
+        except OSError:
+            continue
+        if b"\x00" in raw:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        rel = _rel(root, path)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if compiled.search(line):
+                matches.append({"file": rel, "line": lineno, "text": line[:_TEXT_CAP]})
+    omitted = max(0, len(matches) - limit)
+    kept = matches[:limit]
+    return {
+        "path": root,
+        "pattern": pattern,
+        "count": len(kept),
+        "truncated": omitted,
+        "matches": kept,
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    pattern = os.environ.get("TK_ARG_PATTERN", "")
+    glob = os.environ.get("TK_ARG_GLOB") or "all"
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = _DEFAULT_LIMIT
+        return emit(
+            {
+                "dry_run": True,
+                "path": path,
+                "pattern": pattern,
+                "glob": glob,
+                "limit": limit,
+            }
+        )
+    if not path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATH is required",
+                "fix": "tk run code.search --path <path> --pattern <regex>",
+            },
+            2,
+        )
+    if not pattern:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATTERN is required",
+                "fix": "tk run code.search --path <path> --pattern <regex>",
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run code.search --path <path> --pattern <regex> --limit 30",
+            },
+            2,
+        )
+    if limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 0",
+                "fix": "tk run code.search --path <path> --pattern <regex> --limit 30",
+            },
+            2,
+        )
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        return emit(
+            {
+                "error": "invalid_regex",
+                "why": str(exc),
+                "fix": "tk run code.search --path <path> --pattern <regex>",
+            },
+            2,
+        )
+    if not os.path.exists(path):
+        return emit(
+            {
+                "error": "not_found",
+                "why": f"{path} does not exist",
+                "fix": "tk run code.search --path <path> --pattern <regex>",
+            },
+            1,
+        )
+    return emit(search(path, pattern, glob, limit))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run code.search --path <path> --pattern <regex>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

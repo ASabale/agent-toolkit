@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+# @tk-name: sys.proc-info
+# @tk-summary: Match running processes by PID or command substring
+# @tk-safety: read-only
+# @tk-arg: --query | required | string | Process name substring or numeric PID to match
+# @tk-arg: --limit | optional | int | Maximum processes to return (default: 15)
+# @tk-output: json | {query, count, truncated, processes:[{pid, ppid, cpu, rss_kb, command}]}
+# @tk-example: tk run sys.proc-info --query python3 --limit 15
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import subprocess
+import sys
+
+FIX = "tk run sys.proc-info --query <name-or-pid> --limit 15"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def parse_limit(raw: str) -> int | None:
+    text = raw.strip() if raw else ""
+    if not text:
+        return 15
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def parse_ps(text: str) -> list[dict]:
+    rows: list[dict] = []
+    for line in text.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            continue
+        pid_s, ppid_s, cpu_s, rss_s, command = parts
+        if not pid_s.isdigit() or not ppid_s.isdigit():
+            continue
+        try:
+            cpu = float(cpu_s)
+        except ValueError:
+            continue
+        try:
+            rss_kb = int(rss_s)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "pid": int(pid_s),
+                "ppid": int(ppid_s),
+                "cpu": cpu,
+                "rss_kb": rss_kb,
+                "command": command,
+            }
+        )
+    return rows
+
+
+def matches(row: dict, query: str) -> bool:
+    if query.isdigit():
+        return str(row["pid"]) == query
+    return query.lower() in row["command"].lower()
+
+
+def main() -> int:
+    query = os.environ.get("TK_ARG_QUERY", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT", "")
+    limit = parse_limit(limit_raw)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "dry_run": True,
+                "query": query,
+                "limit": 15 if limit is None else limit,
+            }
+        )
+    if not query:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_QUERY is required", "fix": FIX},
+            2,
+        )
+    if limit is None:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not a non-negative int: {limit_raw}",
+                "fix": FIX,
+            },
+            2,
+        )
+    proc = subprocess.run(
+        ["ps", "-Ao", "pid=,ppid=,pcpu=,rss=,comm="],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        return emit(
+            {
+                "error": "ps_failed",
+                "why": proc.stderr.strip() or f"ps exited {proc.returncode}",
+                "fix": FIX,
+            },
+            1,
+        )
+    found = [row for row in parse_ps(proc.stdout) if matches(row, query)]
+    processes = found[:limit]
+    return emit(
+        {
+            "query": query,
+            "count": len(processes),
+            "truncated": len(found) > limit,
+            "processes": processes,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "timeout", "why": "ps timed out after 15s", "fix": FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'ps'} not found",
+                    "fix": FIX,
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

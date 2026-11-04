@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+# @tk-name: code.symbols
+# @tk-summary: List class and function symbols in a file or directory
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | File or directory path to extract symbols from
+# @tk-arg: --kind | optional | string | Filter by class, function, or all (default: all)
+# @tk-arg: --limit | optional | int | Maximum symbols to return (default: 40)
+# @tk-output: json | {path, kind, count, truncated, symbols:[{file, line, kind, name, signature}]}
+# @tk-example: tk run code.symbols --path lib --kind all --limit 40
+# @tk-verified: 2026-11-04
+
+import ast
+import json
+import os
+import re
+import sys
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_CODE_EXT = {".ts", ".tsx", ".js", ".go", ".rs", ".sh"}
+_DEFAULT_LIMIT = 40
+_KINDS = {"all", "class", "function", "async_function"}
+
+_JS = re.compile(
+    r"^\s*(?:export\s+)?(?:default\s+)?(?P<async>async\s+)?(?P<kw>function|class)\s+"
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*(?P<sig>\([^)\n]*\))?"
+)
+_GO = re.compile(
+    r"^\s*func\s+(?:\([^)\n]*\)\s+)?(?P<name>[A-Za-z_]\w*)\s*(?P<sig>\([^)\n]*\))?"
+)
+_RS_FN = re.compile(
+    r"^\s*(?:pub(?:\([^)\n]*\))?\s+)?(?P<async>async\s+)?(?:unsafe\s+)?(?:const\s+)?"
+    r"fn\s+(?P<name>[A-Za-z_]\w*)\s*(?P<sig>\([^)\n]*\))?"
+)
+_RS_TYPE = re.compile(
+    r"^\s*(?:pub(?:\([^)\n]*\))?\s+)?(?:struct|enum|trait)\s+(?P<name>[A-Za-z_]\w*)"
+)
+_SH = re.compile(
+    r"^\s*(?:function\s+)?(?P<name>[A-Za-z_]\w*)\s*(?P<sig>\(\s*\))\s*\{?"
+)
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _signature(args: ast.arguments) -> str:
+    parts: list[str] = []
+    parts.extend(arg.arg for arg in args.posonlyargs)
+    if args.posonlyargs:
+        parts.append("/")
+    parts.extend(arg.arg for arg in args.args)
+    if args.vararg:
+        parts.append("*" + args.vararg.arg)
+    elif args.kwonlyargs:
+        parts.append("*")
+    parts.extend(arg.arg for arg in args.kwonlyargs)
+    if args.kwarg:
+        parts.append("**" + args.kwarg.arg)
+    return "(" + ", ".join(parts) + ")"
+
+
+def _py_symbols(text: str, rel: str) -> list[dict]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    found: list[dict] = []
+
+    def walk(body: list[ast.stmt]) -> None:
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                found.append(
+                    {
+                        "file": rel,
+                        "line": node.lineno,
+                        "kind": "class",
+                        "name": node.name,
+                        "signature": "()",
+                    }
+                )
+                walk(node.body)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found.append(
+                    {
+                        "file": rel,
+                        "line": node.lineno,
+                        "kind": "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function",
+                        "name": node.name,
+                        "signature": _signature(node.args),
+                    }
+                )
+
+    walk(tree.body)
+    return found
+
+
+def _regex_symbols(text: str, rel: str, ext: str) -> list[dict]:
+    found: list[dict] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if ext in {".js", ".ts", ".tsx"}:
+            match = _JS.match(line)
+            if not match:
+                continue
+            kind = "class" if match.group("kw") == "class" else "function"
+            if kind == "function" and match.group("async"):
+                kind = "async_function"
+            sig = match.group("sig") or "()"
+            name = match.group("name")
+        elif ext == ".go":
+            match = _GO.match(line)
+            if not match:
+                continue
+            kind = "function"
+            sig = match.group("sig") or "()"
+            name = match.group("name")
+        elif ext == ".rs":
+            match = _RS_FN.match(line)
+            if match:
+                kind = "async_function" if match.group("async") else "function"
+                sig = match.group("sig") or "()"
+                name = match.group("name")
+            else:
+                match = _RS_TYPE.match(line)
+                if not match:
+                    continue
+                kind = "class"
+                sig = "()"
+                name = match.group("name")
+        elif ext == ".sh":
+            match = _SH.match(line)
+            if not match:
+                continue
+            kind = "function"
+            sig = match.group("sig") or "()"
+            name = match.group("name")
+        else:
+            continue
+        found.append(
+            {"file": rel, "line": lineno, "kind": kind, "name": name, "signature": sig}
+        )
+    return found
+
+
+def _iter_files(root: str):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _SKIP_DIRS and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if name.startswith(".") or name in _SKIP_DIRS:
+                continue
+            yield os.path.join(dirpath, name)
+
+
+def _rel(root: str, path: str) -> str:
+    if os.path.isfile(root):
+        return os.path.basename(path)
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _keep(kind_filter: str, kind: str) -> bool:
+    if kind_filter in {"", "all"}:
+        return True
+    if kind_filter == "function":
+        return kind in {"function", "async_function"}
+    return kind == kind_filter
+
+
+def collect(root: str, kind_filter: str, limit: int) -> dict:
+    symbols: list[dict] = []
+    for path in _iter_files(root):
+        ext = os.path.splitext(path)[1].lower()
+        if ext != ".py" and ext not in _CODE_EXT:
+            continue
+        try:
+            raw = open(path, "rb").read()
+        except OSError:
+            continue
+        if b"\x00" in raw:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        rel = _rel(root, path)
+        if ext == ".py":
+            symbols.extend(_py_symbols(text, rel))
+        else:
+            symbols.extend(_regex_symbols(text, rel, ext))
+    symbols = [item for item in symbols if _keep(kind_filter, item["kind"])]
+    symbols.sort(key=lambda item: (item["file"], item["line"], item["name"]))
+    omitted = max(0, len(symbols) - limit)
+    kept = symbols[:limit]
+    return {
+        "path": root,
+        "kind": kind_filter or "all",
+        "count": len(kept),
+        "truncated": omitted,
+        "symbols": kept,
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    kind = os.environ.get("TK_ARG_KIND") or "all"
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = _DEFAULT_LIMIT
+        return emit({"dry_run": True, "path": path, "kind": kind, "limit": limit})
+    if not path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATH is required",
+                "fix": "tk run code.symbols --path <path>",
+            },
+            2,
+        )
+    if kind not in _KINDS:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"kind must be class, function, or all: {kind}",
+                "fix": "tk run code.symbols --path <path> --kind all",
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run code.symbols --path <path> --limit 40",
+            },
+            2,
+        )
+    if limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 0",
+                "fix": "tk run code.symbols --path <path> --limit 40",
+            },
+            2,
+        )
+    if not os.path.exists(path):
+        return emit(
+            {
+                "error": "not_found",
+                "why": f"{path} does not exist",
+                "fix": "tk run code.symbols --path <path>",
+            },
+            1,
+        )
+    return emit(collect(path, kind, limit))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run code.symbols --path <path>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

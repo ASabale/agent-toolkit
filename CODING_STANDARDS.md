@@ -26,6 +26,8 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 
 ### 2.1 `lib/catalog.py` — Discovery, Indexing & Validation
 
+- **`suggest_closest_item(root_dir: Path, name: str) -> dict | None`**
+  Finds the closest catalog item when an agent mistypes a tool or chain name (checking `difflib.get_close_matches` against catalog keys and falling back to top `find_items(root_dir, name)` match), returning the matched item dict or `None`.
 - **`parse_tool_header(path: Path) -> dict`**
   Parses `# @tk-*` lines from the top comment block of a tool file:
   ```python
@@ -71,8 +73,9 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   2. All required header fields present (`name`, `summary`, `safety` in `{"read-only", "mutating", "destructive"}`, `output`, `example`, `verified`).
   3. `example` starts with `tk run <name>` and includes every required `--flag`.
   4. Syntax check passes (`bash -n` for `sh`/`bash` shebang; `py_compile` for `python` shebang).
-  5. Dry-run smoke check: running the tool with `TK_DRY_RUN=1` and synthetic dummy values for required flags (`"example"` for string, `"1"` for int/float, `"true"` for bool) exits `0` and produces valid JSON on `stdout`.
-  6. For chains: every step's `"tool"` exists in `discover_catalog(root_dir)`.
+  5. No duplicate `--flag` names in `args`, and any `(default: X)` value conforms to the declared arg `type`.
+  6. Dry-run smoke check: running the tool with `TK_DRY_RUN=1` and synthetic dummy values for required flags (`"example"` for string, `"1"` for int/float, `"true"` for bool) exits `0` and produces valid JSON on `stdout`.
+  7. For chains: every step's `"tool"` exists in `discover_catalog(root_dir)`.
 - **`check_all(root_dir: Path) -> dict`**
   Runs `check_item` across every item in `discover_catalog(root_dir)` and returns `{"ok": bool, "checked": int, "results": list[dict], "errors": list[str]}`.
 
@@ -84,12 +87,12 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   Extracts `--dry-run` anywhere in `argv` (`dry_run: bool`), parses `--flag value`, `--flag=value`, and standalone boolean `--flag` (`"true"`), and collects any stray positional tokens in `positional: list[str]`. When `item` is supplied, uses `item["args"]` schema so boolean flags do not swallow subsequent positional tokens and non-boolean flags accept values starting with `-` or `--` (other than `--dry-run`).
 - **`validate_and_build_env(item: dict, flags: dict[str, str], positional: list[str], dry_run: bool) -> tuple[bool, dict[str, str], dict | None]`**
   - Rejects non-empty `positional` with `{"error": "positional_arguments_forbidden", "why": "...", "fix": item["example"]}`.
-  - Rejects unknown `--flag` names not declared in `item["args"]` with `{"error": "unknown_flag", "why": "...", "fix": item["example"]}`.
+  - Rejects unknown `--flag` names not declared in `item["args"]` with `{"error": "unknown_flag", "why": "...", "fix": "..."}`. When an unknown flag is close to a declared flag (`difflib.get_close_matches`) or there is a single missing required flag, `why` names the suggested flag (`did you mean --<flag>?`) and `fix` rewrites the supplied command with the suggested flag and the caller's value so a small model recovers in 1 step.
   - Checks all required flags; if missing, constructs a copy-pasteable `fix` command that keeps already-supplied valid flags and appends `--missing <value>` placeholders.
   - Validates types (`int`, `float`, `bool`, `string`).
   - Returns `(True, env_dict, None)` with `TK_DRY_RUN="1"|"0"` and `TK_ARG_<NAME>` populated (including defaults for omitted optional flags).
 - **`run_tool(root_dir: Path, item: dict, flags: dict[str, str], positional: list[str] | None = None, dry_run: bool = False, stdin_data: str | None = None) -> tuple[int, str, str]`**
-  - Validates arguments, executes `item["path"]`, ensures `stdout` is compacted single-line or clean JSON, and formats any failure as a self-healing JSON error on `stderr`.
+  - Validates arguments, executes `item["path"]`, enforces `TK_MAX_OUTPUT_BYTES` (default `65536` bytes; returns `error="output_too_large"` if exceeded), ensures `stdout` is compacted single-line or clean JSON, and formats any failure as a self-healing JSON error on `stderr`.
 - **`run_chain(root_dir: Path, chain_item: dict, flags: dict[str, str], positional: list[str] | None = None, dry_run: bool = False) -> tuple[int, str, str]`**
   - Validates chain flags, resolves `$input.<arg>`, `$prev.<path>`, and `$step[i].<path>` across `steps`, pipes each step's JSON `stdout` into the next step's `stdin_data`, and halts on first error.
 
@@ -98,7 +101,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 ### 2.3 `lib/evolver.py` — Telemetry, Creation & Pruning
 
 - **`log_event(root_dir: Path, event_type: str, payload: dict) -> None`**
-  Appends `{"ts": ..., "event": event_type, ...}` to `state/events.jsonl`. Never raises.
+  Appends `{"ts": ..., "event": event_type, ...}` to `state/events.jsonl` (or `Path(os.environ["TK_STATE_DIR"]) / "events.jsonl"` when set). Skips writing when `TK_NO_TELEMETRY` is set to `"1"` or `"true"`. Never raises.
 - **`save_tool(root_dir: Path, name: str, summary: str, safety: str = "read-only", from_cmd: str | None = None, file_path: str | None = None, args_spec: list[str] | None = None, force: bool = False) -> tuple[int, str, str]`**
   Creates `tools/<namespace>/<tool-name>` with complete `# @tk-*` headers, sets `0o755`, runs `check_item`, rolls back on failure, logs `tool_saved`, and returns `(0, compact_json, "")`.
 - **`save_chain(root_dir: Path, name: str, summary: str, steps: list[dict], args: list[dict] | None = None, safety: str = "read-only", example: str | None = None, force: bool = False) -> tuple[int, str, str]`**

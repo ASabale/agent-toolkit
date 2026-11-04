@@ -150,13 +150,34 @@ class ValidateAndBuildEnvTests(unittest.TestCase):
 
     def test_rejects_unknown_flags(self):
         ok, env, err = validate_and_build_env(
-            _item(), {"--name": "ada", "--zoom": "1", "--extra": "x"}, [], False
+            _item(), {"--name": "ada", "--zoom": "1", "--qqqq": "x"}, [], False
         )
         self.assertFalse(ok)
         self.assertEqual(env, {})
         self.assertEqual(err["error"], "unknown_flag")
-        self.assertEqual(err["why"], "unknown flags: --extra, --zoom")
+        self.assertEqual(err["why"], "unknown flags: --qqqq, --zoom")
         self.assertEqual(err["fix"], "tk run demo.echo --name example --limit 10")
+
+    def test_unknown_flag_suggests_close_match_and_rewrites_fix(self):
+        ok, env, err = validate_and_build_env(
+            _item(), {"--nam": "ada lovelace", "--limt": "4"}, [], False
+        )
+        self.assertFalse(ok)
+        self.assertEqual(env, {})
+        self.assertEqual(err["error"], "unknown_flag")
+        self.assertIn("--limt (did you mean --limit?)", err["why"])
+        self.assertIn("--nam (did you mean --name?)", err["why"])
+        self.assertEqual(
+            err["fix"],
+            "tk run demo.echo --name 'ada lovelace' --limit 4",
+        )
+
+    def test_single_unknown_suggests_the_one_missing_required_flag(self):
+        ok, env, err = validate_and_build_env(_item(), {"--zzzz": "ada", "--limit": "3"}, [], False)
+        self.assertFalse(ok)
+        self.assertEqual(env, {})
+        self.assertEqual(err["why"], "unknown flags: --zzzz (did you mean --name?)")
+        self.assertEqual(err["fix"], "tk run demo.echo --name ada --limit 3")
 
     def test_missing_required_fix_keeps_supplied_flags_and_appends_placeholders(self):
         ok, env, err = validate_and_build_env(_item(), {"--limit": "5"}, [], False)
@@ -402,6 +423,47 @@ class RunToolTests(unittest.TestCase):
             self.assertEqual(events[1]["name"], "demo.echo")
             self.assertEqual(events[1]["kind"], "tool")
             self.assertEqual(events[1]["why"], "refused")
+
+    def test_output_over_byte_ceiling_is_output_too_large(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "big-tool",
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "json.dump({'blob': 'x' * 40}, sys.stdout)\n",
+            )
+            item = _item()
+            item["path"] = str(script)
+            previous = os.environ.get("TK_MAX_OUTPUT_BYTES")
+            os.environ["TK_MAX_OUTPUT_BYTES"] = "16"
+            try:
+                code, out, err = run_tool(root, item, {"--name": "ada"}, dry_run=True)
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                payload = json.loads(err)
+                self.assertEqual(payload["error"], "output_too_large")
+                self.assertIn("exceeds TK_MAX_OUTPUT_BYTES (16)", payload["why"])
+                self.assertIn("--limit", payload["fix"])
+                self.assertIn("json.pick", payload["fix"])
+                self.assertEqual(self._events(root), [])
+
+                code, out, err = run_tool(root, item, {"--name": "ada"})
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                payload = json.loads(err)
+                size = int(payload["why"].split()[1])
+                self.assertGreater(size, 16)
+                events = self._events(root)
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["event"], "run_error")
+                self.assertEqual(events[0]["why"], payload["why"])
+            finally:
+                if previous is None:
+                    os.environ.pop("TK_MAX_OUTPUT_BYTES", None)
+                else:
+                    os.environ["TK_MAX_OUTPUT_BYTES"] = previous
 
 
 class RunChainTests(unittest.TestCase):

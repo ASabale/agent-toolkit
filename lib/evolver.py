@@ -10,6 +10,7 @@ Public seam (CODING_STANDARDS.md §2.3):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import stat
@@ -60,11 +61,23 @@ _STOPWORDS = {
 _DUMMY = {"string": "example", "int": "1", "float": "1", "bool": "true"}
 
 
+def _telemetry_disabled() -> bool:
+    return os.environ.get("TK_NO_TELEMETRY", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _state_dir(root: Path) -> Path:
+    raw = os.environ.get("TK_STATE_DIR")
+    if raw is not None and raw.strip():
+        return Path(raw)
+    return root / "state"
+
+
 def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
     """Append one JSONL telemetry record. Swallows every I/O or encoding failure."""
+    if _telemetry_disabled():
+        return
     try:
-        root = Path(root_dir)
-        state = root / "state"
+        state = _state_dir(Path(root_dir))
         state.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -216,7 +229,7 @@ def prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tupl
         archived: list[str] = []
         for name in ordered:
             src = Path(str(catalog[name].get("path") or ""))
-            dest = root / "state" / "archive" / f"{stamp}-{name}"
+            dest = _state_dir(root) / "archive" / f"{stamp}-{name}"
             archived.append(str(dest))
             pruned.append(name)
             if dry_run:
@@ -244,7 +257,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
     try:
         root = Path(root_dir)
         catalog = _discover(root)
-        events = _read_events(root / "state" / "events.jsonl")
+        events = _read_events(_state_dir(root) / "events.jsonl")
         used, failed_runs, misses = _summarize_events(events)
         today = date.today().isoformat()
         promoted: list[str] = []
@@ -550,7 +563,7 @@ def _commit_draft(
 
 def _quarantine(root: Path, filename: str, text: str) -> None:
     try:
-        quarantine = root / "state" / "quarantine"
+        quarantine = _state_dir(root) / "quarantine"
         quarantine.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "draft"

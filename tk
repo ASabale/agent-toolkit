@@ -106,6 +106,15 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
     return 0
 
 
+def _suggest_fix(catalog, name: str) -> tuple[str, str]:
+    suggestion = catalog.suggest_closest_item(ROOT, name)
+    if suggestion is None:
+        return f"no tool or chain named {name}", "tk find"
+    suggested = suggestion["name"]
+    fix = suggestion.get("example") or f"tk info {suggested}"
+    return f"no tool or chain named {name} (did you mean {suggested}?)", fix
+
+
 def _cmd_info(catalog, evolver, argv: list[str]) -> int:
     if len(argv) != 1 or argv[0].startswith("--"):
         _err("missing_name", "info requires a tool or chain name", "tk find")
@@ -114,7 +123,8 @@ def _cmd_info(catalog, evolver, argv: list[str]) -> int:
     item = _catalog_item(catalog, name)
     if item is None:
         evolver.log_event(ROOT, "search_miss", {"query": name})
-        _err("not_found", f"no tool or chain named {name}", "tk find")
+        why, fix = _suggest_fix(catalog, name)
+        _err("not_found", why, fix)
         return 2
     _write_text(catalog.format_info_output(item))
     return 0
@@ -130,7 +140,8 @@ def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chain
     item = _catalog_item(catalog, name)
     if item is None:
         evolver.log_event(ROOT, "search_miss", {"query": name})
-        _err("not_found", f"no tool or chain named {name}", "tk find")
+        why, fix = _suggest_fix(catalog, name)
+        _err("not_found", why, fix)
         return 2
     if chains_only and item.get("kind") != "chain":
         _err("not_a_chain", f"{name} is a tool", f"tk run {name}")

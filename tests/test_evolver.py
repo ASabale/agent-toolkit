@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -527,6 +528,54 @@ class EvolverTests(unittest.TestCase):
         ]
         pruned_events = [event for event in events if event["event"] == "tool_pruned"]
         self.assertEqual([event["name"] for event in pruned_events], ["lab.pipe", "lab.echo", "lab.other"])
+
+    def test_state_dir_and_telemetry_switch_isolate_writes(self) -> None:
+        custom = self.root / "custom-state"
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+            log_event(self.root, "search_miss", {"query": "deploy"})
+        self.assertFalse((self.root / "state" / "events.jsonl").exists())
+        records = [
+            json.loads(line)
+            for line in (custom / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["query"], "deploy")
+
+        for value in ("1", "true", "yes"):
+            with patch.dict(os.environ, {"TK_NO_TELEMETRY": value, "TK_STATE_DIR": str(custom)}):
+                log_event(self.root, "run", {"name": "demo.echo"})
+        self.assertEqual(len((custom / "events.jsonl").read_text(encoding="utf-8").splitlines()), 1)
+
+        broken = self.root / "broken.sh"
+        broken.write_text("#!/usr/bin/env bash\nif [;\n", encoding="utf-8")
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+            code, _, err = save_tool(
+                self.root,
+                "demo.broken",
+                "Syntax error body",
+                file_path=str(broken),
+            )
+        self.assertEqual(code, 1, err)
+        self.assertFalse((self.root / "state" / "quarantine").exists())
+        self.assertTrue(any((custom / "quarantine").iterdir()))
+
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+            report = evolve_report(self.root)
+        self.assertEqual(report["search_misses"], [{"query": "deploy", "count": 1}])
+
+        ok, _, err = save_tool(
+            self.root,
+            "lab.echo",
+            "Echo a fixed JSON object",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        with patch.dict(os.environ, {"TK_STATE_DIR": str(custom)}):
+            code, out, err = prune_tools(self.root, ["lab.echo"])
+        self.assertEqual(code, 0, err)
+        archived = Path(json.loads(out)["archived_to"][0])
+        self.assertTrue(archived.is_file())
+        self.assertEqual(archived.parent.parent, custom)
+        self.assertFalse((self.root / "state" / "archive").exists())
 
     def test_evolve_report_empty_state(self) -> None:
         report = evolve_report(self.root)

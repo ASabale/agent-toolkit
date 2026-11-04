@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -34,13 +35,14 @@ class CliIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(self, *args: str, stdin: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(self.tk), *args],
             input=stdin,
             capture_output=True,
             text=True,
             cwd=self.root,
+            env=env,
         )
 
     def _events(self) -> list[dict]:
@@ -62,6 +64,33 @@ class CliIntegrationTests(unittest.TestCase):
         misses = [event for event in self._events() if event["event"] == "search_miss"]
         self.assertEqual(len(misses), 1)
         self.assertEqual(misses[0]["query"], "no-such-widget")
+
+    def test_info_and_run_suggest_closest_item(self) -> None:
+        info = self._run("info", "json.pik")
+        self.assertEqual(info.returncode, 2)
+        payload = json.loads(info.stderr)
+        self.assertEqual(payload["error"], "not_found")
+        self.assertIn("(did you mean json.pick?)", payload["why"])
+        self.assertIn("json.pick", payload["fix"])
+
+        unknown = self._run("run", "zzzzqqqq")
+        self.assertEqual(unknown.returncode, 2)
+        payload = json.loads(unknown.stderr)
+        self.assertNotIn("did you mean", payload["why"])
+        self.assertEqual(payload["fix"], "tk find")
+
+        typo = self._run("run", "json.pik")
+        self.assertEqual(typo.returncode, 2)
+        payload = json.loads(typo.stderr)
+        self.assertIn("(did you mean json.pick?)", payload["why"])
+        self.assertIn("tk run json.pick", payload["fix"])
+
+    def test_no_telemetry_skips_events_file(self) -> None:
+        env = os.environ.copy()
+        env["TK_NO_TELEMETRY"] = "1"
+        miss = self._run("info", "zzzzqqqq", env=env)
+        self.assertEqual(miss.returncode, 2)
+        self.assertFalse((self.root / "state" / "events.jsonl").exists())
 
     def test_run_valid_tool_missing_flag_fix_and_positional_rejection(self) -> None:
         missing = self._run("run", "json.pick")

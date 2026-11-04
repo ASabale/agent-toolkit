@@ -6,6 +6,7 @@ stdout is compact JSON. Failures are single-line JSON on stderr
 
 from __future__ import annotations
 
+import difflib
 import json
 import math
 import os
@@ -174,10 +175,48 @@ def validate_and_build_env(
     declared = {arg["flag"]: arg for arg in (item.get("args") or [])}
     unknown = sorted(flag for flag in flags if flag not in declared)
     if unknown:
+        spec_by_name = {
+            (flag[2:] if flag.startswith("--") else flag.lstrip("-")): flag
+            for flag in declared
+            if flag
+        }
+        candidates = [f"--{key}" for key in spec_by_name]
+        suggestions: dict[str, str] = {}
+        for flag in unknown:
+            bad = flag[2:] if flag.startswith("--") else flag.lstrip("-")
+            matches = difflib.get_close_matches("--" + bad, candidates, n=1, cutoff=0.55)
+            if matches:
+                suggestions[flag] = matches[0]
+        missing_required = [
+            arg["flag"]
+            for arg in (item.get("args") or [])
+            if arg.get("required") and arg["flag"] not in flags
+        ]
+        if len(unknown) == 1 and unknown[0] not in suggestions and len(missing_required) == 1:
+            suggestions[unknown[0]] = missing_required[0]
+        rendered = []
+        for flag in unknown:
+            hint = suggestions.get(flag)
+            if hint:
+                rendered.append(f"{flag} (did you mean {hint}?)")
+            else:
+                rendered.append(flag)
+        if suggestions:
+            rewritten = dict(flags)
+            for bad_flag, good_flag in suggestions.items():
+                if bad_flag not in rewritten:
+                    continue
+                if good_flag in rewritten:
+                    rewritten.pop(bad_flag)
+                else:
+                    rewritten[good_flag] = rewritten.pop(bad_flag)
+            fix = _fix_command(item, rewritten)
+        else:
+            fix = _example(item)
         return False, {}, {
             "error": "unknown_flag",
-            "why": "unknown flags: " + ", ".join(unknown),
-            "fix": _example(item),
+            "why": "unknown flags: " + ", ".join(rendered),
+            "fix": fix,
         }
 
     normalized: dict[str, str] = {}
@@ -336,7 +375,22 @@ def run_tool(
                     {"error": "invalid_output", "why": "stdout is not valid JSON", "fix": "tk check"},
                 ),
             )
-        return _record_and_return(root_dir, item, dry_run, (0, _compact(parsed), ""))
+        compact_out = _compact(parsed)
+        max_bytes = int(os.environ.get("TK_MAX_OUTPUT_BYTES", "65536"))
+        size = len(compact_out.encode("utf-8"))
+        if size > max_bytes:
+            return _record_and_return(
+                root_dir, item, dry_run,
+                _failure(
+                    1,
+                    {
+                        "error": "output_too_large",
+                        "why": f"output {size} bytes exceeds TK_MAX_OUTPUT_BYTES ({max_bytes})",
+                        "fix": "narrow with --limit or pipe stdout to json.pick",
+                    },
+                ),
+            )
+        return _record_and_return(root_dir, item, dry_run, (0, compact_out, ""))
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         return _record_and_return(
             root_dir, item, dry_run,

@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+# @tk-name: env.check
+# @tk-summary: Check PATH binaries and whether env vars are set (lengths only)
+# @tk-safety: read-only
+# @tk-arg: --bins | optional | string | Comma-separated CLI binaries to check on PATH (default: git,python3)
+# @tk-arg: --vars | optional | string | Comma-separated environment variable names to check (default: none)
+# @tk-output: json | {ok, binaries:[{name, found, path}], variables:[{name, set, length}], missing_bins, missing_vars}
+# @tk-example: tk run env.check --bins git,python3 --vars none
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import shutil
+import sys
+
+FIX = "tk run env.check --bins git,python3 --vars none"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def split_items(raw: str, default: str) -> list[str]:
+    text = raw.strip() if raw else ""
+    if not text:
+        text = default
+    if text.lower() == "none":
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def main() -> int:
+    bins_raw = os.environ.get("TK_ARG_BINS", "")
+    vars_raw = os.environ.get("TK_ARG_VARS", "")
+    bins_text = bins_raw.strip() if bins_raw.strip() else "git,python3"
+    vars_text = vars_raw.strip() if vars_raw.strip() else "none"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit({"dry_run": True, "bins": bins_text, "vars": vars_text})
+
+    binaries: list[dict] = []
+    missing_bins: list[str] = []
+    for name in split_items(bins_raw, "git,python3"):
+        path = shutil.which(name)
+        binaries.append({"name": name, "found": path is not None, "path": path})
+        if path is None:
+            missing_bins.append(name)
+
+    variables: list[dict] = []
+    missing_vars: list[str] = []
+    for name in split_items(vars_raw, "none"):
+        value = os.environ.get(name)
+        present = value is not None
+        variables.append(
+            {"name": name, "set": present, "length": len(value) if present else 0}
+        )
+        if not present:
+            missing_vars.append(name)
+
+    return emit(
+        {
+            "ok": not missing_bins and not missing_vars,
+            "binaries": binaries,
+            "variables": variables,
+            "missing_bins": missing_bins,
+            "missing_vars": missing_vars,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

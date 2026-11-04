@@ -19,6 +19,7 @@ from lib.catalog import (  # noqa: E402
     format_info_output,
     load_chain,
     parse_tool_header,
+    suggest_closest_item,
 )
 
 
@@ -384,6 +385,54 @@ printf '%s\\n' '{"ok":true}'
         self.assertEqual(report["checked"], 2)
         self.assertGreaterEqual(len(report["errors"]), 1)
         self.assertEqual(len(report["results"]), 2)
+
+    def test_check_item_rejects_duplicate_flags_and_mistyped_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            _write(
+                path,
+                _bash_tool(
+                    "demo.echo",
+                    "Echo a target id",
+                    args=[
+                        ("--limit", "optional", "int", "Maximum items (default: nope)"),
+                        ("--limit", "optional", "int", "Maximum items (default: 5)"),
+                        ("--verbose", "optional", "bool", "Verbose (default: maybe)"),
+                        ("--ratio", "optional", "float", "Ratio (default: 1.5)"),
+                    ],
+                    example="tk run demo.echo",
+                ),
+                executable=True,
+            )
+            result = check_item(root, "demo.echo")
+        self.assertFalse(result["ok"])
+        self.assertIn("duplicate arg flag: --limit", result["errors"])
+        self.assertIn("invalid default for --limit: nope is not int", result["errors"])
+        self.assertIn("invalid default for --verbose: maybe is not bool", result["errors"])
+        self.assertFalse(any("ratio" in err and "invalid default" in err for err in result["errors"]))
+
+
+class SuggestClosestItemTests(unittest.TestCase):
+    def test_close_name_then_token_fallback_then_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "tools" / "alpha" / "widget",
+                _bash_tool("alpha.widget", "Widget summary", args=[], example="tk run alpha.widget"),
+                executable=True,
+            )
+            _write(
+                root / "tools" / "fs" / "tree-digest",
+                _bash_tool("fs.tree-digest", "Tree digest", args=[], example="tk run fs.tree-digest"),
+                executable=True,
+            )
+            close = suggest_closest_item(root, "alph.widget")
+            tokens = suggest_closest_item(root, "qqqq-tree")
+            missing = suggest_closest_item(root, "qqqq-zzzz")
+        self.assertEqual(close["name"], "alpha.widget")
+        self.assertEqual(tokens["name"], "fs.tree-digest")
+        self.assertIsNone(missing)
 
 
 if __name__ == "__main__":

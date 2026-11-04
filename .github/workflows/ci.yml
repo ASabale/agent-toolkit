@@ -10,8 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Catalog check
-        run: ./tk check --json
+        run: |
+          export TK_NO_TELEMETRY=1
+          ./tk check --json
       - name: Historical wiki lint
-        run: python3 -c 'import json, subprocess, sys; r = json.loads(subprocess.check_output(["./tk", "run", "wiki.lint", "--path", "wiki"])); sys.exit(0 if r.get("ok") else 1)'
+        run: |
+          export TK_NO_TELEMETRY=1
+          python3 -c 'import json, subprocess, sys; r = json.loads(subprocess.check_output(["./tk", "run", "wiki.lint", "--path", "wiki"])); sys.exit(0 if r.get("ok") else 1)'
       - name: Unit and token budget tests
         run: python3 -m unittest discover -s tests -v

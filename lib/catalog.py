@@ -6,6 +6,7 @@ return empty or error-shaped values instead of raising.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import py_compile
@@ -251,6 +252,22 @@ def find_items(root_dir: Path, query: str = "") -> list[dict]:
         return []
 
 
+def suggest_closest_item(root_dir: Path, name: str) -> dict | None:
+    """Return the closest catalog item for a mistyped name, or None."""
+    try:
+        catalog = discover_catalog(root_dir)
+        matches = difflib.get_close_matches(name, catalog.keys(), n=1, cutoff=0.45)
+        if matches:
+            return catalog[matches[0]]
+        tokens = [tok for tok in re.split(r"[.\-_]+", name) if tok]
+        if not tokens:
+            return None
+        found = find_items(root_dir, " ".join(tokens))
+        return found[0] if found else None
+    except Exception:
+        return None
+
+
 def format_find_output(items: list[dict]) -> str:
     """Two lines per item: name/safety/summary, then the run example."""
     try:
@@ -439,6 +456,16 @@ def _dry_run_error(path: Path, args: list[dict]) -> str | None:
     return None
 
 
+def _default_matches(typ: str, default: str) -> bool:
+    if typ == "int":
+        return re.fullmatch(r"[+-]?\d+", default) is not None
+    if typ == "float":
+        return re.fullmatch(r"[+-]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[eE][+-]?\d+)?", default) is not None
+    if typ == "bool":
+        return default.strip().lower() in {"true", "false", "1", "0", "yes", "no"}
+    return True
+
+
 def _header_errors(item: dict) -> list[str]:
     errors: list[str] = []
     for field in ("name", "summary", "safety", "output", "example", "verified"):
@@ -447,6 +474,7 @@ def _header_errors(item: dict) -> list[str]:
     safety = str(item.get("safety") or "")
     if safety and safety not in _SAFETY:
         errors.append(f"invalid safety: {safety}")
+    seen_flags: set[str] = set()
     for arg in item.get("args") or []:
         if not isinstance(arg, dict):
             errors.append("invalid arg")
@@ -454,9 +482,17 @@ def _header_errors(item: dict) -> list[str]:
         flag = str(arg.get("flag") or "")
         if not flag.startswith("--"):
             errors.append(f"invalid arg flag: {flag or '(empty)'}")
+        elif flag in seen_flags:
+            errors.append(f"duplicate arg flag: {flag}")
+        else:
+            seen_flags.add(flag)
         typ = str(arg.get("type") or "")
         if typ not in _TYPES:
             errors.append(f"invalid arg type for {flag or '(empty)'}: {typ or '(empty)'}")
+        default = arg.get("default")
+        if default is not None and typ in {"int", "float", "bool"} and not _default_matches(typ, str(default)):
+            label = flag if flag.startswith("--") else f"--{flag.lstrip('-') or 'empty'}"
+            errors.append(f"invalid default for {label}: {default} is not {typ}")
     return errors
 
 

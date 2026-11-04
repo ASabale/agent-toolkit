@@ -97,6 +97,7 @@ def main() -> int:
             },
             1,
         )
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("TK_")}
     proc = subprocess.run(
         [
             sys.executable,
@@ -110,6 +111,7 @@ def main() -> int:
         ],
         capture_output=True,
         text=True,
+        env=child_env,
     )
     text = (proc.stderr or "") + "\n" + (proc.stdout or "")
     if proc.returncode != 0 and not _RAN.search(text):
