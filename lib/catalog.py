@@ -283,9 +283,24 @@ def _name_segments(name: str) -> set[str]:
     return {part for part in re.split(r"[.\-_]+", name) if part}
 
 
+_QUERY_STOPWORDS = {
+    "a", "an", "all", "and", "by", "check", "file", "files", "find", "for",
+    "from", "get", "in", "info", "into", "list", "of", "on", "path", "per",
+    "repo", "run", "show", "status", "the", "to", "tool", "tools", "view", "with",
+}
+
+
+def _query_tokens(query: str) -> list[str]:
+    return [tok for tok in query.lower().split() if tok]
+
+
 def _score(item: dict, query: str) -> int:
-    """Score query tokens: name exact 5 / substring 3, summary 2, args 1."""
-    tokens = [tok for tok in query.lower().split() if tok]
+    """Score query tokens: name exact 5 / substring 3, summary 2, args 1.
+
+    Stopwords still match a name or name segment. They do not score against
+    the summary or args.
+    """
+    tokens = _query_tokens(query)
     if not tokens:
         return 0
     name = str(item.get("name") or "").lower()
@@ -298,11 +313,26 @@ def _score(item: dict, query: str) -> int:
             score += 5
         elif token in name:
             score += 3
+        if token in _QUERY_STOPWORDS:
+            continue
         if token in summary:
             score += 2
         if token in args:
             score += 1
     return score
+
+
+def _token_coverage(item: dict, token: str) -> tuple[bool, bool]:
+    """Return (any hit, name hit outside the namespace segment)."""
+    name = str(item.get("name") or "").lower()
+    summary = str(item.get("summary") or "").lower()
+    args = _arg_blob(item)
+    segments = _name_segments(name)
+    namespace = name.split(".", 1)[0] if "." in name else ""
+    name_hit = token == name or token in segments or token in name
+    text_hit = token not in _QUERY_STOPWORDS and (token in summary or token in args)
+    specific = name_hit and token != namespace
+    return name_hit or text_hit, specific
 
 
 def find_items(
@@ -325,13 +355,41 @@ def find_items(
         if not str(query or "").strip():
             ranked = sorted(items, key=lambda item: str(item.get("name") or ""))
         else:
-            scored = []
+            content = [tok for tok in _query_tokens(query) if tok not in _QUERY_STOPWORDS]
+            namespaces = {
+                str(item.get("name") or "").lower().split(".", 1)[0]
+                for item in items
+                if "." in str(item.get("name") or "")
+            }
+            hit_tokens: set[str] = set()
+            specific_tokens: set[str] = set()
+            text_tokens: set[str] = set()
             for item in items:
-                score = _score(item, query)
-                if score > 0:
-                    scored.append((score, str(item.get("name") or ""), item))
-            scored.sort(key=lambda row: (-row[0], row[1]))
-            ranked = [row[2] for row in scored]
+                summary = str(item.get("summary") or "").lower()
+                args = _arg_blob(item)
+                for token in content:
+                    hit, specific = _token_coverage(item, token)
+                    if hit:
+                        hit_tokens.add(token)
+                    if specific:
+                        specific_tokens.add(token)
+                    if token not in namespaces and (token in summary or token in args):
+                        text_tokens.add(token)
+            dead = [token for token in content if token not in hit_tokens]
+            # Drop when a content token matches nothing and the other content
+            # tokens are only namespace names (`git zzzz`, `list kubernetes
+            # pods`). A summary hit (`ci`) or a non-namespace name hit
+            # (`tree` in `fs.tree-digest`) keeps ordinary OR scoring.
+            if dead and not specific_tokens and not text_tokens:
+                ranked = []
+            else:
+                scored = []
+                for item in items:
+                    score = _score(item, query)
+                    if score > 0:
+                        scored.append((score, str(item.get("name") or ""), item))
+                scored.sort(key=lambda row: (-row[0], row[1]))
+                ranked = [row[2] for row in scored]
         if isinstance(limit, int) and limit > 0:
             return ranked[:limit]
         return ranked
