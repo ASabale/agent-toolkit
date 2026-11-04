@@ -431,6 +431,71 @@ class LogRecentTests(unittest.TestCase):
                         self.assertEqual(healed_payload["count"], 2)
                         self.assertEqual(len(healed_payload["commits"]), 2)
 
+    def test_runner_invalid_type_fix_keeps_spaced_repo_and_dry_run(self) -> None:
+        """Non-integer --limit is rejected by the runner before the tool runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "my repo"
+            spaced.mkdir()
+            repo = _sample_repo(spaced)
+            repo_text = str(repo)
+            self.assertIn(" ", repo_text)
+            env = os.environ.copy()
+            for key in list(env):
+                if key.startswith("TK_ARG_") or key == "TK_DRY_RUN" or key == "TK_STATE_DIR":
+                    env.pop(key, None)
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [
+                    "./tk",
+                    "run",
+                    "git.log-recent",
+                    "--repo",
+                    repo_text,
+                    "--limit",
+                    "abc",
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+                env=env,
+                check=False,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout, "")
+            payload = json.loads(proc.stderr)
+            self.assertEqual(payload["error"], "invalid_type")
+            self.assertIn(shlex.quote(repo_text), payload["fix"])
+            self.assertIn("--dry-run", shlex.split(payload["fix"]))
+            argv = shlex.split(payload["fix"])
+            self.assertEqual(
+                argv,
+                [
+                    "tk",
+                    "run",
+                    "git.log-recent",
+                    "--repo",
+                    repo_text,
+                    "--limit",
+                    "5",
+                    "--dry-run",
+                ],
+            )
+            argv[0] = "./tk"
+            healed = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+            healed_payload = json.loads(healed.stdout)
+            self.assertEqual(healed_payload["repo"], repo_text)
+            self.assertIs(healed_payload["dry_run"], True)
+            self.assertEqual(healed_payload["limit"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

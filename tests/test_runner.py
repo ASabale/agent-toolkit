@@ -207,7 +207,22 @@ class ValidateAndBuildEnvTests(unittest.TestCase):
         self.assertEqual(env, {})
         self.assertEqual(err["error"], "invalid_type")
         self.assertEqual(err["why"], "--limit expects int, got 'nope'")
-        self.assertEqual(err["fix"], "tk run demo.echo --name example --limit 10")
+        self.assertEqual(err["fix"], "tk run demo.echo --name ada --limit 10")
+
+    def test_invalid_type_fix_keeps_other_flags_and_dry_run(self):
+        ok, env, err = validate_and_build_env(
+            _item(),
+            {"--name": "ada lovelace", "--limit": "nope", "--verbose": "yes"},
+            [],
+            True,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(env, {})
+        self.assertEqual(err["error"], "invalid_type")
+        self.assertEqual(
+            err["fix"],
+            "tk run demo.echo --name 'ada lovelace' --limit 10 --verbose yes --dry-run",
+        )
 
     def test_success_env_includes_defaults_and_dry_run_bit(self):
         ok, env, err = validate_and_build_env(
