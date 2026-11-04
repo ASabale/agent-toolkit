@@ -95,13 +95,27 @@ def _catalog_item(catalog, name: str):
 
 
 def _cmd_find(catalog, evolver, argv: list[str]) -> int:
-    fix = "tk find [query] [--limit <n>]"
+    fix = "tk find [query] [--limit <n>] [--namespace <ns>]"
     query_parts: list[str] = []
     limit = None
+    namespace = None
     index = 0
     while index < len(argv):
         token = argv[index]
-        if token == "--limit" or token.startswith("--limit="):
+        if token == "--namespace" or token.startswith("--namespace="):
+            if token.startswith("--namespace="):
+                raw = token.split("=", 1)[1]
+            elif index + 1 >= len(argv):
+                _err("missing_flag", "--namespace requires a value", fix)
+                return 2
+            else:
+                index += 1
+                raw = argv[index]
+            if not str(raw).strip():
+                _err("missing_flag", "--namespace requires a value", fix)
+                return 2
+            namespace = raw
+        elif token == "--limit" or token.startswith("--limit="):
             if token.startswith("--limit="):
                 raw = token.split("=", 1)[1]
             elif index + 1 >= len(argv):
@@ -126,7 +140,7 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
             query_parts.append(token)
         index += 1
     query = " ".join(query_parts).strip()
-    items = catalog.find_items(ROOT, query, limit=limit)
+    items = catalog.find_items(ROOT, query, limit=limit, namespace=namespace)
     if not items:
         evolver.log_event(ROOT, "search_miss", {"query": query})
     _write_text(catalog.format_find_output(items))

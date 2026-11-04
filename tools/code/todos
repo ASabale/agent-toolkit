@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+# @tk-name: code.todos
+# @tk-summary: List TODO, FIXME, and similar tags in source comments
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | File or directory path to scan
+# @tk-arg: --tags | optional | string | Comma-separated tags to match (default: TODO,FIXME,HACK,XXX,BUG)
+# @tk-arg: --limit | optional | int | Maximum items to return (default: 30)
+# @tk-output: json | {path, count, truncated, items:[{file, line, tag, text}]}
+# @tk-example: tk run code.todos --path . --tags TODO,FIXME --limit 20
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import re
+import sys
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_DEFAULT_LIMIT = 30
+_DEFAULT_TAGS = "TODO,FIXME,HACK,XXX,BUG"
+_MARKERS = ("#", "//", "/*", "--")
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _parse_tags(raw: str) -> list[str]:
+    tags = []
+    for part in raw.split(","):
+        tag = part.strip().upper()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _iter_files(root: str):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(name for name in dirnames if name not in _SKIP_DIRS)
+        for name in sorted(filenames):
+            yield os.path.join(dirpath, name)
+
+
+def _rel(root: str, path: str) -> str:
+    if os.path.isfile(root):
+        return os.path.basename(path)
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _comment_region(line: str) -> str | None:
+    indexes = [line.find(marker) for marker in _MARKERS]
+    hits = [index for index in indexes if index >= 0]
+    if not hits:
+        return None
+    return line[min(hits):]
+
+
+def scan(root: str, tags: list[str], limit: int) -> dict:
+    if not tags:
+        items: list[dict] = []
+    else:
+        pattern = re.compile(
+            r"\b(" + "|".join(re.escape(tag) for tag in tags) + r")\b(?:\([^)]*\))?\s*:?\s*(.+)"
+        )
+        items = []
+        for path in _iter_files(root):
+            try:
+                raw = open(path, "rb").read()
+            except OSError:
+                continue
+            if b"\x00" in raw:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            rel = _rel(root, path)
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                region = _comment_region(line)
+                if region is None:
+                    continue
+                match = pattern.search(region)
+                if not match:
+                    continue
+                message = match.group(2).strip()
+                if not message:
+                    continue
+                items.append(
+                    {
+                        "file": rel,
+                        "line": lineno,
+                        "tag": match.group(1),
+                        "text": message,
+                    }
+                )
+    kept = items[:limit]
+    return {
+        "path": root,
+        "count": len(items),
+        "truncated": len(items) > limit,
+        "items": kept,
+    }
+
+
+def _limit(raw: str) -> int | None:
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    tags_raw = os.environ.get("TK_ARG_TAGS") or _DEFAULT_TAGS
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        limit = _limit(limit_raw)
+        return emit(
+            {
+                "dry_run": True,
+                "path": path,
+                "tags": tags_raw,
+                "limit": _DEFAULT_LIMIT if limit is None else limit,
+            }
+        )
+    if not path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATH is required",
+                "fix": "tk run code.todos --path <path>",
+            },
+            2,
+        )
+    limit = _limit(limit_raw)
+    if limit is None or limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not a non-negative int: {limit_raw}",
+                "fix": "tk run code.todos --path <path> --limit 30",
+            },
+            2,
+        )
+    if not os.path.exists(path):
+        return emit(
+            {
+                "error": "not_found",
+                "why": "path does not exist",
+                "fix": "tk run code.todos --path <path>",
+            },
+            2,
+        )
+    return emit(scan(path, _parse_tags(tags_raw), limit))
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        sys.exit(
+            emit(
+                {"error": "internal_error", "why": str(exc), "fix": "tk check"},
+                1,
+            )
+        )

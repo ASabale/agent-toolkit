@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+# @tk-name: json.diff
+# @tk-summary: Structural diff of two JSON files by dotted path
+# @tk-safety: read-only
+# @tk-arg: --left | required | string | Path to left JSON file
+# @tk-arg: --right | required | string | Path to right JSON file
+# @tk-arg: --limit | optional | int | Maximum diff entries per category (default: 30)
+# @tk-output: json | {equal, count, truncated, added:[{path, value}], removed:[{path, value}], changed:[{path, left, right}]}
+# @tk-example: tk run json.diff --left a.json --right b.json --limit 20
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import sys
+
+_FIX = "tk run json.diff --left <a.json> --right <b.json> --limit 30"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _same_container(left, right) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool)
+    return isinstance(left, dict) and isinstance(right, dict) or isinstance(left, list) and isinstance(right, list)
+
+
+def _child(path: str, key: str) -> str:
+    return f"{path}.{key}" if path else key
+
+
+def _index(path: str, index: int) -> str:
+    return f"{path}[{index}]"
+
+
+def _walk(left, right, path: str, added: list, removed: list, changed: list) -> None:
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key in sorted(set(left) | set(right), key=str):
+            child = _child(path, str(key))
+            if key not in left:
+                added.append({"path": child, "value": right[key]})
+            elif key not in right:
+                removed.append({"path": child, "value": left[key]})
+            else:
+                _walk(left[key], right[key], child, added, removed, changed)
+        return
+    if isinstance(left, list) and isinstance(right, list):
+        for index in range(max(len(left), len(right))):
+            child = _index(path, index)
+            if index >= len(left):
+                added.append({"path": child, "value": right[index]})
+            elif index >= len(right):
+                removed.append({"path": child, "value": left[index]})
+            else:
+                _walk(left[index], right[index], child, added, removed, changed)
+        return
+    if not _same_container(left, right) and left != right:
+        changed.append({"path": path or "$", "left": left, "right": right})
+        return
+    if left != right:
+        changed.append({"path": path or "$", "left": left, "right": right})
+
+
+def diff_docs(left, right) -> tuple[list, list, list]:
+    added: list = []
+    removed: list = []
+    changed: list = []
+    _walk(left, right, "", added, removed, changed)
+    return added, removed, changed
+
+
+def main() -> int:
+    left_path = os.environ.get("TK_ARG_LEFT", "")
+    right_path = os.environ.get("TK_ARG_RIGHT", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "30"
+    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
+    if dry:
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = 30
+        return emit(
+            {
+                "dry_run": True,
+                "left": left_path or "example",
+                "right": right_path or "example",
+                "limit": limit,
+            }
+        )
+    if not left_path or not right_path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_LEFT and TK_ARG_RIGHT are required",
+                "fix": _FIX,
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {"error": "invalid_flag", "why": f"limit is not an int: {limit_raw}", "fix": _FIX},
+            2,
+        )
+    if limit < 1:
+        return emit(
+            {"error": "invalid_flag", "why": "limit must be >= 1", "fix": _FIX},
+            2,
+        )
+    try:
+        with open(left_path, encoding="utf-8") as handle:
+            left = json.load(handle)
+        with open(right_path, encoding="utf-8") as handle:
+            right = json.load(handle)
+    except FileNotFoundError as exc:
+        return emit(
+            {
+                "error": "not_found",
+                "why": f"{exc.filename} not found",
+                "fix": _FIX,
+            },
+            2,
+        )
+    except json.JSONDecodeError as exc:
+        return emit(
+            {"error": "invalid_json", "why": str(exc), "fix": _FIX},
+            2,
+        )
+    added, removed, changed = diff_docs(left, right)
+    total = len(added) + len(removed) + len(changed)
+    truncated = len(added) > limit or len(removed) > limit or len(changed) > limit
+    return emit(
+        {
+            "equal": total == 0,
+            "count": total,
+            "truncated": truncated,
+            "added": added[:limit],
+            "removed": removed[:limit],
+            "changed": changed[:limit],
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

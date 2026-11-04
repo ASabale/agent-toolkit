@@ -143,6 +143,24 @@ class ImportsTests(unittest.TestCase):
             {"dry_run": True, "path": "lib", "limit": 20},
         )
 
+    def test_extensionless_python_shebang_is_scanned(self) -> None:
+        tmp = _tree()
+        self.addCleanup(tmp.cleanup)
+        script = Path(tmp.name) / "bin" / "tool"
+        script.parent.mkdir()
+        script.write_text(
+            "#!/usr/bin/env python3\nimport pathlib\nfrom pkg.util import helper\n",
+            encoding="utf-8",
+        )
+        proc = _run(IMPORTS, {"TK_ARG_PATH": tmp.name, "TK_ARG_LIMIT": "30"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        by_file = {item["file"]: item["imports"] for item in payload["by_file"]}
+        self.assertIn("bin/tool", by_file)
+        self.assertIn("pathlib", by_file["bin/tool"])
+        self.assertIn("pkg.util", by_file["bin/tool"])
+        self.assertIn("pathlib", payload["external"])
+
 
 class DependentsTests(unittest.TestCase):
     def test_finds_import_statements_not_comments(self) -> None:
@@ -214,6 +232,34 @@ class DependentsTests(unittest.TestCase):
         self.assertIn("lib/runner.py", files)
         self.assertIn("lib/evolver.py", files)
         self.assertNotIn("lib/catalog.py", files)
+
+    def test_extensionless_python_and_dotted_module(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "other_pkg").mkdir()
+        (root / "other_pkg" / "util.py").write_text("x = 1\n", encoding="utf-8")
+        (root / "caller.py").write_text(
+            "import other_pkg.util\nimport pkg.util\nimport deep.pkg.util.more\n",
+            encoding="utf-8",
+        )
+        tool = root / "hook"
+        tool.write_text("#!/usr/bin/env python3\nfrom pkg.util import helper\n", encoding="utf-8")
+        proc = _run(
+            DEPENDENTS,
+            {"TK_ARG_PATH": tmp.name, "TK_ARG_TARGET": "pkg.util", "TK_ARG_LIMIT": "30"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        files = {item["file"] for item in payload["dependents"]}
+        self.assertIn("caller.py", files)
+        self.assertIn("hook", files)
+        statements = [item["statement"] for item in payload["dependents"] if item["file"] == "caller.py"]
+        self.assertTrue(any("import pkg.util" in line for line in statements))
+        self.assertTrue(any("deep.pkg.util" in line for line in statements))
+        self.assertTrue(all("other_pkg.util" not in line for line in statements))
+        hook_lines = [item["statement"] for item in payload["dependents"] if item["file"] == "hook"]
+        self.assertTrue(any("pkg.util" in line for line in hook_lines))
 
 
 class BlastRadiusTests(unittest.TestCase):

@@ -86,9 +86,19 @@ def _module_matches(module: str, target: str) -> bool:
         return True
     parts = _segments(module)
     want = _segments(target)
-    if want and parts[-len(want) :] == want:
-        return True
-    return target in parts or (want[-1] in parts if want else False)
+    if len(want) > 1:
+        return any(parts[i : i + len(want)] == want for i in range(len(parts) - len(want) + 1))
+    return target in parts or (want[0] in parts if want else False)
+
+
+def _extensionless_python(path: str, text: str) -> bool:
+    if os.path.splitext(path)[1] != "":
+        return False
+    lines = text.splitlines()
+    if not lines:
+        return False
+    first = lines[0]
+    return first.startswith("#!") and "python" in first
 
 
 def _is_self(rel: str, target: str) -> bool:
@@ -203,7 +213,7 @@ def search(root: str, target: str, limit: int) -> dict:
         if text is None:
             continue
         ext = os.path.splitext(path)[1].lower()
-        if ext == ".py":
+        if ext == ".py" or _extensionless_python(path, text):
             hits = _py_hits(text, norm)
         elif ext in {".js", ".ts", ".tsx", ".go", ".rs"}:
             hits = _regex_hits(text, ext, norm)

@@ -16,7 +16,6 @@ import sys
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
 _SOURCE_EXT = {".py", ".js", ".ts", ".tsx", ".go", ".rs"}
-_CODE_EXT = {".py", ".js", ".ts", ".tsx", ".go", ".rs"}
 _DEFAULT_LIMIT = 30
 _JS_IMPORT = re.compile(
     r"""(?:\bfrom\s+|require\(\s*|import\(\s*)['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]"""
@@ -119,6 +118,16 @@ def _other_imports(text: str, ext: str) -> list[str]:
     return found
 
 
+def _extensionless_python(path: str, text: str) -> bool:
+    if os.path.splitext(path)[1] != "":
+        return False
+    lines = text.splitlines()
+    if not lines:
+        return False
+    first = lines[0]
+    return first.startswith("#!") and "python" in first
+
+
 def _top_level(module: str) -> str:
     if module.startswith("."):
         return module
@@ -134,7 +143,7 @@ def _is_internal(module: str, roots: list[str]) -> bool:
     for root in roots:
         if os.path.isdir(os.path.join(root, top)):
             return True
-        for ext in _CODE_EXT:
+        for ext in _SOURCE_EXT:
             if os.path.isfile(os.path.join(root, top + ext)):
                 return True
     return False
@@ -152,13 +161,16 @@ def scan(root: str, limit: int) -> dict:
     files_scanned = 0
     for path in _iter_files(root):
         ext = os.path.splitext(path)[1].lower()
-        if ext not in _SOURCE_EXT:
+        if ext not in _SOURCE_EXT and ext != "":
             continue
         text = _read_text(path)
         if text is None:
             continue
+        python_script = ext == ".py" or _extensionless_python(path, text)
+        if not python_script and ext not in _SOURCE_EXT:
+            continue
         files_scanned += 1
-        modules = _py_imports(text) if ext == ".py" else _other_imports(text, ext)
+        modules = _py_imports(text) if python_script else _other_imports(text, ext)
         unique = sorted(set(modules))
         for module in unique:
             bucket = internal if _is_internal(module, roots) else external

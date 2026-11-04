@@ -234,14 +234,23 @@ def _score(item: dict, query: str) -> int:
     return score
 
 
-def find_items(root_dir: Path, query: str = "", limit: int | None = None) -> list[dict]:
+def find_items(
+    root_dir: Path,
+    query: str = "",
+    limit: int | None = None,
+    namespace: str | None = None,
+) -> list[dict]:
     """Return catalog items matching ``query``, best score then name.
 
-    A positive ``limit`` keeps only the first matches.
+    A positive ``limit`` keeps only the first matches. A non-empty
+    ``namespace`` keeps names equal to that namespace or under it.
     """
     try:
         catalog = discover_catalog(root_dir)
         items = list(catalog.values())
+        ns = str(namespace or "").strip().lower().rstrip(".")
+        if ns:
+            items = [item for item in items if _in_namespace(item, ns)]
         if not str(query or "").strip():
             ranked = sorted(items, key=lambda item: str(item.get("name") or ""))
         else:
@@ -257,6 +266,36 @@ def find_items(root_dir: Path, query: str = "", limit: int | None = None) -> lis
         return ranked
     except Exception:
         return []
+
+
+def _in_namespace(item: dict, namespace: str) -> bool:
+    name = str(item.get("name") or "").lower()
+    return name == namespace or name.startswith(f"{namespace}.")
+
+
+_SCRIPT_ARG_RE = re.compile(r"\bTK_ARG_([A-Z][A-Z0-9_]*)\b")
+
+
+def _undeclared_arg_env_errors(path: Path, item: dict) -> list[str]:
+    declared = {
+        str(arg.get("env_var"))
+        for arg in (item.get("args") or [])
+        if isinstance(arg, dict) and arg.get("env_var")
+    }
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found: set[str] = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        found.update(_SCRIPT_ARG_RE.findall(line))
+    return [
+        f"undeclared arg env var in script: TK_ARG_{name}"
+        for name in sorted(found)
+        if f"TK_ARG_{name}" not in declared
+    ]
 
 
 def suggest_closest_item(root_dir: Path, name: str) -> dict | None:
@@ -642,6 +681,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         errors.extend(_header_errors(item))
         errors.extend(_example_ok(str(item.get("name") or ""), str(item.get("example") or ""), item.get("args") or []))
         if not is_chain:
+            errors.extend(_undeclared_arg_env_errors(path, item))
             syntax = _syntax_error(path)
             if syntax:
                 errors.append(syntax)

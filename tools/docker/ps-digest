@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# @tk-name: docker.ps-digest
+# @tk-summary: Container id, name, image, state, and ports from docker ps
+# @tk-safety: read-only
+# @tk-arg: --state | optional | string | Filter by running, exited, or all (default: all)
+# @tk-arg: --limit | optional | int | Maximum containers to return (default: 25)
+# @tk-output: json | {count, running, exited, truncated, containers:[{id, name, image, state, status, ports}]}
+# @tk-example: tk run docker.ps-digest --state all --limit 20
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import subprocess
+import sys
+
+_FIX = "tk run docker.ps-digest --state all --limit 25"
+_STATES = ("all", "running", "exited")
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _field(row: dict, *keys: str) -> str:
+    for key in keys:
+        if key in row and row[key] is not None:
+            return str(row[key])
+    return ""
+
+
+def parse_ps(text: str) -> list[dict]:
+    containers: list[dict] = []
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        row = json.loads(raw)
+        if not isinstance(row, dict):
+            raise ValueError("docker ps line is not an object")
+        containers.append(
+            {
+                "id": _field(row, "ID", "Id", "id"),
+                "name": _field(row, "Names", "Name", "name"),
+                "image": _field(row, "Image", "image"),
+                "state": _field(row, "State", "state"),
+                "status": _field(row, "Status", "status"),
+                "ports": _field(row, "Ports", "ports"),
+            }
+        )
+    return containers
+
+
+def main() -> int:
+    state = (os.environ.get("TK_ARG_STATE") or "all").strip().lower()
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "25"
+    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
+    if dry:
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = 25
+        if state not in _STATES:
+            state = "all"
+        return emit({"dry_run": True, "state": state, "limit": limit})
+    if state not in _STATES:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"state must be all, running, or exited: {state}",
+                "fix": _FIX,
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": _FIX,
+            },
+            2,
+        )
+    if limit < 1:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 1",
+                "fix": _FIX,
+            },
+            2,
+        )
+    binary = os.environ.get("TK_DOCKER_BIN") or "docker"
+    proc = subprocess.run(
+        [binary, "ps", "-a", "--format", "{{json .}}"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        why = (proc.stderr or proc.stdout or f"docker exited {proc.returncode}").strip()
+        return emit(
+            {"error": "docker_failed", "why": why[:500], "fix": "start the docker daemon and retry"},
+            1,
+        )
+    try:
+        parsed = parse_ps(proc.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return emit(
+            {"error": "docker_failed", "why": f"unreadable docker ps output: {exc}", "fix": _FIX},
+            1,
+        )
+    running = sum(1 for row in parsed if row["state"].lower() == "running")
+    exited = sum(1 for row in parsed if row["state"].lower() == "exited")
+    if state == "all":
+        matched = parsed
+    else:
+        matched = [row for row in parsed if row["state"].lower() == state]
+    shown = matched[:limit]
+    return emit(
+        {
+            "count": len(shown),
+            "running": running,
+            "exited": exited,
+            "truncated": len(matched) > limit,
+            "containers": shown,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "docker_failed", "why": "docker timed out after 15s", "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        name = exc.filename or "docker"
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "docker_unavailable",
+                    "why": f"{name} not found",
+                    "fix": "install docker or set TK_DOCKER_BIN",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

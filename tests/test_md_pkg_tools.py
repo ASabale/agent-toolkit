@@ -102,6 +102,34 @@ class SectionTests(unittest.TestCase):
         err = json.loads(result.stderr)
         self.assertEqual(err["error"], "heading_not_found")
 
+    def test_outline_truncation_and_literal_outline_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "note.md"
+            path.write_text(
+                "# Outline\n\nsection body\n\n## Later\n\nmore\n",
+                encoding="utf-8",
+            )
+            outline = _run(
+                SECTION,
+                {"TK_ARG_PATH": str(path), "TK_ARG_HEADING": "outline", "TK_ARG_MAX_LINES": "1"},
+            )
+            literal = _run(
+                SECTION,
+                {"TK_ARG_PATH": str(path), "TK_ARG_HEADING": "Outline", "TK_ARG_MAX_LINES": "60"},
+            )
+        self.assertEqual(outline.returncode, 0, outline.stderr)
+        tree = json.loads(outline.stdout)
+        self.assertEqual(tree["mode"], "outline")
+        self.assertEqual(tree["count"], 1)
+        self.assertEqual(tree["truncated"], 1)
+        self.assertEqual([item["title"] for item in tree["headings"]], ["Outline"])
+        self.assertEqual(literal.returncode, 0, literal.stderr)
+        body = json.loads(literal.stdout)
+        self.assertEqual(body["heading"], "Outline")
+        self.assertEqual(body["level"], 1)
+        self.assertIn("section body", body["content"])
+        self.assertNotIn("mode", body)
+
 
 class ManifestTests(unittest.TestCase):
     def test_digest_package_pyproject_and_requirements(self) -> None:
@@ -143,6 +171,28 @@ class ManifestTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["dependencies"], ["alpha"])
         self.assertEqual(payload["truncated"], 2)
+
+    def test_pep508_extras_markers_and_missing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                'requests[security]>=2.0\ntomli;python_version<"3.11"\n',
+                encoding="utf-8",
+            )
+            parsed = _run(DIGEST, {"TK_ARG_PATH": str(root), "TK_ARG_LIMIT": "30"})
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            missing = _run(DIGEST, {"TK_ARG_PATH": str(empty), "TK_ARG_LIMIT": "30"})
+            notes = Path(tmp) / "notes.txt"
+            notes.write_text("hello\n", encoding="utf-8")
+            unsupported = _run(DIGEST, {"TK_ARG_PATH": str(notes), "TK_ARG_LIMIT": "30"})
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        self.assertEqual(json.loads(parsed.stdout)["dependencies"], ["requests", "tomli"])
+        for result, raw in ((missing, str(empty)), (unsupported, str(notes))):
+            self.assertEqual(result.returncode, 1)
+            err = json.loads(result.stderr)
+            self.assertEqual(err["error"], "no_manifest_found")
+            self.assertIn(raw, err["why"])
 
 
 if __name__ == "__main__":

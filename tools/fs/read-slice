@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+# @tk-name: fs.read-slice
+# @tk-summary: Read a 1-indexed inclusive line range from a text file
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | Path to text file to read
+# @tk-arg: --start | optional | int | Start line 1-indexed (default: 1)
+# @tk-arg: --end | optional | int | End line inclusive (default: 80)
+# @tk-output: json | {path, start, end, total_lines, lines:[{line, text}]}
+# @tk-example: tk run fs.read-slice --path README.md --start 1 --end 30
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import sys
+
+_FIX = "tk run fs.read-slice --path <file> --start 1 --end 80"
+_LINE_CAP = 300
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _parse_int(raw: str, default: int, dry: bool) -> tuple[int | None, dict | None]:
+    text = raw.strip() or str(default)
+    try:
+        value = int(text)
+    except ValueError:
+        if dry:
+            return default, None
+        return None, {
+            "error": "invalid_flag",
+            "why": f"not an int: {text}",
+            "fix": _FIX,
+        }
+    return value, None
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    start_raw = os.environ.get("TK_ARG_START") or "1"
+    end_raw = os.environ.get("TK_ARG_END") or "80"
+    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
+    start, start_err = _parse_int(start_raw, 1, dry)
+    end, end_err = _parse_int(end_raw, 80, dry)
+    if dry:
+        return emit(
+            {
+                "dry_run": True,
+                "path": path or "example",
+                "start": start if start is not None else 1,
+                "end": end if end is not None else 80,
+            }
+        )
+    if not path:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_PATH is required", "fix": _FIX},
+            2,
+        )
+    if start_err or end_err:
+        return emit(start_err or end_err, 2)
+    assert start is not None and end is not None
+    if start < 1:
+        return emit(
+            {"error": "invalid_range", "why": "start must be >= 1", "fix": _FIX},
+            2,
+        )
+    if not os.path.isfile(path):
+        return emit(
+            {"error": "not_found", "why": f"{path} not found", "fix": _FIX},
+            2,
+        )
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        lines = handle.read().splitlines()
+    total = len(lines)
+    if total == 0:
+        return emit({"path": path, "start": start, "end": 0, "total_lines": 0, "lines": []})
+    if start > total:
+        return emit(
+            {
+                "error": "invalid_range",
+                "why": f"start {start} is past {total} lines",
+                "fix": _FIX,
+            },
+            2,
+        )
+    clamped = min(end, total)
+    if clamped < start:
+        return emit(
+            {
+                "error": "invalid_range",
+                "why": f"end {end} is before start {start}",
+                "fix": _FIX,
+            },
+            2,
+        )
+    selected = []
+    for number in range(start, clamped + 1):
+        text = lines[number - 1]
+        if len(text) > _LINE_CAP:
+            text = text[:_LINE_CAP]
+        selected.append({"line": number, "text": text})
+    return emit(
+        {
+            "path": path,
+            "start": start,
+            "end": clamped,
+            "total_lines": total,
+            "lines": selected,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

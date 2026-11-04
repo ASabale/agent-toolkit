@@ -44,10 +44,13 @@ def _dep_name(spec: str) -> str:
     text = spec.strip().strip("\"'")
     if not text or text.startswith("#"):
         return ""
-    for sep in (">=", "<=", "==", "~=", "!=", ">", "<", "@", " "):
-        if sep in text:
-            text = text.split(sep, 1)[0]
-    return text.strip()
+    seps = (">=", "<=", "==", "~=", "!=", ">", "<", "@", "[", ";", " ")
+    cut = len(text)
+    for sep in seps:
+        idx = text.find(sep)
+        if idx != -1:
+            cut = min(cut, idx)
+    return text[:cut].strip()
 
 
 def _cap(items: list[str], limit: int) -> tuple[list[str], int]:
@@ -301,6 +304,16 @@ def main() -> int:
         return fail("invalid_flag", "limit must be >= 0", 2)
     if not path or not os.path.exists(path):
         return fail("not_found", f"path not found: {path}", 1)
+    raw_path = path
+    if not _targets(raw_path):
+        return emit(
+            {
+                "error": "no_manifest_found",
+                "why": f"no supported manifest found in {raw_path}",
+                "fix": FIX,
+            },
+            1,
+        )
     try:
         return emit(digest(path, limit))
     except (OSError, json.JSONDecodeError, ValueError) as exc:

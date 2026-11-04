@@ -58,6 +58,7 @@ def outline(path: str, heads: list[dict], max_lines: int) -> dict:
         "path": path,
         "mode": "outline",
         "count": len(kept),
+        "truncated": max(0, len(heads) - len(kept)),
         "headings": kept,
     }
 
@@ -118,7 +119,8 @@ def main() -> int:
     except OSError as exc:
         return fail("not_found", str(exc), 1)
     heads = headings_of(text)
-    if heading.casefold() == "outline":
+    titled_outline = any("outline" in item["title"].casefold() for item in heads)
+    if heading == "outline" or (heading.casefold() == "outline" and not titled_outline):
         return emit(outline(path, heads, max_lines))
     payload = section(path, text, heads, heading, max_lines)
     if payload is None:

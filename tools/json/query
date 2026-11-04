@@ -130,10 +130,30 @@ def _literal(raw: str):
 
 
 def _require_predicate(predicate: str) -> tuple[str, str, str]:
-    op = next((candidate for candidate in _OPS if candidate in predicate), None)
+    quote = None
+    op = None
+    op_at = -1
+    index = 0
+    while index < len(predicate):
+        char = predicate[index]
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        matched = next((candidate for candidate in _OPS if predicate.startswith(candidate, index)), None)
+        if matched is not None:
+            op = matched
+            op_at = index
+            break
+        index += 1
     if op is None:
         raise ValueError(f"invalid filter predicate: {predicate}")
-    key, raw_value = predicate.split(op, 1)
+    key, raw_value = predicate[:op_at], predicate[op_at + len(op) :]
     key = key.strip()
     raw_value = raw_value.strip()
     if not key or not raw_value:

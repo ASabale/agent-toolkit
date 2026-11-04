@@ -198,9 +198,15 @@ class DiscoverAndFindTests(unittest.TestCase):
             limited = [item["name"] for item in find_items(root, "", limit=2)]
             unbounded = [item["name"] for item in find_items(root, "", limit=None)]
             ignored = [item["name"] for item in find_items(root, "", limit=0)]
+            namespaced = [item["name"] for item in find_items(root, "", namespace="  GH. ")]
+            dotted = [item["name"] for item in find_items(root, "view", namespace="pr.")]
+            unmatched = [item["name"] for item in find_items(root, "", namespace="missing")]
         self.assertEqual(limited, ["gh.pr-checks", "notes.list"])
         self.assertEqual(unbounded, ["gh.pr-checks", "notes.list", "pr.view"])
         self.assertEqual(ignored, unbounded)
+        self.assertEqual(namespaced, ["gh.pr-checks"])
+        self.assertEqual(dotted, ["pr.view"])
+        self.assertEqual(unmatched, [])
 
     def test_summary_hit_beats_args_only_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,6 +323,33 @@ def broken(
             result = check_item(root, path)
         self.assertFalse(result["ok"])
         self.assertTrue(any("syntax" in err.lower() for err in result["errors"]))
+
+    def test_check_item_reports_undeclared_script_arg_env_vars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            body = """if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\\n' '{"dry_run":true}'
+  exit 0
+fi
+# TK_ARG_SKIP stays a comment and is not an undeclared arg.
+printf '%s\\n' \"$TK_ARG_OTHER\"
+printf '%s\\n' \"${TK_ARG_EXTRA}\"
+"""
+            _write(
+                path,
+                _bash_tool("demo.echo", "Echo a target id", body=body),
+                executable=True,
+            )
+            result = check_item(root, "demo.echo")
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            [err for err in result["errors"] if err.startswith("undeclared arg env var")],
+            [
+                "undeclared arg env var in script: TK_ARG_EXTRA",
+                "undeclared arg env var in script: TK_ARG_OTHER",
+            ],
+        )
 
     def test_check_item_rejects_required_flag_without_value(self):
         with tempfile.TemporaryDirectory() as tmp:

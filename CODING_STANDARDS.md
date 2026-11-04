@@ -56,8 +56,8 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   Reads `chains/<name>.json` and returns a normalized dict with `"kind": "chain"`, `"name"`, `"summary"`, `"safety"`, `"args"`, `"steps"`, `"output"`, `"example"`, `"verified"`, `"path"`.
 - **`discover_catalog(root_dir: Path) -> dict[str, dict]`**
   Scans `root_dir / "tools"` recursively (skipping files/dirs starting with `.` or `__`) and `root_dir / "chains" / "*.json"`. Returns `dict[name, item]` sorted by key.
-- **`find_items(root_dir: Path, query: str = "", limit: int | None = None) -> list[dict]`**
-  Empty query returns all items sorted by `name`. Non-empty query scores tokens against `name` (exact/substring/token weight 5/3), `summary` (weight 2), and `args` (weight 1), returning matches sorted by `(-score, name)`. When `limit` is a positive `int`, slices the returned list to `[:limit]`.
+- **`find_items(root_dir: Path, query: str = "", limit: int | None = None, namespace: str | None = None) -> list[dict]`**
+  Empty query returns all items sorted by `name`. When `namespace` is non-empty, filters items to those whose `name` starts with `<namespace>.` (or equals `<namespace>`). Non-empty query scores tokens against `name` (exact/substring/token weight 5/3), `summary` (weight 2), and `args` (weight 1), returning matches sorted by `(-score, name)`. When `limit` is a positive `int`, slices the returned list to `[:limit]`.
 - **`format_find_output(items: list[dict]) -> str`**
   2-line format per item (minimum tokens, zero extra round-trip needed):
   ```text
@@ -73,7 +73,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   2. All required header fields present (`name`, `summary`, `safety` in `{"read-only", "mutating", "destructive"}`, `output`, `example`, `verified`).
   3. `example` starts with `tk run <name>` and includes every required `--flag`.
   4. Syntax check passes (`bash -n` for `sh`/`bash` shebang; `py_compile` for `python` shebang).
-  5. No duplicate `--flag` names in `args`, and any `(default: X)` value conforms to the declared arg `type`.
+  5. No duplicate `--flag` names in `args`, any `(default: X)` value conforms to the declared arg `type`, and every `TK_ARG_<NAME>` referenced in the tool's non-comment script body is declared in `args` (`undeclared arg env var in script: TK_ARG_<NAME>`).
   6. Dry-run smoke check: running the tool with `TK_DRY_RUN=1` and synthetic dummy values for required flags (`"example"` for string, `"1"` for int/float, `"true"` for bool) exits `0` and produces valid JSON on `stdout`.
   7. For chains:
      - Every step's `"tool"` exists in `discover_catalog(root_dir)`.
@@ -110,7 +110,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 - **`log_event(root_dir: Path, event_type: str, payload: dict) -> None`**
   Appends `{"ts": ..., "event": event_type, ...}` to `state/events.jsonl` (or `Path(os.environ["TK_STATE_DIR"]) / "events.jsonl"` when set). Skips writing when `TK_NO_TELEMETRY` is set to `"1"` or `"true"`. Never raises.
 - **`save_tool(root_dir: Path, name: str, summary: str, safety: str = "read-only", from_cmd: str | None = None, file_path: str | None = None, args_spec: list[str] | None = None, force: bool = False) -> tuple[int, str, str]`**
-  Creates `tools/<namespace>/<tool-name>` with complete `# @tk-*` headers, sets `0o755`, runs `check_item`, rolls back on failure, logs `tool_saved`, and returns `(0, compact_json, "")`.
+  Creates `tools/<namespace>/<tool-name>` with complete `# @tk-*` headers (automatically inferring `@tk-arg` declarations for any `TK_ARG_<NAME>` referenced in `from_cmd` or `file_path` that is not already declared in `args_spec` or headers), sets `0o755`, runs `check_item`, rolls back on failure, logs `tool_saved`, and returns `(0, compact_json, "")`.
 - **`save_chain(root_dir: Path, name: str, summary: str, steps: list[dict], args: list[dict] | None = None, safety: str = "read-only", example: str | None = None, force: bool = False) -> tuple[int, str, str]`**
   Writes `chains/<name>.json`, validates via `check_item`, rolls back on failure, logs `chain_saved`, and returns `(0, compact_json, "")`.
 - **`evolve_report(root_dir: Path, auto_promote: bool = True) -> dict`**
@@ -124,7 +124,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 ### 2.4 `./tk` — CLI Entrypoint
 
 Supports:
-- `tk find [query] [--limit <n>]`
+- `tk find [query] [--namespace <ns>] [--limit <n>]`
 - `tk info <name>`
 - `tk run <name> [--flag value ...] [--dry-run]`
 - `tk chain run <name> [--flag value ...] [--dry-run]` (also runnable directly via `tk run <chain-name>`)

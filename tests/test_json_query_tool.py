@@ -88,6 +88,20 @@ class JsonQueryTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["results"], [9])
 
+    def test_operators_inside_quoted_literals_are_not_splitters(self) -> None:
+        doc = {
+            "items": [
+                {"name": "a!=b", "tag": "a==b"},
+                {"name": "plain", "tag": "z"},
+            ]
+        }
+        eq = _run({"TK_ARG_EXPR": "items[?name=='a!=b'].name"}, json.dumps(doc))
+        self.assertEqual(eq.returncode, 0, eq.stderr)
+        self.assertEqual(json.loads(eq.stdout)["results"], ["a!=b"])
+        gt = _run({"TK_ARG_EXPR": "items[?tag>'a==b'].tag"}, json.dumps(doc))
+        self.assertEqual(gt.returncode, 0, gt.stderr)
+        self.assertEqual(json.loads(gt.stdout)["results"], ["z"])
+
     def test_object_projection(self) -> None:
         proc = _run({"TK_ARG_EXPR": "items[*].{id,name}"}, json.dumps(DOC))
         self.assertEqual(proc.returncode, 0, proc.stderr)

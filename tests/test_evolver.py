@@ -591,6 +591,79 @@ class EvolverTests(unittest.TestCase):
             },
         )
 
+    def test_save_tool_infers_undeclared_tk_arg_headers(self) -> None:
+        code, out, err = save_tool(
+            self.root,
+            "lab.infer",
+            "Infer parameters from the command",
+            from_cmd=(
+                "printf '%s\\n' \"${TK_ARG_TARGET_ID}\" \"${TK_ARG_MODE:-fast}\"\n"
+                "# TK_ARG_HIDDEN\n"
+                "printf '%s\\n' '{\"ok\":true}'\n"
+            ),
+        )
+        self.assertEqual(code, 0, err)
+        text = Path(json.loads(out)["path"]).read_text(encoding="utf-8")
+        self.assertIn(
+            "# @tk-arg: --target-id | required | string | Parameter target-id",
+            text,
+        )
+        self.assertIn(
+            "# @tk-arg: --mode | optional | string | Parameter mode (default: fast)",
+            text,
+        )
+        self.assertNotIn("TK_ARG_HIDDEN", text.split("set -euo pipefail", 1)[0])
+        self.assertIn("tk run lab.infer --target-id example", text)
+
+        existing = self.root / "already.sh"
+        existing.write_text(
+            "#!/usr/bin/env bash\n"
+            "# @tk-name: lab.keep\n"
+            "# @tk-summary: Keep the declared flag\n"
+            "# @tk-safety: read-only\n"
+            "# @tk-arg: --token | required | string | Token to echo\n"
+            "# @tk-output: json | Compact JSON result\n"
+            "# @tk-example: tk run lab.keep --token example\n"
+            "# @tk-verified: none\n"
+            "if [[ \"${TK_DRY_RUN:-0}\" == \"1\" ]]; then\n"
+            "  printf '%s\\n' '{\"dry_run\":true}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "printf '%s\\n' \"$TK_ARG_TOKEN\" \"$TK_ARG_REGION\"\n",
+            encoding="utf-8",
+        )
+        kept, out, err = save_tool(
+            self.root,
+            "lab.keep",
+            "Keep the declared flag",
+            file_path=str(existing),
+        )
+        self.assertEqual(kept, 0, err)
+        kept_text = Path(json.loads(out)["path"]).read_text(encoding="utf-8")
+        self.assertIn("# @tk-arg: --token | required | string | Token to echo", kept_text)
+        self.assertIn(
+            "# @tk-arg: --region | required | string | Parameter region",
+            kept_text,
+        )
+        self.assertIn("tk run lab.keep --token example --region example", kept_text)
+
+    def test_run_error_breaks_chain_candidate_adjacency(self) -> None:
+        for name in ("alpha.list", "alpha.show"):
+            ok, _, err = save_tool(
+                self.root,
+                name,
+                "Echo a fixed JSON object",
+                from_cmd="printf '%s\\n' '{\"ok\":true}'",
+            )
+            self.assertEqual(ok, 0, err)
+        for _ in range(2):
+            log_event(self.root, "run_ok", {"name": "alpha.list"})
+            log_event(self.root, "run_error", {"name": "alpha.list", "why": "boom"})
+            log_event(self.root, "error", {"name": "alpha.show"})
+            log_event(self.root, "run_ok", {"name": "alpha.show"})
+        report = evolve_report(self.root, auto_promote=False)
+        self.assertEqual(report["chain_candidates"], [])
+
     def test_chain_candidates_mine_repeated_consecutive_tool_pairs(self) -> None:
         for name, summary in (
             ("alpha.list", "List records"),

@@ -22,6 +22,9 @@ _ARG_TYPES = {"string", "int", "float", "bool"}
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)*$")
 _VERIFIED_RE = re.compile(r"(?m)^#\s*@tk-verified\s*:.*$")
 _USAGE_EVENTS = {"run", "run_ok", "tool_run", "chain_run"}
+_ERROR_EVENTS = {"run_error", "error"}
+_OPTIONAL_ARG_RE = re.compile(r"\$\{TK_ARG_([A-Z][A-Z0-9_]*):-([^}]*)\}")
+_BARE_ARG_RE = re.compile(r"\bTK_ARG_([A-Z][A-Z0-9_]*)\b")
 _MISS_EVENTS = {"search_miss", "miss"}
 _FAIL_EVENTS = {"run_error", "error"}
 _STOPWORDS = {
@@ -113,6 +116,7 @@ def save_tool(
         specs = _normalize_arg_specs(args_spec)
         if specs is None:
             return _failure("bad_arg_spec", "each --arg must be '--flag | required|optional | type | description'", "tk save <name> --arg \"--flag | required | string | description\"")
+        specs = _specs_with_inferred(from_cmd, file_path, specs)
         source, source_error = _tool_source(name, summary, safety, from_cmd, file_path, specs)
         if source_error:
             return _failure(*source_error)
@@ -337,6 +341,75 @@ def _validate_chain_args(args: list[dict]) -> tuple[str, str, str] | None:
         if not isinstance(flag, str) or not flag.startswith("--"):
             return ("bad_arg_spec", "chain arg flag must look like --name", "tk chain save <name> --steps '<json>'")
     return None
+
+
+def _spec_env(spec: str) -> str:
+    flag = spec.split("|", 1)[0].strip()
+    return "TK_ARG_" + flag.lstrip("-").replace("-", "_").upper()
+
+
+def _header_arg_specs(text: str) -> list[str]:
+    raw: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# @tk-arg:"):
+            raw.append(stripped.split(":", 1)[1].strip())
+    normalized = _normalize_arg_specs(raw)
+    return normalized or []
+
+
+def _infer_arg_specs(script_text: str, declared: set[str]) -> list[str]:
+    defaults: dict[str, str] = {}
+    order: list[str] = []
+    for line in script_text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for match in _OPTIONAL_ARG_RE.finditer(line):
+            name, default = match.group(1), match.group(2)
+            if name not in defaults or (default and not defaults[name]):
+                defaults[name] = default
+        for match in _BARE_ARG_RE.finditer(line):
+            name = match.group(1)
+            if name not in order:
+                order.append(name)
+    specs: list[str] = []
+    for name in order:
+        if f"TK_ARG_{name}" in declared:
+            continue
+        kebab = name.lower().replace("_", "-")
+        default = defaults.get(name) or ""
+        if default:
+            specs.append(
+                f"--{kebab} | optional | string | Parameter {kebab} (default: {default})"
+            )
+        else:
+            specs.append(f"--{kebab} | required | string | Parameter {kebab}")
+    return specs
+
+
+def _specs_with_inferred(
+    from_cmd: str | None,
+    file_path: str | None,
+    specs: list[str],
+) -> list[str]:
+    scan_text = ""
+    header_specs: list[str] = []
+    if isinstance(from_cmd, str) and from_cmd.strip():
+        scan_text = from_cmd
+    elif file_path:
+        try:
+            scan_text = Path(file_path).read_text(encoding="utf-8")
+        except OSError:
+            return specs
+        header_specs = _header_arg_specs(scan_text)
+    declared = {_spec_env(spec) for spec in specs}
+    declared.update(_spec_env(spec) for spec in header_specs)
+    inferred = _infer_arg_specs(scan_text, declared)
+    if not inferred:
+        return specs
+    user_envs = {_spec_env(spec) for spec in specs}
+    preserved = [spec for spec in header_specs if _spec_env(spec) not in user_envs]
+    return preserved + list(specs) + inferred
 
 
 def _tool_source(
@@ -728,8 +801,11 @@ def _overlap_candidates(catalog: dict[str, dict]) -> list[dict]:
 
 def _chain_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict]:
     """Repeated consecutive tool pairs that no chain already starts with."""
-    sequence: list[str] = []
+    sequence: list[str | None] = []
     for record in events:
+        if record.get("event") in _ERROR_EVENTS:
+            sequence.append(None)
+            continue
         if record.get("event") not in _USAGE_EVENTS:
             continue
         name = _event_name(record)
@@ -737,7 +813,7 @@ def _chain_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict
             sequence.append(name)
     counts: dict[tuple[str, str], int] = {}
     for tool_a, tool_b in zip(sequence, sequence[1:]):
-        if tool_a == tool_b:
+        if not tool_a or not tool_b or tool_a == tool_b:
             continue
         left = catalog.get(tool_a)
         right = catalog.get(tool_b)

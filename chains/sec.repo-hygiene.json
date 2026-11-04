@@ -1,0 +1,33 @@
+{
+  "kind": "chain",
+  "name": "sec.repo-hygiene",
+  "summary": "Redacted secret-scan digest for a file or directory",
+  "safety": "read-only",
+  "args": [
+    {
+      "flag": "--path",
+      "env_var": "TK_ARG_PATH",
+      "required": true,
+      "type": "string",
+      "description": "File or directory path to scan for leaked secrets",
+      "default": null
+    }
+  ],
+  "steps": [
+    {
+      "tool": "sec.secret-scan",
+      "args": {
+        "path": "$input.path"
+      }
+    },
+    {
+      "tool": "json.pick",
+      "args": {
+        "keys": "path,clean,count,truncated,findings"
+      }
+    }
+  ],
+  "output": "json | {path, clean, count, truncated, findings}",
+  "example": "tk run sec.repo-hygiene --path .",
+  "verified": "2026-11-04"
+}

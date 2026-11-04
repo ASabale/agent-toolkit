@@ -85,6 +85,25 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(unknown.returncode, 2)
         self.assertEqual(json.loads(unknown.stderr)["error"], "unknown_flag")
 
+    def test_find_namespace_filters_and_rejects_empty(self) -> None:
+        limited = self._run("find", "--namespace", "git", "--limit", "2")
+        self.assertEqual(limited.returncode, 0, limited.stderr)
+        names = [line.split(" ", 1)[0] for line in limited.stdout.splitlines() if line and not line.startswith(" ")]
+        self.assertEqual(names, ["git.blame-slice", "git.branch-digest"])
+
+        equals = self._run("find", "--namespace=git", "--limit", "1")
+        self.assertEqual(equals.returncode, 0, equals.stderr)
+        equals_names = [line.split(" ", 1)[0] for line in equals.stdout.splitlines() if line and not line.startswith(" ")]
+        self.assertEqual(equals_names, ["git.blame-slice"])
+
+        empty = self._run("find", "--namespace=")
+        self.assertEqual(empty.returncode, 2)
+        self.assertEqual(json.loads(empty.stderr)["error"], "missing_flag")
+
+        missing = self._run("find", "--namespace")
+        self.assertEqual(missing.returncode, 2)
+        self.assertEqual(json.loads(missing.stderr)["error"], "missing_flag")
+
     def test_check_multiple_names_aggregates(self) -> None:
         checked = self._run("check", "json.pick", "json.query")
         self.assertEqual(checked.returncode, 0, checked.stderr)
