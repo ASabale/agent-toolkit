@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+# @tk-name: gh.comment
+# @tk-summary: Post a comment on a GitHub issue or pull request
+# @tk-safety: mutating
+# @tk-arg: --kind | required | string | Target kind: issue or pr
+# @tk-arg: --repo | required | string | Repository in owner/name form
+# @tk-arg: --number | required | int | Issue or pull request number
+# @tk-arg: --body | required | string | Comment text (not echoed in the result)
+# @tk-output: json | {repo, number, kind, url} or {repo, number, kind, commented}
+# @tk-example: tk run gh.comment --kind issue --repo cli/cli --number 1 --body hello
+# @tk-verified: none
+
+"""Post a GitHub comment. Branches on TK_DRY_RUN via is_dry_run and dry_run_plan."""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, arg_str, dry_run_plan, emit, fail, is_dry_run, run_cmd, run_main
+
+_FIX = "tk run gh.comment --kind issue --repo <owner/name> --number <n> --body <text>"
+
+
+def _kind(raw: str, smoke: bool) -> str:
+    if raw in {"issue", "pr"}:
+        return raw
+    # Catalog smoke leaves required strings as "example". A real --kind never does.
+    if smoke or (is_dry_run() and raw == ""):
+        return "issue"
+    raise SystemExit(fail("invalid_flag", "kind must be issue or pr", _FIX, 2))
+
+
+def _result(repo: str, number: int, kind: str, stdout: str) -> dict:
+    text = (stdout or "").strip()
+    if text:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            url = payload.get("url")
+            if isinstance(url, str) and url:
+                return {"repo": repo, "number": number, "kind": kind, "url": url}
+    return {"repo": repo, "number": number, "kind": kind, "commented": True}
+
+
+def main() -> int:
+    kind_raw = arg_str("KIND")
+    repo = arg_str("REPO")
+    body = arg_str("BODY")
+    smoke = is_dry_run() and kind_raw == "example" and repo == "example" and body == "example"
+    if is_dry_run() and kind_raw == "":
+        repo = repo or "example"
+        body = body or "example"
+    kind = _kind(kind_raw, smoke)
+    number = arg_int("NUMBER", 1, fix=_FIX)
+    if not repo or not body:
+        return fail("missing_flag", "repo, number, kind, and body are required", _FIX, 2)
+    plan = ["gh", kind, "comment", str(number), "--repo", repo, "--body", body]
+    if is_dry_run():
+        return dry_run_plan(plan)
+    proc = run_cmd(plan, fix=_FIX, error_code="gh_failed")
+    return emit(_result(repo, number, kind, proc.stdout))
+
+
+if __name__ == "__main__":
+    run_main(main, default_fix=_FIX)
