@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -330,6 +331,105 @@ class LogRecentTests(unittest.TestCase):
         self.assertEqual(payload["commits"][1]["subject"], "second note")
         self.assertEqual(len(payload["commits"][0]["sha"]), 40)
         self.assertEqual(payload["commits"][0]["author"], "Carol")
+
+    def test_bad_limit_errors_in_dry_run_and_real_modes(self) -> None:
+        cases = (
+            ("abc", "limit is not an int: abc"),
+            ("0", "limit must be >= 1"),
+            ("-3", "limit must be >= 1"),
+        )
+        for dry in ("1", "0"):
+            for raw, why in cases:
+                with self.subTest(dry_run=dry, limit=raw):
+                    proc = _run(
+                        LOG,
+                        {
+                            "TK_ARG_REPO": "example",
+                            "TK_ARG_LIMIT": raw,
+                            "TK_DRY_RUN": dry,
+                        },
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertEqual(proc.stdout, "")
+                    payload = json.loads(proc.stderr)
+                    fix = "tk run git.log-recent --repo example --limit 5"
+                    if dry == "1":
+                        fix += " --dry-run"
+                    self.assertEqual(
+                        payload,
+                        {
+                            "error": "invalid_flag",
+                            "why": why,
+                            "fix": fix,
+                        },
+                    )
+        missing_repo = _run(LOG, {"TK_ARG_LIMIT": "nope", "TK_DRY_RUN": "0"})
+        self.assertEqual(
+            json.loads(missing_repo.stderr)["fix"],
+            "tk run git.log-recent --repo . --limit 5",
+        )
+
+    def test_invalid_limit_fix_runs_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "my repo"
+            spaced.mkdir()
+            repo = _sample_repo(spaced)
+            repo_text = str(repo)
+            self.assertIn(" ", repo_text)
+            for dry in ("0", "1"):
+                with self.subTest(dry_run=dry):
+                    proc = _run(
+                        LOG,
+                        {
+                            "TK_ARG_REPO": repo_text,
+                            "TK_ARG_LIMIT": "0",
+                            "TK_DRY_RUN": dry,
+                        },
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertEqual(proc.stdout, "")
+                    payload = json.loads(proc.stderr)
+                    self.assertEqual(payload["error"], "invalid_flag")
+                    expected = [
+                        "tk",
+                        "run",
+                        "git.log-recent",
+                        "--repo",
+                        repo_text,
+                        "--limit",
+                        "5",
+                    ]
+                    if dry == "1":
+                        expected.append("--dry-run")
+                    argv = shlex.split(payload["fix"])
+                    self.assertEqual(argv, expected)
+                    self.assertIn(shlex.quote(repo_text), payload["fix"])
+                    argv[0] = "./tk"
+                    env = os.environ.copy()
+                    for key in list(env):
+                        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+                            env.pop(key, None)
+                    env["TK_NO_TELEMETRY"] = "1"
+                    healed = subprocess.run(
+                        argv,
+                        capture_output=True,
+                        text=True,
+                        cwd=ROOT,
+                        env=env,
+                        check=False,
+                    )
+                    self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+                    healed_payload = json.loads(healed.stdout)
+                    self.assertNotIn("error", healed_payload)
+                    self.assertEqual(healed_payload["repo"], repo_text)
+                    if dry == "1":
+                        self.assertIs(healed_payload["dry_run"], True)
+                        self.assertEqual(healed_payload["limit"], 5)
+                        self.assertIsNone(healed_payload["count"])
+                    else:
+                        self.assertNotIn("dry_run", healed_payload)
+                        self.assertEqual(healed_payload["count"], 2)
+                        self.assertEqual(len(healed_payload["commits"]), 2)
 
 
 if __name__ == "__main__":
