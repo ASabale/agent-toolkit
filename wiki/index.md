@@ -2,10 +2,6 @@
 
 On 2026-11-03 this index listed every page under `wiki/`. Claims on those pages carry a date and, when they describe code or repository state, a commit (`ASabale/agent-toolkit@<sha>`). See [Autonomous Chief-of-Staff governance](decisions/0003-autonomous-chief-of-staff-governance.md).
 
-## Chief-of-Staff Decision Log
-
-- [Decision log](decision-log.md) — On 2026-11-03, the Chief of Staff bootstrapped the backlog, assigned workflow labels, and coordinated Wave 1 parallel builders.
-
 ## Decisions
 
 - [0001 — Clean-slate single-file contract](decisions/0001-clean-slate-single-file-contract.md) — On 2026-11-03, `ASabale/agent-toolkit@4b0e69c` rejected sidecar manifests and `cli-harness` ordering traps in favor of one executable file per tool.

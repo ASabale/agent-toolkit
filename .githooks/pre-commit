@@ -22,4 +22,4 @@ if [ "$lint_ok" != "True" ]; then
 fi
 
 printf '%s\n' "pre-commit: unit tests..."
-python3 -m pytest "${REPO_ROOT}/tests" -q --tb=short
+cd "${REPO_ROOT}" && python3 -m unittest discover -s tests -q
