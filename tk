@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -272,6 +273,136 @@ def _steps_from_opts(opts: dict, positional: list[str]) -> list[dict]:
     return steps
 
 
+def _vision_chain_fix(name: str) -> str:
+    return f'tk chain save {name} --summary "<text>" --steps \'<json>\''
+
+
+def _quoted_step_fix(name: str, raw_steps: list[str]) -> str:
+    """Show each step as one quoted argv string, with <value> on a bare flag."""
+    shown: list[str] = []
+    for raw in raw_steps:
+        try:
+            tokens = shlex.split(raw)
+        except ValueError:
+            tokens = raw.split()
+        if not tokens:
+            shown.append("''")
+            continue
+        fixed: list[str] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            fixed.append(token)
+            bare_flag = token.startswith("--") and "=" not in token
+            missing_value = index + 1 >= len(tokens) or tokens[index + 1].startswith("--")
+            if bare_flag and missing_value:
+                fixed.append("<value>")
+            index += 1
+        shown.append(shlex.quote(" ".join(fixed)))
+    return "tk chain " + name + " " + " ".join(shown)
+
+
+def _parse_vision_step(raw: str) -> dict:
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as exc:
+        raise ValueError(f"could not parse step {raw!r}: {exc}") from exc
+    if not tokens or tokens[0].startswith("-"):
+        raise ValueError(f"step must be 'tool' or 'tool --flag value', not {raw!r}")
+    args: dict[str, str] = {}
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("--"):
+            raise ValueError(f"step {raw!r} must use '--flag value' after the tool")
+        name, eq, inline = token[2:].partition("=")
+        if not name or name.startswith("-"):
+            raise ValueError(f"step {raw!r} has an invalid flag {token}")
+        if eq:
+            args[name] = inline
+            index += 1
+            continue
+        if index + 1 >= len(tokens) or tokens[index + 1].startswith("--"):
+            raise ValueError(f"--{name} needs a value; quote the step as 'tool --flag value'")
+        args[name] = tokens[index + 1]
+        index += 2
+    step: dict = {"tool": tokens[0]}
+    if args:
+        step["args"] = args
+    return step
+
+
+def _cmd_chain_vision(evolver, name: str, argv: list[str]) -> int:
+    """Save `tk chain <name> '<step>' ...` through the same path as `tk chain save`."""
+    save_fix = _vision_chain_fix(name)
+    known_values = {"summary", "safety", "example"}
+    opts: dict = {}
+    raw_steps: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("--"):
+            raw_steps.append(token)
+            index += 1
+            continue
+        name_eq, eq, inline = token[2:].partition("=")
+        flag = name_eq
+        if not flag or flag.startswith("-") or flag not in known_values | {"force"}:
+            _err("unknown_flag", f"unknown flag --{flag or token}", save_fix)
+            return 2
+        if flag == "force" and not eq:
+            opts["force"] = True
+            index += 1
+            continue
+        if eq:
+            value = inline
+            index += 1
+        elif index + 1 >= len(argv):
+            _err("missing_flag", f"--{flag} requires a value", save_fix)
+            return 2
+        else:
+            value = argv[index + 1]
+            index += 2
+        opts[flag] = value
+    if not raw_steps:
+        _err("invalid_steps", "a chain needs at least one step", _quoted_step_fix(name, raw_steps) or f"tk chain {name} '<tool>'")
+        return 2
+    if isinstance(opts.get("summary"), str) and opts["summary"].strip():
+        summary = opts["summary"].strip()
+    elif "summary" in opts:
+        _err("missing_flag", "--summary requires a value", save_fix)
+        return 2
+    else:
+        summary = " → ".join(raw_steps)
+    safety = _safety(opts, save_fix)
+    if safety is None:
+        return 2
+    example = opts.get("example")
+    if example is True or (isinstance(example, str) and not example.strip()):
+        _err("missing_flag", "--example requires a value", save_fix)
+        return 2
+    force = opts.get("force", False)
+    if isinstance(force, str):
+        force = force.lower() not in {"0", "false", "no", "off"}
+    try:
+        steps = [_parse_vision_step(raw) for raw in raw_steps]
+    except ValueError as exc:
+        _err("invalid_steps", str(exc), _quoted_step_fix(name, raw_steps))
+        return 2
+    code, out, err = evolver.save_chain(
+        ROOT,
+        name,
+        summary,
+        steps,
+        args=None,
+        safety=safety,
+        example=example if isinstance(example, str) else None,
+        force=bool(force),
+    )
+    _emit_streams(out or "", err or "")
+    return int(code)
+
+
 def _cmd_chain(catalog, runner, evolver, argv: list[str]) -> int:
     if not argv:
         _err(
@@ -295,7 +426,10 @@ def _cmd_chain(catalog, runner, evolver, argv: list[str]) -> int:
             'tk chain run <name>',
         )
         return 2
-    return _cmd_run(catalog, runner, evolver, sub, argv[1:], chains_only=True)
+    rest = argv[1:]
+    if all(token.startswith("--") for token in rest):
+        return _cmd_run(catalog, runner, evolver, sub, rest, chains_only=True)
+    return _cmd_chain_vision(evolver, sub, rest)
 
 
 def _chain_args(evolver, specs) -> list[dict] | None:
