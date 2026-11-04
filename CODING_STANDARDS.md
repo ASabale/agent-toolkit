@@ -145,4 +145,4 @@ Supports:
 1. **Idle Skill Ceiling**: `skills/toolkit/SKILL.md` must never exceed `45` lines or `1,800` bytes.
 2. **Discovery Line Ceiling**: Every item in `tk find` output must be exactly 2 lines (`<name> [<safety>] — <summary>` and `  run: <example>`), with each line `<= 140` characters.
 3. **Historical Wiki Integrity (`wiki.lint`)**: Every file under `wiki/` (except `wiki/index.md`) must be linked from `wiki/index.md`, every relative link in `wiki/**/*.md` must resolve on disk, and every wiki page must contain dated (`YYYY-MM-DD`) and commit-cited (`@<sha>`) historical claims.
-4. **Remote Multi-Agent Sync**: Because multiple agents work on this repo concurrently, always run `git pull --rebase --autostash origin main` (or `tk run git.sync --repo .`) before launching a build wave and before pushing your branch.
+4. **Remote Multi-Agent Sync**: Because multiple agents work on this repo concurrently, on `main` run `git pull --rebase --autostash origin main` before launching a build wave. On a feature branch, run `tk run git.sync --repo .` to rebase onto `origin/main` and push the branch, before launching a build wave and again before pushing.
