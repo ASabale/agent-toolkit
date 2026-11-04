@@ -11,6 +11,7 @@ On 2026-11-03 this index listed every page under `wiki/`. Claims on those pages 
 - [0005 — Chief-of-Staff decision log](decisions/0005-chief-of-staff-decision-log.md) — On 2026-11-03, at `ASabale/agent-toolkit@5a57fcd`, the Chief of Staff recorded Wave 1 sequencing and the later gap-audit follow-up (`ASabale/agent-toolkit@cce91d4`, `ASabale/agent-toolkit@e62a370`).
 - [0006 — Raw output mode](decisions/0006-raw-output-mode.md) — On 2026-11-04, `ASabale/agent-toolkit@04d3803` accepted `--raw` as a no-op global modifier after the JSON envelope that `--raw` unwrapped at `ASabale/agent-toolkit@4b0e69c` was removed in `ASabale/agent-toolkit@d4c16aa`.
 - [0007 — skills.sh distribution](decisions/0007-skills-sh-distribution.md) — On 2026-11-04, `ASabale/agent-toolkit@9db88a9` still shipped `skills/toolkit`; `ASabale/agent-toolkit@b6f36b3` renamed it to `agent-toolkit` and added an idempotent `~/.agent-toolkit` bootstrap so `npx skills add ASabale/agent-toolkit` yields a working `tk`.
+- [0008 — Tool probation](decisions/0008-tool-probation.md) — On 2026-11-04, at `ASabale/agent-toolkit@aad3e9e` (unchanged in `lib/evolver.py` and these tools at `ASabale/agent-toolkit@2447b36`), the five uncited tools from `ASabale/agent-toolkit@5a57fcd` (`code.todos`, `fs.read-slice`, `json.diff`, `sec.secret-scan`, `docker.ps-digest`) appear under `unused_tools` in `tk evolve --no-promote` once telemetry is sufficient and are pruned on the next `tk prune --unused` without a `run_ok`.
 
 ## Subsystems
 
