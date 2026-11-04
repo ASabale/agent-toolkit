@@ -73,3 +73,7 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 - Building this repo: [`AGENTS.md`](AGENTS.md), [`COORDINATION.md`](COORDINATION.md).
 - Contracts: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - Authority: [`VISION.md`](VISION.md). History: [`wiki/index.md`](wiki/index.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
