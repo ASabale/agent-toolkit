@@ -21,6 +21,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys
+from lib.guards import tool_subprocess_env
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -786,6 +787,11 @@ def _normalize_arg_specs(args_spec: list[str] | None) -> list[str] | None:
     return normalized
 
 
+def normalize_arg_specs(args_spec: list[str] | None) -> list[str] | None:
+    """Public arg-spec parser. ``tk`` must not call the private helper."""
+    return _normalize_arg_specs(args_spec)
+
+
 def _required_flags(specs: list[str]) -> list[tuple[str, str]]:
     flags: list[tuple[str, str]] = []
     for spec in specs:
@@ -919,7 +925,7 @@ def _dummy_arg(arg: dict) -> str:
 
 def _mutating_dry_run(path: Path, args: list, root: Path) -> tuple[str | None, list]:
     """Run a mutating tool with TK_DRY_RUN=1 in a scratch directory. Return (error, plan)."""
-    env = os.environ.copy()
+    env = tool_subprocess_env()
     for key in list(env):
         if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
             env.pop(key, None)

@@ -15,6 +15,10 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import safe_git_path
 
 
 def emit(payload: dict, code: int = 0) -> int:
@@ -103,6 +107,15 @@ def main() -> int:
                 "error": "missing_flag",
                 "why": "TK_ARG_REPO is required",
                 "fix": "tk run git.log-recent --repo <path>",
+            },
+            2,
+        )
+    if not safe_git_path(repo):
+        return emit(
+            {
+                "error": "unsafe_git_ref",
+                "why": "repo must not start with '-'",
+                "fix": "tk run git.log-recent --repo <git-dir>",
             },
             2,
         )

@@ -15,6 +15,10 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import safe_git_path, safe_git_token
 
 _STATUS = {
     "A": "added",
@@ -136,6 +140,15 @@ def main() -> int:
                 "error": "missing_flag",
                 "why": "TK_ARG_REPO is required",
                 "fix": "tk run git.diff-digest --repo <path>",
+            },
+            2,
+        )
+    if not safe_git_path(repo) or not safe_git_token(ref):
+        return emit(
+            {
+                "error": "unsafe_git_ref",
+                "why": "repo must not start with '-' and ref must not be an option or contain whitespace",
+                "fix": "tk run git.diff-digest --repo <git-dir> --ref HEAD",
             },
             2,
         )

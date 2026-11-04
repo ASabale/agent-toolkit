@@ -456,7 +456,7 @@ def _cmd_chain(catalog, runner, evolver, argv: list[str]) -> int:
 
 
 def _chain_args(evolver, specs) -> list[dict] | None:
-    normalized = evolver._normalize_arg_specs(list(specs or []))
+    normalized = evolver.normalize_arg_specs(list(specs or []))
     if normalized is None:
         return None
     parsed: list[dict] = []

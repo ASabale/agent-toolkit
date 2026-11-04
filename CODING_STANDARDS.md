@@ -106,9 +106,9 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   - Validates types (`int`, `float`, `bool`, `string`).
   - Returns `(True, env_dict, None)` with `TK_DRY_RUN="1"|"0"` and `TK_ARG_<NAME>` populated (including defaults for omitted optional flags).
 - **`run_tool(root_dir: Path, item: dict, flags: dict[str, str], positional: list[str] | None = None, dry_run: bool = False, stdin_data: str | None = None) -> tuple[int, str, str]`**
-  - Validates arguments, executes `item["path"]` in the caller's cwd (`cwd=None`), exports `TK_ROOT_DIR` as the toolkit root, does not change `PYTHONPATH`, enforces `TK_MAX_OUTPUT_BYTES` (default `65536` bytes; returns `error="output_too_large"` if exceeded), ensures `stdout` is compacted single-line or clean JSON, and formats any failure as a self-healing JSON error on `stderr`.
+  - Validates arguments, executes `item["path"]` in the caller's cwd (`cwd=None`) with `lib.guards.tool_subprocess_env` (not a copy of the dispatcher environment), exports `TK_ROOT_DIR` as the toolkit root, does not change `PYTHONPATH`, enforces `TK_MAX_OUTPUT_BYTES` (default `65536` bytes; returns `error="output_too_large"` if exceeded), ensures `stdout` is compacted single-line or clean JSON, and formats any failure as a self-healing JSON error on `stderr`.
 - **`run_chain(root_dir: Path, chain_item: dict, flags: dict[str, str], positional: list[str] | None = None, dry_run: bool = False) -> tuple[int, str, str]`**
-  - Validates chain flags, resolves `$input.<arg>`, `$prev` (whole JSON), `$prev.<path>`, `$step[i]` (whole JSON), and `$step[i].<path>` across `steps` (with dry-run fallback when `dry_run=True` and a step's synthetic dry-run payload omits a nested field), pipes each step's JSON `stdout` into the next step's `stdin_data`, and halts on first error.
+  - Validates chain flags, resolves `$input.<arg>`, `$prev` (whole JSON), `$prev.<path>`, `$step[i]` (whole JSON), and `$step[i].<path>` by calling `lib.chainref.resolve_expr` (with dry-run fallback when `dry_run=True` and a step's synthetic dry-run payload omits a nested field), pipes each step's JSON `stdout` into the next step's `stdin_data`, and halts on first error. Check-time reading of the same syntax is `lib.chainref.static_ref_error`.
 
 ---
 

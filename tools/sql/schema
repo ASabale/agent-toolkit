@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import sqlite_ro_uri
 from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run sql.schema --db <path> [--table all]"
@@ -199,7 +200,7 @@ def main() -> int:
     if not os.path.isfile(db_path):
         return fail("missing_db", f"database not found: {db_path}", _FIX)
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(sqlite_ro_uri(db_path), uri=True)
     except sqlite3.Error as exc:
         return fail("sqlite_error", str(exc), _FIX)
     try:

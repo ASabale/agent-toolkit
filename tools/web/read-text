@@ -17,6 +17,10 @@ import sys
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import UnsafeURL, checked_open, public_url_error
 
 _FIX = "tk run web.read-text --source <url-or-path>"
 _SKIP = {"script", "style", "noscript", "svg", "nav", "footer"}
@@ -114,11 +118,14 @@ class Distiller(HTMLParser):
 def load_source(source: str) -> str:
     lowered = source.lower()
     if lowered.startswith("http://") or lowered.startswith("https://"):
+        blocked = public_url_error(source)
+        if blocked:
+            raise UnsafeURL(blocked)
         request = urllib.request.Request(
             source,
             headers={"User-Agent": "tk-web-read-text"},
         )
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with checked_open(request, 10) as response:
             raw = response.read(1_048_576)
             charset = response.headers.get_content_charset() or "utf-8"
         try:

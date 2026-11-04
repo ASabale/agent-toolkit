@@ -10,20 +10,16 @@ import difflib
 import json
 import math
 import os
-import re
 import shlex
 import signal
 import subprocess
 from pathlib import Path
 
 from lib.catalog import output_keys
+from lib.chainref import resolve_expr, stringify
 from lib.evolver import log_event
+from lib.guards import tool_subprocess_env
 
-_INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
-_PREV_REF = re.compile(r"^\$prev\.(.+)$")
-_STEP_WHOLE = re.compile(r"^\$step\[(-?\d+)\]$")
-_STEP_REF = re.compile(r"^\$step\[(-?\d+)\]\.(.+)$")
-_PATH_PART = re.compile(r"[^.\[\]]+|\[\d+\]")
 _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no"}
 
@@ -586,8 +582,7 @@ def run_tool(
                     ),
                 )
 
-        env = os.environ.copy()
-        env.update(built)
+        env = tool_subprocess_env(built)
         env["TK_ROOT_DIR"] = str(root_dir)
         timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)
         proc = subprocess.Popen(
@@ -689,111 +684,6 @@ def _tool_failure(item: dict, code: int, stderr: str) -> dict:
     }
 
 
-def _stringify(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if value is None:
-        return "null"
-    return _compact(value)
-
-
-def _walk(data: object, path: str) -> object:
-    current = data
-    for part in _PATH_PART.findall(path):
-        if part.startswith("["):
-            if not isinstance(current, list):
-                raise KeyError(path)
-            current = current[int(part[1:-1])]
-        else:
-            if not isinstance(current, dict) or part not in current:
-                raise KeyError(path)
-            current = current[part]
-    return current
-
-
-def _bare_forms(flag: str) -> set[str]:
-    bare = flag[2:] if flag.startswith("--") else flag
-    return {bare, bare.replace("-", "_"), bare.replace("_", "-")}
-
-
-def _synthetic_dry_payload(payload: object) -> bool:
-    return isinstance(payload, dict) and payload.get("dry_run") is True
-
-
-def _dry_dummy(expect_type: str) -> str:
-    if expect_type in {"int", "float"}:
-        return "1"
-    if expect_type == "bool":
-        return "true"
-    return "example"
-
-
-def _missing_on_synthetic(dry_run: bool, payload: object, expect_type: str) -> tuple[str | None, str | None] | None:
-    """Dummy stand-in when a dry-run payload omitted the referenced key."""
-    if dry_run and _synthetic_dry_payload(payload):
-        return _dry_dummy(expect_type), None
-    return None
-
-
-def _resolve_expr(
-    expr: str,
-    chain_item: dict,
-    env: dict[str, str],
-    prev: object,
-    steps: list[object],
-    dry_run: bool = False,
-    expect_type: str = "string",
-) -> tuple[str | None, str | None]:
-    text = expr.strip()
-    input_match = _INPUT_REF.fullmatch(text)
-    if input_match:
-        wanted = input_match.group(1)
-        for arg in chain_item.get("args") or []:
-            if wanted not in _bare_forms(arg["flag"]):
-                continue
-            key = arg.get("env_var") or _env_var(arg["flag"])
-            if key in env:
-                return env[key], None
-        return None, text
-
-    if text == "$prev":
-        if prev is None:
-            return None, text
-        return _stringify(prev), None
-
-    prev_match = _PREV_REF.fullmatch(text)
-    if prev_match:
-        if prev is None:
-            return None, text
-        try:
-            return _stringify(_walk(prev, prev_match.group(1))), None
-        except (KeyError, IndexError, TypeError):
-            fallback = _missing_on_synthetic(dry_run, prev, expect_type)
-            return fallback if fallback is not None else (None, text)
-
-    whole_step = _STEP_WHOLE.fullmatch(text)
-    if whole_step:
-        index = int(whole_step.group(1))
-        if index < 0 or index >= len(steps):
-            return None, text
-        return _stringify(steps[index]), None
-
-    step_match = _STEP_REF.fullmatch(text)
-    if step_match:
-        index = int(step_match.group(1))
-        if index < 0 or index >= len(steps):
-            return None, text
-        try:
-            return _stringify(_walk(steps[index], step_match.group(2))), None
-        except (KeyError, IndexError, TypeError):
-            fallback = _missing_on_synthetic(dry_run, steps[index], expect_type)
-            return fallback if fallback is not None else (None, text)
-
-    return text, None
-
-
 def run_chain(
     root_dir: Path,
     chain_item: dict,
@@ -862,9 +752,9 @@ def run_chain(
             for key, value in raw_args.items():
                 flag = key if str(key).startswith("--") else f"--{key}"
                 if not isinstance(value, str):
-                    step_flags[flag] = _stringify(value)
+                    step_flags[flag] = stringify(value)
                     continue
-                resolved, bad = _resolve_expr(
+                resolved, bad = resolve_expr(
                     value,
                     chain_item,
                     env,

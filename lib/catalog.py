@@ -17,6 +17,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from lib.chainref import bare_arg_name, static_ref_error
+from lib.guards import tool_subprocess_env
+
 _SAFETY = {"read-only", "mutating", "destructive"}
 _TYPES = {"string", "int", "float", "bool"}
 _DEFAULT_RE = re.compile(r"\(default:\s*([^)]*)\)", re.IGNORECASE)
@@ -692,7 +695,7 @@ def _dry_run_error(
     safety: str = "",
     root_dir: Path | None = None,
 ) -> str | None:
-    env = os.environ.copy()
+    env = tool_subprocess_env()
     for key in list(env):
         if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
             env.pop(key, None)
@@ -818,7 +821,7 @@ def _live_json_error(
     command = _shell_body_after_dry_run(path) or str(path)
     if _skip_live_json(command):
         return None
-    env = os.environ.copy()
+    env = tool_subprocess_env()
     for key in list(env):
         if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
             env.pop(key, None)
@@ -922,10 +925,6 @@ def _resolve(root_dir: Path, name_or_path: str | Path) -> tuple[Path | None, dic
     return path, item, None
 
 
-_CHAIN_INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
-_CHAIN_STEP_REF = re.compile(r"^\$step\[(-?\d+)\](?:\..*)?$")
-
-
 def output_keys(output: object) -> list[str] | None:
     """Return the top-level field names of an @tk-output like ``json | {a, b:[...], c}``.
 
@@ -1019,16 +1018,11 @@ def _flag_name(key: object) -> str:
     return text if text.startswith("--") else f"--{text}"
 
 
-def _bare_arg_name(flag: str) -> str:
-    bare = flag[2:] if flag.startswith("--") else flag.lstrip("-")
-    return bare.replace("-", "_")
-
-
 def _chain_wiring_errors(item: dict, catalog: dict) -> list[str]:
     """Static flag and reference checks for each chain step."""
     errors: list[str] = []
     declared_inputs = {
-        _bare_arg_name(str(arg.get("flag") or ""))
+        bare_arg_name(str(arg.get("flag") or ""))
         for arg in (item.get("args") or [])
         if isinstance(arg, dict)
     }
@@ -1061,17 +1055,9 @@ def _chain_wiring_errors(item: dict, catalog: dict) -> list[str]:
                 errors.append(f"step {index} ({tool_name}) unknown flag: {flag}")
             if not isinstance(val, str):
                 continue
-            text = val.strip()
-            input_match = _CHAIN_INPUT_REF.fullmatch(text)
-            if input_match and _bare_arg_name(input_match.group(1)) not in declared_inputs:
-                errors.append(f"step {index} unresolved input reference: {text}")
-            if (text == "$prev" or text.startswith("$prev.")) and index == 0:
-                errors.append(f"step 0 cannot reference $prev: {text}")
-            step_match = _CHAIN_STEP_REF.fullmatch(text)
-            if step_match:
-                ref = int(step_match.group(1))
-                if ref < 0 or ref >= index:
-                    errors.append(f"step {index} invalid step reference: {text}")
+            ref_error = static_ref_error(val, index, declared_inputs)
+            if ref_error:
+                errors.append(ref_error)
         for flag, arg in declared.items():
             if arg.get("required") and arg.get("default") is None and flag not in present:
                 errors.append(f"step {index} ({tool_name}) missing required flag: {flag}")
