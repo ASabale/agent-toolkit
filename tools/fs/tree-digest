@@ -80,6 +80,7 @@ def main() -> int:
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
+                "dry_run": True,
                 "path": path or "example",
                 "files": 0,
                 "dirs": 0,

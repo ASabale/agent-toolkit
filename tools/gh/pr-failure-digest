@@ -191,6 +191,7 @@ def main() -> int:
         pr = int(pr_raw) if pr_raw.isdigit() else 1
         return emit(
             {
+                "dry_run": True,
                 "repo": repo or "example",
                 "pr": pr,
                 "fail": [],

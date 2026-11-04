@@ -122,7 +122,10 @@ class SaveArgInferenceTests(unittest.TestCase):
             "# @tk-verified: none\n"
             "import json\n"
             "import os\n"
-            'print(json.dumps({"foo": os.environ["TK_ARG_FOO"]}))\n',
+            "if os.environ.get('TK_DRY_RUN') == '1':\n"
+            "    print(json.dumps({'dry_run': True, 'foo': os.environ['TK_ARG_FOO']}))\n"
+            "else:\n"
+            "    print(json.dumps({'foo': os.environ['TK_ARG_FOO']}))\n",
             encoding="utf-8",
         )
         code, out, err = save_tool(

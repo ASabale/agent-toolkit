@@ -365,7 +365,14 @@ class PrFailureDigestTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             json.loads(proc.stdout),
-            {"repo": "cli/cli", "pr": 7, "fail": [], "pending": 0, "pass": 0},
+            {
+                "dry_run": True,
+                "repo": "cli/cli",
+                "pr": 7,
+                "fail": [],
+                "pending": 0,
+                "pass": 0,
+            },
         )
 
 

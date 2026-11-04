@@ -238,6 +238,32 @@ class DryRunGuardTests(unittest.TestCase):
         self.assertIn("git.sync", catalog)
         self.assertTrue(catalog["git.sync"]["safety"] != "read-only")
 
+    def test_unmarked_dry_run_dict_fails_check(self) -> None:
+        self._write_tool(
+            "lab/unmarked",
+            _header("lab.unmarked", "read-only")
+            + "printf '%s\\n' '{\"files\":0}'\n",
+        )
+        result = check_item(self.root, "lab.unmarked")
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            'dry-run payload is not marked "dry_run": true',
+            result["errors"],
+        )
+
+    def test_marked_dry_run_dict_passes_check(self) -> None:
+        self._write_tool(
+            "lab/marked",
+            _header("lab.marked", "read-only")
+            + "printf '%s\\n' '{\"dry_run\":true}'\n",
+        )
+        result = check_item(self.root, "lab.marked")
+        self.assertTrue(result["ok"], result)
+
+    def test_catalog_dry_run_markers_pass_check(self) -> None:
+        report = check_all(ROOT)
+        self.assertTrue(report["ok"], report)
+
 
 class DryRunGuardCliTests(unittest.TestCase):
     def setUp(self) -> None:

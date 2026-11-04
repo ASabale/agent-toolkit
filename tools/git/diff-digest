@@ -118,6 +118,7 @@ def main() -> int:
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
+                "dry_run": True,
                 "repo": repo or "example",
                 "ref": ref,
                 "files_changed": 0,
