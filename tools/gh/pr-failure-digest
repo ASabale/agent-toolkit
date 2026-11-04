@@ -28,8 +28,23 @@ _FAIL_CONCLUSIONS = {
 _PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 _PENDING = {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED", "EXPECTED"}
 _LOG_TAIL_CAP = 200
-_FIX = "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>"
-_FIX_TAIL = "tk run gh.pr-failure-digest --repo <owner/name> --pr <n> --log-tail 30"
+_AUTH_TOKENS = ("auth login", "not logged", "not authenticated", "http 401", "bad credentials")
+
+
+def _caller_fix(with_tail: bool) -> str:
+    repo = os.environ.get("TK_ARG_REPO", "").strip() or "cli/cli"
+    pr = os.environ.get("TK_ARG_PR", "").strip() or "1"
+    command = f"tk run gh.pr-failure-digest --repo {repo} --pr {pr}"
+    if with_tail:
+        return command + " --log-tail 30"
+    return command
+
+
+def gh_fix(why: str) -> str:
+    folded = why.lower()
+    if any(token in folded for token in _AUTH_TOKENS):
+        return "gh auth login"
+    return _caller_fix(False)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s*")
 _JOB_ID_RE = re.compile(r"/jobs?/(\d+)")
@@ -56,19 +71,20 @@ def classify(check: dict) -> str:
 
 
 def parse_log_tail(raw: str) -> tuple[int | None, dict | None]:
+    fix = _caller_fix(True)
     try:
         value = int(raw)
     except ValueError:
         return None, {
             "error": "invalid_flag",
             "why": f"--log-tail must be an int >= 0, got {raw}",
-            "fix": _FIX_TAIL,
+            "fix": fix,
         }
     if value < 0:
         return None, {
             "error": "invalid_flag",
             "why": f"--log-tail must be >= 0, got {value}",
-            "fix": _FIX_TAIL,
+            "fix": fix,
         }
     return value, None
 
@@ -155,10 +171,11 @@ def load_rollup(repo: str, pr: int) -> tuple[dict | None, dict | None]:
         timeout=30,
     )
     if proc.returncode != 0:
+        why = (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}"
         return None, {
             "error": "gh_failed",
-            "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
-            "fix": _FIX,
+            "why": why,
+            "fix": gh_fix(why),
         }
     return json.loads(proc.stdout or "{}"), None
 
@@ -208,7 +225,7 @@ def main() -> int:
             {
                 "error": "missing_flag",
                 "why": "TK_ARG_REPO and TK_ARG_PR are required",
-                "fix": _FIX,
+                "fix": _caller_fix(False),
             },
             2,
         )
@@ -219,7 +236,7 @@ def main() -> int:
             {
                 "error": "invalid_flag",
                 "why": f"pr is not an int: {pr_raw}",
-                "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr 1",
+                "fix": _caller_fix(False),
             },
             2,
         )
@@ -236,7 +253,7 @@ if __name__ == "__main__":
                 {
                     "error": "timeout",
                     "why": "gh timed out after 30s",
-                    "fix": _FIX,
+                    "fix": _caller_fix(False),
                 },
                 separators=(",", ":"),
             )
@@ -249,7 +266,7 @@ if __name__ == "__main__":
                 {
                     "error": "not_found",
                     "why": f"{exc.filename or 'gh'} not found",
-                    "fix": _FIX,
+                    "fix": _caller_fix(False),
                 },
                 separators=(",", ":"),
             )
@@ -262,7 +279,7 @@ if __name__ == "__main__":
                 {
                     "error": "tool_error",
                     "why": str(exc),
-                    "fix": _FIX,
+                    "fix": _caller_fix(False),
                 },
                 separators=(",", ":"),
             )

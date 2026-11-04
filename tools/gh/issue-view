@@ -20,8 +20,16 @@ from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _BODY_CAP = 500
 _COMMENT_CAP = 280
-_FIX = "tk run gh.issue-view --repo <owner/name> --number <n>"
-_FIX_INT = "tk run gh.issue-view --repo <owner/name> --number 1 --comments 5"
+_FIX = "tk run gh.issue-view --repo cli/cli --number 1"
+_FIX_INT = "tk run gh.issue-view --repo cli/cli --number 1 --comments 5"
+_AUTH_TOKENS = ("auth login", "not logged", "not authenticated", "http 401", "bad credentials")
+
+
+def gh_fix(why: str, default: str) -> str:
+    folded = why.lower()
+    if any(token in folded for token in _AUTH_TOKENS):
+        return "gh auth login"
+    return default
 
 
 def clip(text: str, cap: int) -> str:
@@ -69,11 +77,8 @@ def main() -> int:
         timeout=30,
     )
     if proc.returncode != 0:
-        return fail(
-            "gh_failed",
-            (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
-            _FIX,
-        )
+        why = (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}"
+        return fail("gh_failed", why, gh_fix(why, _FIX))
     payload = json.loads(proc.stdout or "{}")
     author = payload.get("author") or {}
     raw_comments = payload.get("comments") or []

@@ -1182,6 +1182,8 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                     errors.append(dry)
         errors.extend(_layout_errors(root_dir, path, item, is_chain))
         errors.extend(_duplicate_name_errors(root_dir, str(item.get("name") or "")))
+        if errors and not any("fix: tk " in str(err) for err in errors):
+            errors.append(f"fix: tk check {name} --json")
         return {"name": name, "ok": not errors, "errors": errors}
     except Exception as exc:
         return {"name": label, "ok": False, "errors": [f"internal_error: {exc}"]}
