@@ -5,7 +5,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  tests:
+    name: tests
     strategy:
       fail-fast: false
       matrix:
@@ -55,3 +56,17 @@ jobs:
           # SC1007 — `CDPATH= cd -- ...` empty-assignment idiom in install.sh and .githooks/pre-commit
           # SC2059 — intentional printf format for octal JSON escaping in install.sh
           shellcheck --exclude=SC1007,SC2059 "${files[@]}"
+
+  test:
+    name: test
+    if: always()
+    needs: [tests, shellcheck]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required jobs succeeded
+        env:
+          TESTS: ${{ needs.tests.result }}
+          SHELLCHECK: ${{ needs.shellcheck.result }}
+        run: |
+          echo "tests=${TESTS} shellcheck=${SHELLCHECK}"
+          [ "$TESTS" = success ] && [ "$SHELLCHECK" = success ]
