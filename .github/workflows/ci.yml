@@ -52,10 +52,7 @@ jobs:
             exit 0
           fi
           printf 'Checking %s\n' "${files[@]}"
-          # Excludes (do not edit tool/install/hook files from this issue):
-          # SC1007 — `CDPATH= cd -- ...` empty-assignment idiom in install.sh and .githooks/pre-commit
-          # SC2059 — intentional printf format for octal JSON escaping in install.sh
-          shellcheck --exclude=SC1007,SC2059 "${files[@]}"
+          shellcheck "${files[@]}"
 
   test:
     name: test

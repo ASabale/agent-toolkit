@@ -2,6 +2,7 @@
 # Idempotent install: symlink tk and the agent-toolkit skill into the user paths.
 # Does not change git core.hooksPath; prints the command to opt in.
 set -eu
+# shellcheck disable=SC1007 # empty CDPATH= prefix so cd ignores a caller CDPATH
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 SKILL_SRC="${REPO_ROOT}/skills/agent-toolkit"
 skill_links=""
@@ -42,6 +43,7 @@ json_escape() {
                 if [ "$ord" -lt 32 ]; then
                     out="${out}$(printf '\\u%04x' "$ord")"
                 else
+                    # shellcheck disable=SC2059 # octal printf format emits one JSON byte
                     out="${out}$(printf "\\$(printf '%03o' "$ord")")"
                 fi
                 ;;
@@ -77,7 +79,10 @@ encode_dir() {
         case $ord in
             92) out="${out}\\\\" ;;
             10) out="${out}\\n" ;;
-            *) out="${out}$(printf "\\$(printf '%03o' "$ord")")" ;;
+            *)
+                # shellcheck disable=SC2059 # octal printf format encodes one path byte
+                out="${out}$(printf "\\$(printf '%03o' "$ord")")"
+                ;;
         esac
     done
     printf '%s' "$out"
