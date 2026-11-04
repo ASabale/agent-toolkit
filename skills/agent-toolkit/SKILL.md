@@ -32,7 +32,7 @@ Or call `~/.agent-toolkit/tk` directly.
 When `tk find` misses:
 
 1. **Save** (`$TK_ARG_<FLAG>` inputs, compact JSON on `stdout`): `tk save <namespace>.<name> --summary "<1-line summary>" --safety <read-only|mutating|destructive> --file <script>`
-   Or: `tk chain save <namespace>.<name> --summary "<1-line summary>" --steps '<json-or-names>'`
+   Or: `tk chain <name> '<step>'` (same file as `tk chain save <namespace>.<name> --steps '<json>'`)
 2. **Verify**: `tk check <namespace>.<name> && tk run <namespace>.<name> --dry-run`
 3. **Prune**: `tk evolve` reports unused, failures, overlap; `tk prune` archives drops.
 
