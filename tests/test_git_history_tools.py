@@ -331,6 +331,35 @@ class LogRecentTests(unittest.TestCase):
         self.assertEqual(len(payload["commits"][0]["sha"]), 40)
         self.assertEqual(payload["commits"][0]["author"], "Carol")
 
+    def test_bad_limit_errors_in_dry_run_and_real_modes(self) -> None:
+        cases = (
+            ("abc", "limit is not an int: abc"),
+            ("0", "limit must be >= 1"),
+            ("-3", "limit must be >= 1"),
+        )
+        for dry in ("1", "0"):
+            for raw, why in cases:
+                with self.subTest(dry_run=dry, limit=raw):
+                    proc = _run(
+                        LOG,
+                        {
+                            "TK_ARG_REPO": "example",
+                            "TK_ARG_LIMIT": raw,
+                            "TK_DRY_RUN": dry,
+                        },
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertEqual(proc.stdout, "")
+                    payload = json.loads(proc.stderr)
+                    self.assertEqual(
+                        payload,
+                        {
+                            "error": "invalid_flag",
+                            "why": why,
+                            "fix": "tk run git.log-recent --limit 5",
+                        },
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

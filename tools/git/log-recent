@@ -41,15 +41,38 @@ def parse_log(text: str) -> list[dict]:
     return commits
 
 
+def resolve_limit(limit_raw: str) -> int | dict:
+    fix = "tk run git.log-recent --limit 5"
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return {
+            "error": "invalid_flag",
+            "why": f"limit is not an int: {limit_raw}",
+            "fix": fix,
+        }
+    if limit < 1:
+        return {
+            "error": "invalid_flag",
+            "why": "limit must be >= 1",
+            "fix": fix,
+        }
+    return limit
+
+
 def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     limit_raw = os.environ.get("TK_ARG_LIMIT") or "5"
+    resolved = resolve_limit(limit_raw)
+    if isinstance(resolved, dict):
+        return emit(resolved, 2)
+    limit = resolved
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
                 "dry_run": True,
                 "repo": repo or "example",
-                "limit": int(limit_raw) if limit_raw.isdigit() else 5,
+                "limit": limit,
                 "count": None,
                 "commits": [],
             }
@@ -60,26 +83,6 @@ def main() -> int:
                 "error": "missing_flag",
                 "why": "TK_ARG_REPO is required",
                 "fix": "tk run git.log-recent --repo <path>",
-            },
-            2,
-        )
-    try:
-        limit = int(limit_raw)
-    except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"limit is not an int: {limit_raw}",
-                "fix": "tk run git.log-recent --repo <git-dir> --limit 5",
-            },
-            2,
-        )
-    if limit < 1:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "limit must be >= 1",
-                "fix": "tk run git.log-recent --repo <git-dir> --limit 5",
             },
             2,
         )
