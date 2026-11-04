@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-    Agent["Agent (Any Harness)"] -->|reads compact pointer| Skill["skills/toolkit/SKILL.md"]
+    Agent["Agent (Any Harness)"] -->|reads compact pointer| Skill["skills/agent-toolkit/SKILL.md"]
     Agent -->|"1. tk find → 2. tk run"| CLI["1. Dispatcher (tk)"]
     CLI --> Catalog["2. Single-File Tool Index (tools/)"]
     CLI --> ChainEngine["3. Composition Engine (chains/)"]
