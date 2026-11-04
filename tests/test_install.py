@@ -161,7 +161,21 @@ class InstallTests(unittest.TestCase):
         home = self.tmp / "ho\tme\nX"
         extra = self.tmp / "sk\till\x01"
         payload = self._payload({"HOME": str(home), "TK_SKILL_DIRS": str(extra)})
+        agents = home / ".agents" / "skills" / "toolkit"
+        self._assert_skill_link(agents)
+        self._assert_skill_link(extra / "toolkit")
+        self.assertEqual(payload["skill_links"], [str(agents), str(extra / "toolkit")])
         self.assertIn("\t", payload["bin"])
         self.assertIn("\n", payload["skill"])
         self.assertIn("\t", payload["skill"])
-        self.assertTrue(any("\t" in link and "\x01" in link for link in payload["skill_links"]))
+        self.assertFalse((self.repo / "X").exists())
+
+    def test_newline_in_home_stays_one_absolute_link(self) -> None:
+        home = self.tmp / "a\nb"
+        payload = self._payload({"HOME": str(home)})
+        agents = home / ".agents" / "skills" / "toolkit"
+        self._assert_skill_link(agents)
+        self.assertEqual(payload["skill"], str(agents))
+        self.assertEqual(payload["skill_links"], [str(agents)])
+        self.assertTrue(payload["skill_links"][0].startswith("/"))
+        self.assertFalse((self.repo / "b").exists())
