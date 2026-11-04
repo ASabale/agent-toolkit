@@ -5,12 +5,6 @@ set -e
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
-# Unset GIT_* env vars that git exports to hooks; otherwise tests that create
-# temporary repos inherit GIT_INDEX_FILE/GIT_DIR and fail with tree errors.
-for var in $(env | grep -o '^GIT_[^=]*'); do
-    unset "$var"
-done
-
 printf '%s\n' "pre-commit: tk check..."
 check_out=$(TK_NO_TELEMETRY=1 "${REPO_ROOT}/tk" check --json)
 ok=$(printf '%s' "$check_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok',False))")
@@ -27,5 +21,9 @@ if [ "$lint_ok" != "True" ]; then
     exit 1
 fi
 
-printf '%s\n' "pre-commit: unit tests..."
-cd "${REPO_ROOT}" && python3 -m unittest discover -s tests -q
+# Git exports these into hooks; tests that create temp repos inherit them
+# and fail with "invalid object / Error building trees".
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
+printf '%s\n' "pre-commit: python3 -m unittest discover -s tests..."
+cd "${REPO_ROOT}" && python3 -m unittest discover -s tests
