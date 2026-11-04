@@ -49,7 +49,7 @@ Agents: skip to [For agents](#for-agents).
 | **skill pointer** | Compact [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md) kept in context; tool definitions stay on disk. |
 | **`tk find`** | Ranks tools and chains by intent and prints a copy-pasteable `tk run` example. |
 | **`tk check`** | Validates headers, flags, dry-run smoke, and catalog integrity. |
-| **`tk evolve`** | Promotes passing unverified read-only items; reports unused, failing, overlapping, and chain candidates. |
+| **`tk evolve`** | Promotes passing unverified read-only items after a live run; reports unused, failing, overlapping, and chain candidates. |
 | **`tk prune`** | Archives named or unused items to `state/archive/`. Refuses if a kept chain still uses one. |
 | **quarantine** | A failed `tk save` / `tk chain save` draft is copied to `state/quarantine/` and removed from the catalog. |
 | **wiki** | Dated, commit-cited history under `wiki/`, linted by `wiki.lint`. |
