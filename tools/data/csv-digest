@@ -4,7 +4,7 @@
 # @tk-safety: read-only
 # @tk-arg: --path | required | string | Path to CSV or TSV file
 # @tk-arg: --limit | optional | int | Maximum sample rows to return (default: 10)
-# @tk-output: json | {path, delimiter, columns, rows, truncated, null_counts, sample}
+# @tk-output: json | {path, delimiter, columns, rows, truncated, null_counts, cells_truncated, sample} | cells_truncated counts sample cells cut to 200 chars
 # @tk-example: tk run data.csv-digest --path data.csv --limit 10
 # @tk-verified: 2026-11-04
 
@@ -14,6 +14,7 @@ import os
 import sys
 
 _DEFAULT_LIMIT = 10
+_MAX_CELL_CHARS = 200
 _DELIMITERS = (",", "\t", ";", "|")
 
 
@@ -32,6 +33,18 @@ def _limit(raw: str) -> int | None:
 
 def _is_empty(value: str | None) -> bool:
     return value is None or value.strip() == ""
+
+
+def _cap_cell(value: str) -> tuple[str, int]:
+    if len(value) <= _MAX_CELL_CHARS:
+        return value, 0
+    return value[:_MAX_CELL_CHARS], 1
+
+
+def _cap_row(row: dict[str, str]) -> tuple[dict[str, str], int]:
+    pairs = [(column, _cap_cell(value)) for column, value in row.items()]
+    capped = {column: text for column, (text, _cut) in pairs}
+    return capped, sum(cut for _column, (_text, cut) in pairs)
 
 
 def _detect_delimiter(path: str) -> str:
@@ -58,6 +71,7 @@ def digest(path: str, limit: int) -> dict:
     columns: list[str] = []
     null_counts: dict[str, int] = {}
     sample: list[dict] = []
+    cells_truncated = 0
     rows = 0
     with open(path, encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
@@ -66,12 +80,18 @@ def digest(path: str, limit: int) -> dict:
         for row in reader:
             rows += 1
             kept = {column: row.get(column) for column in columns}
-            for column, value in kept.items():
+            for column, value in list(kept.items()):
                 if _is_empty(value):
                     null_counts[column] += 1
                     kept[column] = "" if value is None else value
             if len(sample) < limit:
-                sample.append(kept)
+                text_row = {
+                    column: "" if value is None else value
+                    for column, value in kept.items()
+                }
+                capped, cut = _cap_row(text_row)
+                sample.append(capped)
+                cells_truncated += cut
     return {
         "path": path,
         "delimiter": delimiter,
@@ -79,6 +99,7 @@ def digest(path: str, limit: int) -> dict:
         "rows": rows,
         "truncated": rows > limit,
         "null_counts": null_counts,
+        "cells_truncated": cells_truncated,
         "sample": sample,
     }
 
