@@ -1,22 +1,172 @@
 #!/usr/bin/env python3
 # @tk-name: sql.schema
-# @tk-summary: List SQLite user tables, row counts, and columns
+# @tk-summary: List SQLite or Postgres tables, row counts, and columns
 # @tk-safety: read-only
-# @tk-arg: --db    | required | string | Path to the SQLite database file
+# @tk-arg: --db    | required | string | SQLite path or postgres:// / postgresql:// URL
 # @tk-arg: --table | optional | string | One table name, or all (default: all)
 # @tk-output: json | {db, table_count, tables:[{name, rows, columns:[{name, type, pk, notnull}]}]}
 # @tk-example: tk run sql.schema --db example.db
 # @tk-verified: 2026-11-03
 
+import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run sql.schema --db <path> [--table all]"
+_PSQL_FIX = "install postgresql-client"
+_PGOPTIONS = "-c default_transaction_read_only=on -c statement_timeout=15000"
+
+
+def is_postgres_url(value: str) -> bool:
+    lowered = value.lower()
+    return lowered.startswith("postgres://") or lowered.startswith("postgresql://")
+
+
+def password_tokens(url: str) -> list[str]:
+    tokens: list[str] = []
+    parts = urlsplit(url)
+    if "@" in parts.netloc:
+        userinfo = parts.netloc.rsplit("@", 1)[0]
+        if ":" in userinfo:
+            raw = userinfo.split(":", 1)[1]
+            tokens.extend([raw, unquote(raw)])
+    if parts.password:
+        tokens.append(parts.password)
+    unique: list[str] = []
+    for token in sorted(set(tokens), key=len, reverse=True):
+        if token and token not in unique:
+            unique.append(token)
+    return unique
+
+
+def redact_url(url: str) -> str:
+    if not is_postgres_url(url):
+        return url
+    parts = urlsplit(url)
+    if not password_tokens(url):
+        return url
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    username = parts.username or ""
+    netloc = f"{username}:***@{host}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def scrub(text: str, url: str) -> str:
+    redacted = text
+    for token in password_tokens(url):
+        redacted = redacted.replace(token, "***")
+    if url:
+        redacted = redacted.replace(url, redact_url(url))
+    return redacted
+
+
+def postgres_env() -> dict:
+    env = os.environ.copy()
+    current = env.get("PGOPTIONS", "").strip()
+    env["PGOPTIONS"] = f"{current} {_PGOPTIONS}".strip()
+    return env
+
+
+def schema_sql(table: str) -> str:
+    table_filter = ""
+    if table and table != "all":
+        escaped = table.replace("'", "''")
+        table_filter = f"AND c.table_name = '{escaped}'"
+    return f"""
+SELECT COALESCE(json_agg(obj ORDER BY schema_name, table_name), '[]'::json)
+FROM (
+  SELECT c.table_schema AS schema_name,
+         c.table_name,
+         json_build_object(
+           'name', c.table_name,
+           'rows', COALESCE((
+             SELECT s.n_live_tup::int
+             FROM pg_stat_user_tables s
+             WHERE s.schemaname = c.table_schema AND s.relname = c.table_name
+           ), 0),
+           'columns', json_agg(
+             json_build_object(
+               'name', c.column_name,
+               'type', c.data_type,
+               'pk', COALESCE((
+                 SELECT k.ordinal_position
+                 FROM information_schema.table_constraints tc
+                 JOIN information_schema.key_column_usage k
+                   ON k.constraint_schema = tc.constraint_schema
+                  AND k.constraint_name = tc.constraint_name
+                  AND k.table_schema = c.table_schema
+                  AND k.table_name = c.table_name
+                  AND k.column_name = c.column_name
+                 WHERE tc.constraint_type = 'PRIMARY KEY'
+                   AND tc.table_schema = c.table_schema
+                   AND tc.table_name = c.table_name
+                 LIMIT 1
+               ), 0),
+               'notnull', CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END
+             ) ORDER BY c.ordinal_position
+           )
+         ) AS obj
+  FROM information_schema.columns c
+  JOIN information_schema.tables t
+    ON t.table_schema = c.table_schema
+   AND t.table_name = c.table_name
+   AND t.table_type = 'BASE TABLE'
+  WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')
+  {table_filter}
+  GROUP BY c.table_schema, c.table_name
+) grouped
+"""
+
+
+def schema_postgres(url: str, table: str) -> int:
+    if shutil.which("psql") is None:
+        return emit(
+            {
+                "error": "psql_unavailable",
+                "why": "psql is not on PATH",
+                "fix": _PSQL_FIX,
+            },
+            1,
+        )
+    try:
+        proc = subprocess.run(
+            ["psql", url, "-X", "-A", "-t"],
+            input=schema_sql(table),
+            capture_output=True,
+            text=True,
+            env=postgres_env(),
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return fail("psql_error", "psql timed out", _FIX)
+    except OSError as exc:
+        return fail("psql_error", scrub(str(exc), url), _FIX)
+    if proc.returncode != 0:
+        why = scrub((proc.stderr or proc.stdout or "psql failed").strip(), url)
+        return fail("psql_error", why or "psql failed", _FIX)
+    try:
+        tables = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return fail("psql_error", "psql did not return JSON", _FIX)
+    if not isinstance(tables, list):
+        return fail("psql_error", "psql JSON was not a table list", _FIX)
+    if table and table != "all" and not tables:
+        return fail("unknown_table", f"no such table: {table}", _FIX)
+    return emit(
+        {"db": redact_url(url), "table_count": len(tables), "tables": tables}
+    )
 
 
 def quote_ident(name: str) -> str:
@@ -41,9 +191,11 @@ def main() -> int:
     db_path = os.environ.get("TK_ARG_DB", "")
     table = os.environ.get("TK_ARG_TABLE") or "all"
     if is_dry_run():
-        return dry_run_ok(db=db_path or "example", table=table)
+        return dry_run_ok(db=redact_url(db_path) if db_path else "example", table=table)
     if not db_path:
         return fail("missing_flag", "TK_ARG_DB is required", _FIX)
+    if is_postgres_url(db_path):
+        return schema_postgres(db_path, table)
     if not os.path.isfile(db_path):
         return fail("missing_db", f"database not found: {db_path}", _FIX)
     try:
