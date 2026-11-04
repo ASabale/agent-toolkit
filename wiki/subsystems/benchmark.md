@@ -1,6 +1,6 @@
 # MCP-vs-tk benchmark
 
-On 2026-11-03, `ASabale/agent-toolkit@257f1a8` still had no reproducible measurement of VISION.md §1 MCP idle bloat against tk's §2.2 idle / discovery / output budget. `tests/test_token_budget.py` gated SKILL.md and `tk find` size only. This page records the first offline, model-free run of `python3 bench/mcp_vs_tk.py --json` over committed fixtures.
+On 2026-11-04, `ASabale/agent-toolkit@257f1a8` still had no reproducible measurement of VISION.md §1 MCP idle bloat against tk's §2.2 idle / discovery / output budget. `tests/test_token_budget.py` gated SKILL.md and `tk find` size only. This page records the first offline, model-free run of `python3 bench/mcp_vs_tk.py --json` over committed fixtures.
 
 Token figures below are `bytes/4` estimates, labelled as such by the script. They are not model tokenizer counts.
 
@@ -18,7 +18,7 @@ The official PyPI package `mcp-server-sqlite==2025.4.25` could not be captured: 
 
 GitHub MCP idle bytes are the compact JSON of the live `tools/list` result (46 tools, including the server's embedded icons). tk idle bytes are the live `skills/agent-toolkit/SKILL.md` size at `ASabale/agent-toolkit@257f1a8` (1,713 bytes). tk discovery and output are live `tk find` / `tk run` against local stubs of the same captured subjects (a `gh` stub of `cli/cli#14927` `statusCheckRollup`, a five-row Album SQLite extract, and the saved `example.com` HTML).
 
-## First results (`ASabale/agent-toolkit@257f1a8`, 2026-11-03)
+## First results (`ASabale/agent-toolkit@257f1a8`, 2026-11-04)
 
 | Task | Side | idle bytes | discovery bytes | output bytes | tool calls | est. tokens (`bytes/4`) |
 |---|---|---|---|---|---|---|
