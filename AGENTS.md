@@ -10,7 +10,7 @@ Every agent touching this repository must uphold four non-negotiable laws:
 1. **Minimize Cognitive Load**: The toolkit must be immediately obvious to any model (including small/local models). One uniform command grammar, zero ordering traps, and errors that give the exact command to run next.
 2. **Minimize Token Spend**: Every extra turn, long help text, or unfiltered API payload wastes context. Optimize discovery (`tk find` gives the runnable command immediately), keep `SKILL.md` razor-thin, and ensure every tool emits distilled, minimum-token output.
 3. **Make Evolution Effortless**: Creating a tool (`tk save`) or chaining tools (`tk chain`) takes one step in a single file with zero sidecar boilerplate.
-4. **Stay Lean**: Continuously consolidate overlapping tools and prune unused ones so the toolkit never bloats.
+4. **Stay Lean**: Continuously consolidate overlapping tools and prune unused ones with `tk prune [--unused] [--dry-run]` so the toolkit never bloats.
 
 ## Context Pointers
 
@@ -30,7 +30,7 @@ Every agent touching this repository must uphold four non-negotiable laws:
 4. **Minimum-Token Composable Output**:
    - Tools are **distillers**, not raw API mirrors. Strip noise and emit compact JSON on `stdout` containing only the fields an agent needs to make a decision or pipe to the next tool.
    - Diagnostic logs and errors go exclusively to `stderr`.
-5. **Deep Modules**: Keep the `tk` surface small (`find`, `run`, `chain`, `save`, `evolve`, `check`, `info`) and hide parsing, indexing, validation, and telemetry behind that interface.
+5. **Deep Modules**: Keep the `tk` surface small (`find`, `run`, `chain`, `save`, `evolve`, `prune`, `check`, `info`) and hide parsing, indexing, validation, and telemetry behind that interface.
 6. **Anti-Bloat & Continuous Pruning**: Never build speculative tools. Every tool must earn its place through real usage; `tk evolve` tracks both promotion of recurring patterns and pruning/consolidation of unused or overlapping tools.
 7. **Zero External Dependencies in the Core**: The core `tk` runtime must run out-of-the-box on macOS and Linux using standard system Python 3 + POSIX shell so any agent harness can clone and use it immediately.
 
