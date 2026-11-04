@@ -407,15 +407,34 @@ def _cmd_save(evolver, argv: list[str]) -> int:
 
 def _cmd_check(catalog, argv: list[str]) -> int:
     fix = "tk check [<name> ...] [--json]"
+    verify_fix = "tk check <name> --verify"
     names: list[str] = []
+    verify = False
     for token in argv:
         if token == "--json":
             continue
+        if token == "--verify":
+            verify = True
+            continue
         elif token.startswith("--"):
-            _err("unknown_flag", f"unknown flag {token}", fix)
+            _err("unknown_flag", f"unknown flag {token}", verify_fix if verify else fix)
             return 2
         else:
             names.append(token)
+    if verify:
+        if len(names) != 1:
+            _err(
+                "verify_requires_one_name",
+                "tk check --verify requires exactly one name",
+                verify_fix,
+            )
+            return 2
+        code, payload = _load("lib.evolver").verify_item(ROOT, names[0])
+        if code != 0:
+            _err(str(payload.get("error") or "verify_failed"), str(payload.get("why") or ""), str(payload.get("fix") or verify_fix))
+            return code
+        sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        return 0
     if len(names) >= 2:
         results = [catalog.check_item(ROOT, name) for name in names]
         payload = {
