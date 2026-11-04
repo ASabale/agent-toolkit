@@ -81,11 +81,37 @@ def _example(item: dict) -> str:
     return item.get("example") or "tk check"
 
 
-def parse_cli_flags(argv: list[str]) -> tuple[dict[str, str], bool, list[str]]:
-    """Extract ``--dry-run``, ``--flag`` values, and stray positional tokens."""
+_BOOL_FLAG_VALUES = {"true", "false", "1", "0", "yes", "no"}
+
+
+def _flag_types(item: dict | None) -> dict[str, str] | None:
+    if item is None:
+        return None
+    types: dict[str, str] = {}
+    for arg in item.get("args") or []:
+        if not isinstance(arg, dict):
+            continue
+        flag = arg.get("flag")
+        if isinstance(flag, str) and flag:
+            types[flag] = str(arg.get("type") or "string")
+    return types
+
+
+def _is_dry_run_token(token: str) -> bool:
+    return token == "--dry-run" or token.startswith("--dry-run=")
+
+
+def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str, str], bool, list[str]]:
+    """Extract ``--dry-run``, ``--flag`` values, and stray positional tokens.
+
+    When ``item`` is set, boolean args only swallow a following token that is
+    an explicit bool literal. Other declared (and unknown) flags take the next
+    token even when it starts with ``-``, except ``--dry-run``.
+    """
     flags: dict[str, str] = {}
     positional: list[str] = []
     dry_run = False
+    schema = _flag_types(item)
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -104,10 +130,24 @@ def parse_cli_flags(argv: list[str]) -> tuple[dict[str, str], bool, list[str]]:
                 flags[name] = value
                 index += 1
                 continue
-            if index + 1 < len(argv) and not argv[index + 1].startswith("--"):
-                flags[token] = argv[index + 1]
-                index += 2
-                continue
+            if index + 1 < len(argv) and not _is_dry_run_token(argv[index + 1]):
+                nxt = argv[index + 1]
+                if schema is None:
+                    if not nxt.startswith("--"):
+                        flags[token] = nxt
+                        index += 2
+                        continue
+                else:
+                    kind = schema.get(token)
+                    if kind == "bool":
+                        if nxt.lower() in _BOOL_FLAG_VALUES:
+                            flags[token] = nxt
+                            index += 2
+                            continue
+                    else:
+                        flags[token] = nxt
+                        index += 2
+                        continue
             flags[token] = "true"
             index += 1
             continue

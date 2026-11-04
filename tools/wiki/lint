@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+# @tk-name: wiki.lint
+# @tk-summary: Report wiki orphans, broken relative links, and pages missing a date or commit
+# @tk-safety: read-only
+# @tk-arg: --path | optional | string | Path to wiki directory (default: wiki)
+# @tk-output: json | {ok, path, pages, orphans, broken_links, undated_pages, unindexed_Commit_pages}
+# @tk-example: tk run wiki.lint --path wiki
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+_DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
+_COMMIT = re.compile(r"@[0-9a-f]{7,40}")
+_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+_FIX = "tk run wiki.lint --path wiki"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _flag_path(argv: list[str]) -> str | None:
+    for index, token in enumerate(argv):
+        if token == "--path" and index + 1 < len(argv):
+            return argv[index + 1]
+        if token.startswith("--path="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def _link_target(raw: str) -> str:
+    text = raw.strip()
+    if not text:
+        return ""
+    if text.startswith("<"):
+        end = text.find(">")
+        text = text[1:end] if end != -1 else text[1:]
+    else:
+        text = text.split()[0]
+    return text.split("#", 1)[0].strip()
+
+
+def _is_relative(target: str) -> bool:
+    if not target or target.startswith("#"):
+        return False
+    if "://" in target or target.startswith("mailto:"):
+        return False
+    return True
+
+
+def _markdown_files(root: Path) -> list[Path]:
+    pages: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(name for name in dirnames if not name.startswith("."))
+        for name in sorted(filenames):
+            if name.endswith(".md"):
+                pages.append(Path(dirpath) / name)
+    pages.sort(key=lambda path: path.relative_to(root).as_posix())
+    return pages
+
+
+def _linked_from_index(root: Path, index: Path) -> set[Path]:
+    linked: set[Path] = set()
+    text = index.read_text(encoding="utf-8")
+    for match in _LINK.finditer(text):
+        target = _link_target(match.group(1))
+        if not _is_relative(target):
+            continue
+        linked.add((index.parent / target).resolve())
+    return linked
+
+
+def lint(root: Path, display_path: str) -> dict:
+    pages = _markdown_files(root)
+    rels = [page.relative_to(root).as_posix() for page in pages]
+    index = root / "index.md"
+    orphans: list[str] = []
+    broken: list[dict] = []
+    undated: list[str] = []
+    linked = _linked_from_index(root, index) if index.is_file() else set()
+    if not index.is_file():
+        orphans = [rel for rel in rels if rel != "index.md"]
+    for page, rel in zip(pages, rels):
+        text = page.read_text(encoding="utf-8")
+        if rel != "index.md" and index.is_file() and page.resolve() not in linked:
+            orphans.append(rel)
+        if _DATE.search(text) is None or _COMMIT.search(text) is None:
+            undated.append(rel)
+        for match in _LINK.finditer(text):
+            target = _link_target(match.group(1))
+            if not _is_relative(target):
+                continue
+            if not (page.parent / target).resolve().is_file():
+                broken.append({"source": rel, "target": target})
+    orphans.sort()
+    undated.sort()
+    broken.sort(key=lambda item: (item["source"], item["target"]))
+    ok = index.is_file() and not orphans and not broken and not undated
+    return {
+        "ok": ok,
+        "path": display_path,
+        "pages": len(pages),
+        "orphans": orphans,
+        "broken_links": broken,
+        "undated_pages": undated,
+    }
+
+
+def main() -> int:
+    display = _flag_path(sys.argv[1:])
+    if display is None:
+        display = os.environ.get("TK_ARG_PATH") or "wiki"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit({"dry_run": True, "path": display})
+    root = Path(display)
+    if not root.is_dir():
+        return emit(
+            {
+                "error": "not_a_directory",
+                "why": f"{display} is not a directory",
+                "fix": _FIX,
+            },
+            1,
+        )
+    return emit(lint(root, display))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

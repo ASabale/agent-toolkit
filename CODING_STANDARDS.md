@@ -80,8 +80,8 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 
 ### 2.2 `lib/runner.py` — Validation, Execution & Chaining
 
-- **`parse_cli_flags(argv: list[str]) -> tuple[dict[str, str], bool, list[str]]`**
-  Extracts `--dry-run` anywhere in `argv` (`dry_run: bool`), parses `--flag value`, `--flag=value`, and standalone boolean `--flag` (`"true"`), and collects any stray positional tokens in `positional: list[str]`.
+- **`parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str, str], bool, list[str]]`**
+  Extracts `--dry-run` anywhere in `argv` (`dry_run: bool`), parses `--flag value`, `--flag=value`, and standalone boolean `--flag` (`"true"`), and collects any stray positional tokens in `positional: list[str]`. When `item` is supplied, uses `item["args"]` schema so boolean flags do not swallow subsequent positional tokens and non-boolean flags accept values starting with `-` or `--` (other than `--dry-run`).
 - **`validate_and_build_env(item: dict, flags: dict[str, str], positional: list[str], dry_run: bool) -> tuple[bool, dict[str, str], dict | None]`**
   - Rejects non-empty `positional` with `{"error": "positional_arguments_forbidden", "why": "...", "fix": item["example"]}`.
   - Rejects unknown `--flag` names not declared in `item["args"]` with `{"error": "unknown_flag", "why": "...", "fix": item["example"]}`.
@@ -104,7 +104,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 - **`save_chain(root_dir: Path, name: str, summary: str, steps: list[dict], args: list[dict] | None = None, safety: str = "read-only", example: str | None = None, force: bool = False) -> tuple[int, str, str]`**
   Writes `chains/<name>.json`, validates via `check_item`, rolls back on failure, logs `chain_saved`, and returns `(0, compact_json, "")`.
 - **`evolve_report(root_dir: Path, auto_promote: bool = True) -> dict`**
-  Analyzes `state/events.jsonl` + catalog: auto-promotes unverified `read-only` tools that pass `check_item` (updating `@tk-verified` to today's YYYY-MM-DD), and reports `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates` (excluding structural stopwords like `digest`, `file`, `tree`, `json`, `get`, `list`, `path`, `repo` and requiring `>= 2` shared domain tokens with Jaccard `score >= 0.35`).
+  Analyzes `state/events.jsonl` + catalog (importing `discover_catalog` and `check_item` directly from `lib.catalog` without duplicated fallback parsers): auto-promotes unverified `read-only` tools and chains that pass `check_item` (updating `@tk-verified` / `"verified"` to today's YYYY-MM-DD), and reports `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates` (excluding structural stopwords, skipping chain-to-step pairs, and requiring `>= 2` shared domain tokens with Jaccard `score >= 0.35` within the same namespace or `>= 0.50` across namespaces).
 - **`prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tuple[int, str, str]`**
   Retires named tools or chains from `tools/` or `chains/` by moving them into `state/archive/<timestamp>-<name>` (when `dry_run=False`), logging `tool_pruned`, and returning `(0, compact_json, "")` with `{"pruned": [...], "archived_to": [...], "dry_run": bool}`.
   **Safety Invariant**: If any target tool is referenced as a step inside an active chain (that is not itself in `names`), `prune_tools` must refuse to break the chain and return `(2, "", error_json)` with `error="tool_in_use_by_chain"`.
@@ -123,3 +123,11 @@ Supports:
 - `tk check [name] [--json]`
 - `tk evolve [--no-promote]`
 - `tk prune [<name> ...] [--unused] [--dry-run]`
+
+---
+
+## 3. Token Budget & Wiki Integrity Gates
+
+1. **Idle Skill Ceiling**: `skills/toolkit/SKILL.md` must never exceed `45` lines or `1,800` bytes.
+2. **Discovery Line Ceiling**: Every item in `tk find` output must be exactly 2 lines (`<name> [<safety>] — <summary>` and `  run: <example>`), with each line `<= 140` characters.
+3. **Historical Wiki Integrity (`wiki.lint`)**: Every file under `wiki/` (except `wiki/index.md`) must be linked from `wiki/index.md`, every relative link in `wiki/**/*.md` must resolve on disk, and every wiki page must contain dated (`YYYY-MM-DD`) and commit-cited (`@<sha>`) historical claims.

@@ -3,20 +3,16 @@
 Public seam (CODING_STANDARDS.md §2.3):
 - log_event: append-only telemetry; never raises
 - save_tool / save_chain: write a draft, validate with check_item, roll back on failure
-- evolve_report: promote verified-passing read-only tools and summarize friction
+- evolve_report: promote verified-passing read-only tools and chains and summarize friction
 - prune_tools: archive tools or chains, refusing to break a live chain
 """
 
 from __future__ import annotations
 
 import json
-import os
-import py_compile
 import re
 import shlex
 import stat
-import subprocess
-import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -237,7 +233,7 @@ def prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tupl
 
 
 def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
-    """Promote unverified read-only tools that pass check_item and summarize events."""
+    """Promote unverified read-only tools and chains that pass check_item."""
     empty = {
         "promoted": [],
         "search_misses": [],
@@ -268,12 +264,14 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
             if (
                 auto_promote
                 and check.get("ok")
-                and item.get("kind") == "tool"
                 and item.get("safety") == "read-only"
                 and _is_unverified(item.get("verified"))
             ):
                 path = Path(str(item.get("path") or ""))
-                if path.is_file() and _promote_tool(path, today):
+                kind = item.get("kind")
+                if kind == "tool" and path.is_file() and _promote_tool(path, today):
+                    promoted.append(name)
+                elif kind == "chain" and path.is_file() and _promote_chain(path, today):
                     promoted.append(name)
         unused = sorted(name for name in catalog if name not in used)
         return {
@@ -575,322 +573,29 @@ def _prune_empty_dirs(start: Path, stop: Path) -> None:
 
 
 def _check_item(root: Path, name_or_path: str | Path) -> dict:
-    catalog_result = _catalog_call("check_item", root, name_or_path)
+    try:
+        from lib.catalog import check_item
+
+        catalog_result = check_item(root, name_or_path)
+    except Exception:
+        catalog_result = None
     if isinstance(catalog_result, dict) and "ok" in catalog_result:
         errors = catalog_result.get("errors")
         if not isinstance(errors, list):
             catalog_result = dict(catalog_result)
             catalog_result["errors"] = [] if catalog_result.get("ok") else ["validation failed"]
         return catalog_result
-    return _fallback_check_item(root, name_or_path)
+    return {"name": str(name_or_path), "ok": False, "errors": ["validation failed"]}
 
 
 def _discover(root: Path) -> dict[str, dict]:
     try:
-        import lib.catalog as catalog
-    except Exception:
-        return _fallback_discover(root)
-    try:
-        result = catalog.discover_catalog(root)
+        from lib.catalog import discover_catalog
+
+        result = discover_catalog(root)
     except Exception:
         return {}
     return result if isinstance(result, dict) else {}
-
-
-def _catalog_call(fn_name: str, *args):
-    try:
-        import lib.catalog as catalog
-    except Exception:
-        return None
-    fn = getattr(catalog, fn_name, None)
-    if not callable(fn):
-        return None
-    try:
-        return fn(*args)
-    except Exception:
-        return None
-
-
-def _fallback_check_item(root: Path, name_or_path: str | Path) -> dict:
-    path = _resolve_check_path(root, name_or_path)
-    if path is None or not path.is_file():
-        target = str(name_or_path)
-        return {"name": target, "ok": False, "errors": [f"file not found: {target}"]}
-    if path.suffix == ".json":
-        return _check_chain_file(root, path)
-    return _check_tool_file(root, path)
-
-
-def _resolve_check_path(root: Path, name_or_path: str | Path) -> Path | None:
-    candidate = Path(name_or_path)
-    if candidate.is_file():
-        return candidate
-    rooted = root / candidate
-    if rooted.is_file():
-        return rooted
-    if isinstance(name_or_path, str) and _NAME_RE.fullmatch(name_or_path):
-        tool = _tool_dest(root, name_or_path)
-        if tool.is_file():
-            return tool
-        chain = root / "chains" / f"{name_or_path}.json"
-        if chain.is_file():
-            return chain
-    return candidate if candidate.exists() else None
-
-
-def _check_tool_file(root: Path, path: Path) -> dict:
-    del root
-    name = path.name
-    errors: list[str] = []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return {"name": name, "ok": False, "errors": [str(exc)]}
-    header = _parse_tool_header(text, path)
-    name = header.get("name") or name
-    for field in ("name", "summary", "safety", "output", "example", "verified"):
-        if not header.get(field):
-            errors.append(f"missing {field}")
-    if header.get("safety") and header["safety"] not in _SAFETY:
-        errors.append("safety must be read-only, mutating, or destructive")
-    example = header.get("example") or ""
-    if example and not (example == f"tk run {name}" or example.startswith(f"tk run {name} ")):
-        errors.append("example must start with tk run <name>")
-    for arg in header.get("args") or []:
-        if arg.get("required") and not _example_has_flag(example, arg["flag"]):
-            errors.append(f"example missing {arg['flag']}")
-    if not os.access(path, os.X_OK):
-        errors.append("tool is not executable")
-    syntax_error = _syntax_error(path, text)
-    if syntax_error:
-        errors.append(syntax_error)
-    if not errors:
-        dry_error = _dry_run_error(path, header.get("args") or [])
-        if dry_error:
-            errors.append(dry_error)
-    return {"name": name, "ok": not errors, "errors": errors}
-
-
-def _check_chain_file(root: Path, path: Path) -> dict:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"name": path.stem, "ok": False, "errors": [str(exc)]}
-    if not isinstance(document, dict):
-        return {"name": path.stem, "ok": False, "errors": ["chain file must be a JSON object"]}
-    name = document.get("name") or path.stem
-    errors: list[str] = []
-    for field in ("name", "summary", "safety", "output", "example", "verified"):
-        if not document.get(field):
-            errors.append(f"missing {field}")
-    if document.get("safety") and document.get("safety") not in _SAFETY:
-        errors.append("safety must be read-only, mutating, or destructive")
-    example = str(document.get("example") or "")
-    if example and not (example == f"tk run {name}" or example.startswith(f"tk run {name} ")):
-        errors.append("example must start with tk run <name>")
-    for arg in document.get("args") or []:
-        if isinstance(arg, dict) and arg.get("required", True) not in {False, "optional"}:
-            flag = str(arg.get("flag") or arg.get("name") or "")
-            if flag and not _example_has_flag(example, flag):
-                errors.append(f"example missing {flag}")
-    steps = document.get("steps")
-    if not isinstance(steps, list) or not steps:
-        errors.append("chain has no steps")
-    else:
-        known = set(_discover(root))
-        known.discard(name)
-        for index, step in enumerate(steps):
-            tool = step.get("tool") if isinstance(step, dict) else None
-            if not isinstance(tool, str) or not tool:
-                errors.append(f"step {index} missing tool")
-            elif tool not in known:
-                errors.append(f"unknown tool: {tool}")
-    return {"name": str(name), "ok": not errors, "errors": errors}
-
-
-def _example_has_flag(example: str, flag: str) -> bool:
-    return re.search(rf"(?:^|\s){re.escape(flag)}(?:\s|=|$)", example) is not None
-
-
-def _syntax_error(path: Path, text: str) -> str | None:
-    first = text.splitlines()[0] if text.splitlines() else ""
-    if not first.startswith("#!"):
-        return "missing shebang"
-    if "python" in first:
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".pyc") as compiled:
-                py_compile.compile(str(path), cfile=compiled.name, doraise=True)
-        except py_compile.PyCompileError as exc:
-            return f"python syntax: {exc.msg}"
-        return None
-    shell = "bash" if "bash" in first else "sh"
-    result = subprocess.run([shell, "-n", str(path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "syntax error").strip().splitlines()
-        return detail[-1] if detail else "syntax error"
-    return None
-
-
-def _dry_run_error(path: Path, args: list[dict]) -> str | None:
-    env = os.environ.copy()
-    env["TK_DRY_RUN"] = "1"
-    for arg in args:
-        if arg.get("required"):
-            env[arg["env_var"]] = _DUMMY.get(arg.get("type"), "example")
-    try:
-        result = subprocess.run(
-            [str(path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"dry-run failed: {exc}"
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip().splitlines()
-        suffix = f": {detail[-1]}" if detail else ""
-        return f"dry-run exited {result.returncode}{suffix}"
-    try:
-        json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return "dry-run stdout is not valid JSON"
-    return None
-
-
-def _fallback_discover(root: Path) -> dict[str, dict]:
-    items: dict[str, dict] = {}
-    tools = root / "tools"
-    if tools.is_dir():
-        for path in tools.rglob("*"):
-            if not path.is_file() or _hidden(path, tools):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
-                continue
-            header = _parse_tool_header(text, path)
-            name = header.get("name") or path.stem
-            header["kind"] = "tool"
-            items[name] = header
-    chains = root / "chains"
-    if chains.is_dir():
-        for path in sorted(chains.glob("*.json")):
-            if path.name.startswith("."):
-                continue
-            item = _chain_item(path)
-            if item:
-                items[item["name"]] = item
-    return dict(sorted(items.items()))
-
-
-def _hidden(path: Path, root: Path) -> bool:
-    try:
-        relative = path.relative_to(root)
-    except ValueError:
-        return True
-    return any(part.startswith(".") or part.startswith("__") for part in relative.parts)
-
-
-def _parse_tool_header(text: str, path: Path) -> dict:
-    fields = {
-        "kind": "tool",
-        "name": "",
-        "summary": "",
-        "safety": "",
-        "output": "",
-        "example": "",
-        "verified": "",
-        "path": str(path.resolve()),
-        "args": [],
-    }
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#!"):
-            continue
-        if stripped == "":
-            if fields["name"]:
-                break
-            continue
-        if not stripped.startswith("#"):
-            break
-        body = stripped[1:].strip()
-        if not body.startswith("@tk-"):
-            continue
-        key, _, value = body.partition(":")
-        value = value.strip()
-        key = key.strip()
-        if key == "@tk-arg":
-            parsed = _parse_arg(value)
-            if parsed:
-                fields["args"].append(parsed)
-            continue
-        mapped = {
-            "@tk-name": "name",
-            "@tk-summary": "summary",
-            "@tk-safety": "safety",
-            "@tk-output": "output",
-            "@tk-example": "example",
-            "@tk-verified": "verified",
-        }.get(key)
-        if mapped:
-            fields[mapped] = value
-    return fields
-
-
-def _parse_arg(value: str) -> dict | None:
-    parts = [part.strip() for part in value.split("|")]
-    if len(parts) < 4:
-        return None
-    flag, required, typ = parts[0], parts[1], parts[2]
-    description = "|".join(parts[3:]).strip()
-    if not flag.startswith("--") or required not in {"required", "optional"} or typ not in _ARG_TYPES:
-        return None
-    default = None
-    match = re.search(r"\(default:\s*([^)]+)\)", description)
-    if match:
-        default = match.group(1).strip()
-    env_var = "TK_ARG_" + flag[2:].replace("-", "_").upper()
-    return {
-        "flag": flag,
-        "env_var": env_var,
-        "required": required == "required",
-        "type": typ,
-        "description": description,
-        "default": default,
-    }
-
-
-def _chain_item(path: Path) -> dict | None:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {
-            "kind": "chain",
-            "name": path.stem,
-            "summary": "",
-            "safety": "",
-            "args": [],
-            "steps": [],
-            "output": "",
-            "example": "",
-            "verified": "",
-            "path": str(path.resolve()),
-        }
-    if not isinstance(document, dict):
-        return None
-    return {
-        "kind": "chain",
-        "name": document.get("name") or path.stem,
-        "summary": document.get("summary") or "",
-        "safety": document.get("safety") or "",
-        "args": document.get("args") or [],
-        "steps": document.get("steps") or [],
-        "output": document.get("output") or "",
-        "example": document.get("example") or "",
-        "verified": document.get("verified") or "",
-        "path": str(path.resolve()),
-    }
 
 
 def _read_events(path: Path) -> list[dict]:
@@ -948,6 +653,21 @@ def _is_unverified(verified: object) -> bool:
     return verified.strip().lower() in {"", "none", "unverified", "null"}
 
 
+def _promote_chain(path: Path, today: str) -> bool:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    document["verified"] = today
+    try:
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def _promote_tool(path: Path, today: str) -> bool:
     try:
         text = path.read_text(encoding="utf-8")
@@ -978,7 +698,8 @@ def _overlap_candidates(catalog: dict[str, dict]) -> list[dict]:
                 continue
             union = tokens[left] | tokens[right]
             score = len(shared) / len(union) if union else 0
-            if score < 0.35:
+            same_namespace = left.split(".", 1)[0] == right.split(".", 1)[0]
+            if score < (0.35 if same_namespace else 0.50):
                 continue
             pairs.append(
                 {

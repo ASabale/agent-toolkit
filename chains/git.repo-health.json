@@ -16,14 +16,18 @@
   "steps": [
     {
       "tool": "git.branch-digest",
-      "args": {"repo": "$input.repo"}
+      "args": {
+        "repo": "$input.repo"
+      }
     },
     {
       "tool": "json.pick",
-      "args": {"keys": "branch,ahead,behind,dirty,detached,upstream"}
+      "args": {
+        "keys": "branch,ahead,behind,dirty,detached,upstream"
+      }
     }
   ],
   "output": "json | {branch, ahead, behind, dirty, detached, upstream}",
   "example": "tk run git.repo-health --repo .",
-  "verified": "none"
+  "verified": "2026-11-03"
 }

@@ -11,5 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Catalog check
         run: ./tk check --json
-      - name: Unit tests
+      - name: Historical wiki lint
+        run: python3 -c 'import json, subprocess, sys; r = json.loads(subprocess.check_output(["./tk", "run", "wiki.lint", "--path", "wiki"])); sys.exit(0 if r.get("ok") else 1)'
+      - name: Unit and token budget tests
         run: python3 -m unittest discover -s tests -v

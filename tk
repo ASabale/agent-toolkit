@@ -127,7 +127,6 @@ def _stdin_data() -> str | None:
 
 
 def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chains_only: bool) -> int:
-    flags, dry_run, positional = runner.parse_cli_flags(flag_argv)
     item = _catalog_item(catalog, name)
     if item is None:
         evolver.log_event(ROOT, "search_miss", {"query": name})
@@ -136,6 +135,7 @@ def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chain
     if chains_only and item.get("kind") != "chain":
         _err("not_a_chain", f"{name} is a tool", f"tk run {name}")
         return 2
+    flags, dry_run, positional = runner.parse_cli_flags(flag_argv, item)
     if item.get("kind") == "chain":
         code, out, err = runner.run_chain(ROOT, item, flags, positional, dry_run)
     else:

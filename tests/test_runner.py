@@ -114,6 +114,25 @@ class ParseCliFlagsTests(unittest.TestCase):
     def test_empty_argv(self):
         self.assertEqual(parse_cli_flags([]), ({}, False, []))
 
+    def test_bool_flag_does_not_swallow_positional(self):
+        item = {
+            "args": [
+                {"flag": "--verbose", "type": "bool"},
+                {"flag": "--name", "type": "string"},
+            ]
+        }
+        flags, dry_run, positional = parse_cli_flags(["--verbose", "leftover"], item)
+        self.assertFalse(dry_run)
+        self.assertEqual(flags, {"--verbose": "true"})
+        self.assertEqual(positional, ["leftover"])
+
+    def test_string_flag_accepts_hyphenated_value(self):
+        item = {"args": [{"flag": "--query", "type": "string"}]}
+        flags, dry_run, positional = parse_cli_flags(["--query", "--foo"], item)
+        self.assertFalse(dry_run)
+        self.assertEqual(flags, {"--query": "--foo"})
+        self.assertEqual(positional, [])
+
 
 class ValidateAndBuildEnvTests(unittest.TestCase):
     def test_rejects_positional_arguments(self):

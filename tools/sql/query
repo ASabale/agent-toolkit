@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+# @tk-name: sql.query
+# @tk-summary: Run one read-only SQLite statement and return rows
+# @tk-safety: read-only
+# @tk-arg: --db    | required | string | Path to the SQLite database file
+# @tk-arg: --sql   | required | string | Single read-only SQL statement
+# @tk-arg: --limit | optional | int    | Maximum rows to return (default: 25)
+# @tk-output: json | {db, columns, count, truncated, rows:[object]}
+# @tk-example: tk run sql.query --db example.db --sql "SELECT 1"
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import re
+import sqlite3
+import sys
+
+_FIX = 'tk run sql.query --db <path> --sql "SELECT 1"'
+_MUTATING = re.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH)\b",
+    re.IGNORECASE,
+)
+
+
+def emit(payload, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def fail(error: str, why: str) -> int:
+    return emit({"error": error, "why": why, "fix": _FIX}, 1)
+
+
+def strip_sql(sql: str) -> str:
+    without_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    without_line = re.sub(r"--[^\n]*", " ", without_block)
+    return re.sub(r"'(?:''|[^'])*'", "''", without_line)
+
+
+def reject_reason(sql: str) -> str | None:
+    cleaned = strip_sql(sql)
+    statements = [part.strip() for part in cleaned.split(";") if part.strip()]
+    if not statements:
+        return "SQL is empty"
+    if len(statements) > 1:
+        return "only one SQL statement is allowed"
+    statement = statements[0]
+    if _MUTATING.search(statement):
+        return "mutating SQL is not allowed"
+    if re.match(r"PRAGMA\b", statement, re.IGNORECASE) and "=" in statement:
+        return "PRAGMA writes are not allowed"
+    return None
+
+
+def cell(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (str, int, float)) or value is None:
+        return value
+    return str(value)
+
+
+def parse_limit(raw: str) -> int | None:
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None
+    if limit < 0:
+        return None
+    return limit
+
+
+def main() -> int:
+    db_path = os.environ.get("TK_ARG_DB", "")
+    sql = os.environ.get("TK_ARG_SQL", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "25"
+    limit = parse_limit(limit_raw)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "dry_run": True,
+                "db": db_path or "example",
+                "sql": sql or "SELECT 1",
+                "limit": 25 if limit is None else limit,
+            }
+        )
+    if not db_path:
+        return fail("missing_flag", "TK_ARG_DB is required")
+    if not sql.strip():
+        return fail("missing_flag", "TK_ARG_SQL is required")
+    if limit is None:
+        return fail("invalid_flag", f"limit is not a non-negative int: {limit_raw}")
+    reason = reject_reason(sql)
+    if reason:
+        return fail("mutating_sql", reason)
+    if not os.path.isfile(db_path):
+        return fail("missing_db", f"database not found: {db_path}")
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return fail("sqlite_error", str(exc))
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        try:
+            cursor = conn.execute(sql)
+        except sqlite3.Error as exc:
+            return fail("sqlite_error", str(exc))
+        if cursor.description is None:
+            return fail("not_a_query", "SQL did not return rows")
+        columns = [item[0] for item in cursor.description]
+        fetched = cursor.fetchmany(limit + 1)
+    finally:
+        conn.close()
+    truncated = len(fetched) > limit
+    visible = fetched[:limit]
+    rows = [
+        {column: cell(value) for column, value in zip(columns, row)}
+        for row in visible
+    ]
+    return emit(
+        {
+            "db": db_path,
+            "columns": columns,
+            "count": len(rows),
+            "truncated": truncated,
+            "rows": rows,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

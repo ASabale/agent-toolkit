@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+# @tk-name: web.read-text
+# @tk-summary: Distill title, headings, links, and text from HTML
+# @tk-safety: read-only
+# @tk-arg: --source    | required | string | HTTP(S) URL or local HTML file path
+# @tk-arg: --max-chars | optional | int    | Maximum characters of body text (default: 4000)
+# @tk-output: json | {source, title, headings, links:[{text, href}], text, truncated}
+# @tk-example: tk run web.read-text --source example.html
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from html.parser import HTMLParser
+
+_FIX = "tk run web.read-text --source <url-or-path>"
+_SKIP = {"script", "style", "noscript", "svg", "nav", "footer"}
+_HEADINGS = {"h1", "h2", "h3"}
+_MAX_LIST = 15
+
+
+def emit(payload, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def fail(error: str, why: str) -> int:
+    return emit({"error": error, "why": why, "fix": _FIX}, 1)
+
+
+def squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+class Distiller(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.skip = 0
+        self.capture: str | None = None
+        self.buf: list[str] = []
+        self.href = ""
+        self.title = ""
+        self.headings: list[dict] = []
+        self.links: list[dict] = []
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in _SKIP:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag == "title" and self.capture is None:
+            self.capture = "title"
+            self.buf = []
+        elif tag in _HEADINGS and self.capture is None:
+            self.capture = tag
+            self.buf = []
+        elif tag == "a" and self.capture is None:
+            found = ""
+            for key, value in attrs:
+                if key.lower() == "href":
+                    found = value or ""
+                    break
+            self.href = found
+            self.capture = "a"
+            self.buf = []
+        elif tag in {"p", "br", "div", "li", "tr"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in _SKIP:
+            if self.skip:
+                self.skip -= 1
+            return
+        if self.skip or self.capture is None:
+            return
+        if self.capture == "title" and tag == "title":
+            self.title = squash("".join(self.buf))
+            self.capture = None
+        elif self.capture in _HEADINGS and tag == self.capture:
+            text = squash("".join(self.buf))
+            if text:
+                if len(self.headings) < _MAX_LIST:
+                    self.headings.append({"level": self.capture, "text": text})
+                self.parts.append(text)
+                self.parts.append("\n")
+            self.capture = None
+        elif self.capture == "a" and tag == "a":
+            text = squash("".join(self.buf))
+            if len(self.links) < _MAX_LIST:
+                self.links.append({"text": text, "href": self.href})
+            if text:
+                self.parts.append(text)
+            self.capture = None
+
+    def handle_data(self, data: str) -> None:
+        if self.skip:
+            return
+        if self.capture is not None:
+            self.buf.append(data)
+        else:
+            self.parts.append(data)
+
+
+def load_source(source: str) -> str:
+    lowered = source.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        request = urllib.request.Request(
+            source,
+            headers={"User-Agent": "tk-web-read-text"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read()
+            charset = response.headers.get_content_charset() or "utf-8"
+        return raw.decode(charset, "replace")
+    with open(source, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def parse_max_chars(raw: str) -> int | None:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def main() -> int:
+    source = os.environ.get("TK_ARG_SOURCE", "")
+    max_raw = os.environ.get("TK_ARG_MAX_CHARS") or "4000"
+    max_chars = parse_max_chars(max_raw)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "dry_run": True,
+                "source": source or "example",
+                "max_chars": 4000 if max_chars is None else max_chars,
+            }
+        )
+    if not source:
+        return fail("missing_flag", "TK_ARG_SOURCE is required")
+    if max_chars is None:
+        return fail("invalid_flag", f"max-chars is not a non-negative int: {max_raw}")
+    remote = source.lower().startswith(("http://", "https://"))
+    if not remote and not os.path.isfile(source):
+        return fail("missing_source", f"HTML file not found: {source}")
+    try:
+        html = load_source(source)
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        return fail("read_failed", str(exc))
+    distiller = Distiller()
+    distiller.feed(html)
+    distiller.close()
+    text = re.sub(r"\s+", " ", "".join(distiller.parts)).strip()
+    truncated = len(text) > max_chars
+    return emit(
+        {
+            "source": source,
+            "title": distiller.title,
+            "headings": distiller.headings,
+            "links": distiller.links,
+            "text": text[:max_chars],
+            "truncated": truncated,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+# @tk-name: sql.schema
+# @tk-summary: List SQLite user tables, row counts, and columns
+# @tk-safety: read-only
+# @tk-arg: --db    | required | string | Path to the SQLite database file
+# @tk-arg: --table | optional | string | One table name, or all (default: all)
+# @tk-output: json | {db, table_count, tables:[{name, rows, columns:[{name, type, pk, notnull}]}]}
+# @tk-example: tk run sql.schema --db example.db
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import sqlite3
+import sys
+
+_FIX = "tk run sql.schema --db <path> [--table all]"
+
+
+def emit(payload, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def fail(error: str, why: str) -> int:
+    return emit({"error": error, "why": why, "fix": _FIX}, 1)
+
+
+def quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def column_specs(conn: sqlite3.Connection, table: str) -> list[dict]:
+    columns = []
+    for row in conn.execute(f"PRAGMA table_info({quote_ident(table)})"):
+        columns.append(
+            {
+                "name": row[1],
+                "type": row[2] or "",
+                "pk": int(row[5] or 0),
+                "notnull": int(row[3] or 0),
+            }
+        )
+    return columns
+
+
+def main() -> int:
+    db_path = os.environ.get("TK_ARG_DB", "")
+    table = os.environ.get("TK_ARG_TABLE") or "all"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit({"dry_run": True, "db": db_path or "example", "table": table})
+    if not db_path:
+        return fail("missing_flag", "TK_ARG_DB is required")
+    if not os.path.isfile(db_path):
+        return fail("missing_db", f"database not found: {db_path}")
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return fail("sqlite_error", str(exc))
+    try:
+        names = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name"
+            )
+        ]
+        if table and table != "all":
+            if table not in names:
+                return fail("unknown_table", f"no such table: {table}")
+            names = [table]
+        tables = []
+        for name in names:
+            count = conn.execute(
+                f"SELECT COUNT(*) FROM {quote_ident(name)}"
+            ).fetchone()[0]
+            tables.append(
+                {
+                    "name": name,
+                    "rows": int(count),
+                    "columns": column_specs(conn, name),
+                }
+            )
+    except sqlite3.Error as exc:
+        return fail("sqlite_error", str(exc))
+    finally:
+        conn.close()
+    return emit({"db": db_path, "table_count": len(tables), "tables": tables})
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

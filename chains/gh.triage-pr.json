@@ -24,14 +24,19 @@
   "steps": [
     {
       "tool": "gh.pr-failure-digest",
-      "args": {"repo": "$input.repo", "pr": "$input.pr"}
+      "args": {
+        "repo": "$input.repo",
+        "pr": "$input.pr"
+      }
     },
     {
       "tool": "json.pick",
-      "args": {"keys": "repo,pr,fail,pending,checks"}
+      "args": {
+        "keys": "repo,pr,fail,pending,checks"
+      }
     }
   ],
   "output": "json | {repo, pr, fail, pending, checks}",
   "example": "tk run gh.triage-pr --repo owner/name --pr 1",
-  "verified": "none"
+  "verified": "2026-11-03"
 }

@@ -413,6 +413,58 @@ class EvolverTests(unittest.TestCase):
             self.assertGreaterEqual(pair["score"], 0.35)
             self.assertGreaterEqual(len(pair["shared"]), 2)
 
+    def test_evolve_promotes_read_only_chain_and_cross_namespace_overlap(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "nsone.qq",
+            "sharedone sharedtwo",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        chain_ok, _, err = save_chain(
+            self.root,
+            "nsone.flow",
+            "Pipe sharedone sharedtwo through a chain",
+            steps=[{"tool": "nsone.qq"}],
+        )
+        self.assertEqual(chain_ok, 0, err)
+        mutating_ok, _, err = save_chain(
+            self.root,
+            "nsone.ship",
+            "Mutating chain that must stay unverified",
+            steps=[{"tool": "nsone.qq"}],
+            safety="mutating",
+        )
+        self.assertEqual(mutating_ok, 0, err)
+
+        report = evolve_report(self.root, auto_promote=True)
+        today = date.today().isoformat()
+        self.assertIn("nsone.flow", report["promoted"])
+        self.assertNotIn("nsone.ship", report["promoted"])
+        promoted = json.loads((self.root / "chains" / "nsone.flow.json").read_text(encoding="utf-8"))
+        held = json.loads((self.root / "chains" / "nsone.ship.json").read_text(encoding="utf-8"))
+        self.assertEqual(promoted["verified"], today)
+        self.assertEqual(held["verified"], "none")
+
+        # Cross namespace: shared {sharedone, sharedtwo}, union adds nsone, nstwo, extra → 2/5 = 0.40.
+        # Same namespace keeps nsone in both, so the pair clears 0.35 and stays.
+        same = _overlap_candidates(
+            {
+                "nsone.aa": {"kind": "tool", "summary": "sharedone sharedtwo"},
+                "nsone.bb": {"kind": "tool", "summary": "sharedone sharedtwo extra extra2 extra3 extra4"},
+            }
+        )
+        cross = _overlap_candidates(
+            {
+                "nsone.aa": {"kind": "tool", "summary": "sharedone sharedtwo"},
+                "nstwo.bb": {"kind": "tool", "summary": "sharedone sharedtwo extra"},
+            }
+        )
+        self.assertEqual(len(same), 1)
+        self.assertGreaterEqual(same[0]["score"], 0.35)
+        self.assertLess(same[0]["score"], 0.50)
+        self.assertEqual(cross, [])
+
     def test_prune_tools_archives_and_refuses_live_chain_deps(self) -> None:
         ok, _, err = save_tool(
             self.root,

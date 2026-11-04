@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+# @tk-name: log.tail-errors
+# @tk-summary: Deduplicate error-like lines from the tail of a log file
+# @tk-safety: read-only
+# @tk-arg: --path  | required | string | Path to the log file
+# @tk-arg: --tail  | optional | int    | How many trailing lines to scan (default: 500)
+# @tk-arg: --limit | optional | int    | Maximum distinct errors to return (default: 20)
+# @tk-output: json | {path, scanned, truncated, errors:[{message, count, first_line, last_line}]}
+# @tk-example: tk run log.tail-errors --path app.log
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import re
+import sys
+
+_FIX = "tk run log.tail-errors --path <file>"
+_HIT = re.compile(r"error|exception|fatal|traceback|panic|fail", re.IGNORECASE)
+_SPACE = re.compile(r"\s+")
+
+
+def emit(payload, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def fail(error: str, why: str) -> int:
+    return emit({"error": error, "why": why, "fix": _FIX}, 1)
+
+
+def parse_int(raw: str) -> int | None:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def normalize(line: str) -> str:
+    return _SPACE.sub(" ", line).strip().lower()
+
+
+def tail(path: str, count: int) -> list[tuple[int, str]]:
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        lines = handle.readlines()
+    start = max(0, len(lines) - count)
+    return [
+        (index + 1, lines[index].rstrip("\r\n"))
+        for index in range(start, len(lines))
+    ]
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    tail_raw = os.environ.get("TK_ARG_TAIL") or "500"
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "20"
+    tail_n = parse_int(tail_raw)
+    limit = parse_int(limit_raw)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "dry_run": True,
+                "path": path or "example",
+                "tail": 500 if tail_n is None else tail_n,
+                "limit": 20 if limit is None else limit,
+            }
+        )
+    if not path:
+        return fail("missing_flag", "TK_ARG_PATH is required")
+    if tail_n is None:
+        return fail("invalid_flag", f"tail is not a non-negative int: {tail_raw}")
+    if limit is None:
+        return fail("invalid_flag", f"limit is not a non-negative int: {limit_raw}")
+    if not os.path.isfile(path):
+        return fail("missing_log", f"log file not found: {path}")
+    try:
+        rows = tail(path, tail_n)
+    except OSError as exc:
+        return fail("read_failed", str(exc))
+    groups: dict[str, dict] = {}
+    order: list[str] = []
+    for number, line in rows:
+        if not _HIT.search(line):
+            continue
+        key = normalize(line)
+        if not key:
+            continue
+        found = groups.get(key)
+        if found is None:
+            groups[key] = {
+                "message": key,
+                "count": 1,
+                "first_line": number,
+                "last_line": number,
+            }
+            order.append(key)
+        else:
+            found["count"] += 1
+            found["last_line"] = number
+    truncated = len(order) > limit
+    errors = [groups[key] for key in order[:limit]]
+    return emit(
+        {
+            "path": path,
+            "scanned": len(rows),
+            "truncated": truncated,
+            "errors": errors,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
