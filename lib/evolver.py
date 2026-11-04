@@ -17,7 +17,7 @@ import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from lib.catalog import _parse_output_keys, _referenced_arg_names
+from lib.catalog import check_item, discover_catalog, _parse_output_keys, _referenced_arg_names
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -891,29 +891,11 @@ def _prune_empty_dirs(start: Path, stop: Path) -> None:
 
 
 def _check_item(root: Path, name_or_path: str | Path) -> dict:
-    try:
-        from lib.catalog import check_item
-
-        catalog_result = check_item(root, name_or_path)
-    except Exception:
-        catalog_result = None
-    if isinstance(catalog_result, dict) and "ok" in catalog_result:
-        errors = catalog_result.get("errors")
-        if not isinstance(errors, list):
-            catalog_result = dict(catalog_result)
-            catalog_result["errors"] = [] if catalog_result.get("ok") else ["validation failed"]
-        return catalog_result
-    return {"name": str(name_or_path), "ok": False, "errors": ["validation failed"]}
+    return check_item(root, name_or_path)
 
 
 def _discover(root: Path) -> dict[str, dict]:
-    try:
-        from lib.catalog import discover_catalog
-
-        result = discover_catalog(root)
-    except Exception:
-        return {}
-    return result if isinstance(result, dict) else {}
+    return discover_catalog(root)
 
 
 def _read_events(path: Path) -> list[dict]:
