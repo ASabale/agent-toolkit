@@ -642,6 +642,8 @@ def _header_errors(item: dict) -> list[str]:
         flag = str(arg.get("flag") or "")
         if not flag.startswith("--"):
             errors.append(f"invalid arg flag: {flag or '(empty)'}")
+        elif flag in {"--raw", "--dry-run"}:
+            errors.append(f"reserved flag: {flag}")
         elif flag in seen_flags:
             errors.append(f"duplicate arg flag: {flag}")
         else:

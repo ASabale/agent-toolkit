@@ -37,6 +37,7 @@ flowchart LR
 
 ### Global Modifiers (Order-Independent)
 - `--dry-run`: Prints the resolved command/pipeline without mutating state.
+- `--raw`: Accepted for compatibility; `tk run` stdout is already raw, unwrapped JSON (no envelope since `d4c16aa`).
 
 ---
 

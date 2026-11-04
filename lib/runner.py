@@ -103,12 +103,16 @@ def _is_dry_run_token(token: str) -> bool:
     return token == "--dry-run" or token.startswith("--dry-run=")
 
 
+def _is_raw_token(token: str) -> bool:
+    return token == "--raw" or token.startswith("--raw=")
+
+
 def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str, str], bool, list[str]]:
-    """Extract ``--dry-run``, ``--flag`` values, and stray positional tokens.
+    """Extract ``--dry-run``, ignore ``--raw``, parse ``--flag`` values, and stray tokens.
 
     When ``item`` is set, boolean args only swallow a following token that is
     an explicit bool literal. Other declared (and unknown) flags take the next
-    token even when it starts with ``-``, except ``--dry-run``.
+    token even when it starts with ``-``, except ``--dry-run`` and ``--raw``.
     """
     flags: dict[str, str] = {}
     positional: list[str] = []
@@ -126,13 +130,20 @@ def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str
             dry_run = value not in {"0", "false", "no", "off"}
             index += 1
             continue
+        if _is_raw_token(token):
+            index += 1
+            continue
         if token.startswith("--"):
             if "=" in token:
                 name, value = token.split("=", 1)
                 flags[name] = value
                 index += 1
                 continue
-            if index + 1 < len(argv) and not _is_dry_run_token(argv[index + 1]):
+            if (
+                index + 1 < len(argv)
+                and not _is_dry_run_token(argv[index + 1])
+                and not _is_raw_token(argv[index + 1])
+            ):
                 nxt = argv[index + 1]
                 if schema is None:
                     if not nxt.startswith("--"):
