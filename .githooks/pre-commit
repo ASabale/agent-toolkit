@@ -5,6 +5,12 @@ set -e
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
+# Unset GIT_* env vars that git exports to hooks; otherwise tests that create
+# temporary repos inherit GIT_INDEX_FILE/GIT_DIR and fail with tree errors.
+for var in $(env | grep -o '^GIT_[^=]*'); do
+    unset "$var"
+done
+
 printf '%s\n' "pre-commit: tk check..."
 check_out=$(TK_NO_TELEMETRY=1 "${REPO_ROOT}/tk" check --json)
 ok=$(printf '%s' "$check_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok',False))")
