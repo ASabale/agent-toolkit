@@ -1,6 +1,6 @@
 # 0007 — skills.sh distribution and skill rename
 
-On 2026-11-04, at `ASabale/agent-toolkit@9db88a9`, the portable skill lived at `skills/toolkit/` with frontmatter `name: toolkit`. Issue #75 recorded two breaks for [skills.sh](https://github.com/vercel-labs/skills): `npx skills add ASabale/agent-toolkit` copies only the skill folder, so an agent gets `SKILL.md` without `tk`; and the name `toolkit` collides with other skills.
+On 2026-11-04, at `ASabale/agent-toolkit@9db88a9`, the portable skill lived at `skills/toolkit/` with frontmatter `name: toolkit`. Issue #75 recorded two breaks for [skills.sh](https://github.com/vercel-labs/skills): `npx skills add ASabale/agent-toolkit` copies only the skill folder, so an agent gets `SKILL.md` without `tk`; and the name `toolkit` collides with other skills. On 2026-11-04, `ASabale/agent-toolkit@b6f36b3` renamed the skill and added the bootstrap contract.
 
 ## Decision
 

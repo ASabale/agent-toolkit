@@ -10,7 +10,7 @@ On 2026-11-03 this index listed every page under `wiki/`. Claims on those pages 
 - [0004 — Multi-Agent Coordination Protocol](decisions/0004-multi-agent-coordination-protocol.md) — On 2026-11-04, pull request #25 on base `ASabale/agent-toolkit@d4ad154` proposed `COORDINATION.md` for claiming work, avoiding collisions, steward merge, and checkouts under `.worktrees/`.
 - [0005 — Chief-of-Staff decision log](decisions/0005-chief-of-staff-decision-log.md) — On 2026-11-03, at `ASabale/agent-toolkit@5a57fcd`, the Chief of Staff recorded Wave 1 sequencing and the later gap-audit follow-up (`ASabale/agent-toolkit@cce91d4`, `ASabale/agent-toolkit@e62a370`).
 - [0006 — Raw output mode](decisions/0006-raw-output-mode.md) — On 2026-11-04, `ASabale/agent-toolkit@04d3803` accepted `--raw` as a no-op global modifier after the JSON envelope that `--raw` unwrapped at `ASabale/agent-toolkit@4b0e69c` was removed in `ASabale/agent-toolkit@d4c16aa`.
-- [0007 — skills.sh distribution](decisions/0007-skills-sh-distribution.md) — On 2026-11-04, `ASabale/agent-toolkit@9db88a9` still shipped `skills/toolkit`; issue #75 renamed it to `agent-toolkit` and added an idempotent `~/.agent-toolkit` bootstrap so `npx skills add ASabale/agent-toolkit` yields a working `tk`.
+- [0007 — skills.sh distribution](decisions/0007-skills-sh-distribution.md) — On 2026-11-04, `ASabale/agent-toolkit@9db88a9` still shipped `skills/toolkit`; `ASabale/agent-toolkit@b6f36b3` renamed it to `agent-toolkit` and added an idempotent `~/.agent-toolkit` bootstrap so `npx skills add ASabale/agent-toolkit` yields a working `tk`.
 
 ## Subsystems
 
