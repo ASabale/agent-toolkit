@@ -42,14 +42,20 @@ class CliIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _run(self, *args: str, stdin: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        *args: str,
+        stdin: str | None = None,
+        env: dict | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         run_env = env if env is not None else self._base_env
         return subprocess.run(
             [str(self.tk), *args],
             input=stdin,
             capture_output=True,
             text=True,
-            cwd=self.root,
+            cwd=self.root if cwd is None else cwd,
             env=run_env,
         )
 
@@ -505,6 +511,57 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(report["telemetry"]["events"], 0)
         self.assertEqual(report["telemetry"]["run_events"], 0)
         self.assertIsNone(report["telemetry"]["first_ts"])
+
+    def _git(self, cwd: Path, *args: str) -> None:
+        proc = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+
+    def test_relative_path_flags_follow_caller_cwd(self) -> None:
+        toolkit_names = ("AGENTS.md", "ARCHITECTURE.md", "CODING_STANDARDS.md", "VISION.md")
+        with tempfile.TemporaryDirectory() as external:
+            outside = Path(external)
+            (outside / "caller-cwd-marker.txt").write_text("ok\n", encoding="utf-8")
+            nested = outside / "nested"
+            nested.mkdir()
+            (nested / "deep.txt").write_text("deep\n", encoding="utf-8")
+
+            tree = self._run(
+                "run",
+                "fs.tree-digest",
+                "--path",
+                ".",
+                "--max-depth",
+                "1",
+                cwd=outside,
+            )
+            self.assertEqual(tree.returncode, 0, tree.stderr)
+            payload = json.loads(tree.stdout)
+            entries = {item["path"] for item in payload["entries"]}
+            self.assertEqual(payload["path"], ".")
+            self.assertIn("caller-cwd-marker.txt", entries)
+            self.assertIn("nested/deep.txt", entries)
+            for name in toolkit_names:
+                self.assertNotIn(name, entries)
+            self.assertTrue(all((outside / rel).exists() for rel in entries))
+
+            self._git(outside, "init", "-b", "caller-cwd-106")
+            self._git(outside, "config", "user.email", "caller-cwd@example.com")
+            self._git(outside, "config", "user.name", "Caller Cwd")
+            self._git(outside, "add", "caller-cwd-marker.txt")
+            self._git(outside, "-c", "commit.gpgsign=false", "commit", "-m", "marker")
+
+            branch = self._run("run", "git.branch-digest", "--repo", ".", cwd=outside)
+            self.assertEqual(branch.returncode, 0, branch.stderr)
+            digest = json.loads(branch.stdout)
+            self.assertEqual(digest["branch"], "caller-cwd-106")
+            rendered = json.dumps(digest)
+            self.assertNotIn(str(ROOT), rendered)
+            self.assertNotIn(str(self.root), rendered)
 
 
 if __name__ == "__main__":
