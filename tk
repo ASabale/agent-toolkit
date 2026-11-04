@@ -449,6 +449,19 @@ def _cmd_prune(catalog, evolver, argv: list[str]) -> int:
             names.append(token)
     if unused:
         report = evolver.evolve_report(ROOT, auto_promote=False)
+        telemetry = report.get("telemetry") if isinstance(report.get("telemetry"), dict) else {}
+        try:
+            run_events = int(telemetry.get("run_events") or 0)
+        except (TypeError, ValueError):
+            run_events = 0
+        minimum = getattr(evolver, "MIN_UNUSED_RUN_EVENTS", 50)
+        if report.get("unused_reason") == "insufficient_telemetry" or run_events < minimum:
+            _err(
+                "insufficient_telemetry",
+                f"{run_events} run events < {minimum}",
+                "tk evolve --no-promote",
+            )
+            return 2
         pool = [name for name in (report.get("unused_tools") or []) if isinstance(name, str)]
         pool_set = set(pool) | set(names)
         protected: set[str] = set()
