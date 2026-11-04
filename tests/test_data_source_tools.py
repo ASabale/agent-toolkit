@@ -341,16 +341,5 @@ class LogTailErrorsTests(unittest.TestCase):
         self.assertEqual([item["message"] for item in payload["errors"]], ["ERROR one", "ERROR two"])
 
 
-class InspectChainTests(unittest.TestCase):
-    def test_chain_picks_schema_fields(self) -> None:
-        raw = json.loads((ROOT / "chains/sql.inspect-db.json").read_text(encoding="utf-8"))
-        self.assertEqual(raw["name"], "sql.inspect-db")
-        self.assertEqual(raw["safety"], "read-only")
-        self.assertEqual(raw["steps"][0]["tool"], "sql.schema")
-        self.assertEqual(raw["steps"][0]["args"]["db"], "$input.db")
-        self.assertEqual(raw["steps"][1]["tool"], "json.pick")
-        self.assertEqual(raw["steps"][1]["args"]["keys"], "db,table_count,tables")
-
-
 if __name__ == "__main__":
     unittest.main()

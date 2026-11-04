@@ -1,9 +1,8 @@
 """Seams for catalog items that had no behavioral tests.
 
-Covers git.repo-health plus the other name-grep misses that are not owned
-by #81 (gh.pr-failure-digest), #97 (http.json-get), or #88
-(git.branch-digest / git.log-recent): docs.python-symbol, gh.issue-view,
-gh.search-code, py.test-digest, and sys.port-owner.
+Covers git.branch-digest (the tool behind the retired git.repo-health chain)
+plus docs.python-symbol, gh.issue-view, gh.search-code, py.test-digest, and
+sys.port-owner. Issues #81, #97, and #88 own the other former misses.
 
 Fake binaries sit on PATH. No network.
 """
@@ -20,10 +19,6 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from lib.catalog import load_chain
-from lib.runner import run_chain
 
 _FAKE_GH_BODY = """
 import json
@@ -151,22 +146,13 @@ def _stderr_error(proc: subprocess.CompletedProcess[str]) -> dict:
 
 
 class RepoHealthChainTests(unittest.TestCase):
-    def test_success_picks_branch_health_keys(self) -> None:
-        raw = json.loads((ROOT / "chains/git.repo-health.json").read_text(encoding="utf-8"))
-        self.assertEqual(raw["name"], "git.repo-health")
-        self.assertEqual(raw["steps"][0]["tool"], "git.branch-digest")
-        self.assertEqual(raw["steps"][1]["tool"], "json.pick")
-        self.assertEqual(
-            raw["steps"][1]["args"]["keys"],
-            "branch,ahead,behind,dirty,detached,upstream",
-        )
-
+    def test_success_reports_branch_health_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _sample_repo(Path(tmp))
             env = os.environ.copy()
             env["TK_NO_TELEMETRY"] = "1"
             proc = subprocess.run(
-                [str(ROOT / "tk"), "run", "git.repo-health", "--repo", str(repo)],
+                [str(ROOT / "tk"), "run", "git.branch-digest", "--repo", str(repo)],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -184,11 +170,18 @@ class RepoHealthChainTests(unittest.TestCase):
 
     def test_error_when_path_is_not_a_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            item = load_chain(ROOT / "chains/git.repo-health.json")
-            code, stdout, stderr = run_chain(ROOT, item, {"--repo": tmp})
-        self.assertNotEqual(code, 0)
-        self.assertEqual(stdout, "")
-        err = json.loads(stderr)
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [str(ROOT / "tk"), "run", "git.branch-digest", "--repo", tmp],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        err = json.loads(proc.stderr)
         self.assertEqual(err["error"], "not_a_repo")
         self.assertIn("fix", err)
 
