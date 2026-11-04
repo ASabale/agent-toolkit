@@ -659,7 +659,12 @@ def _dry_run_error(path: Path, args: list[dict], safety: str = "") -> str | None
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         return f"dry-run stdout is not valid JSON: {exc.msg}"
-    return _dry_run_plan_error(payload, safety)
+    plan_error = _dry_run_plan_error(payload, safety)
+    if plan_error:
+        return plan_error
+    if isinstance(payload, dict) and payload.get("dry_run") is not True:
+        return 'dry-run payload is not marked "dry_run": true'
+    return None
 
 
 def _default_matches(typ: str, default: str) -> bool:
