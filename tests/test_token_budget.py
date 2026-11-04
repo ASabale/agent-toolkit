@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 from lib.catalog import find_items, format_find_output  # noqa: E402
 
 TK = ROOT / "tk"
-SKILL = ROOT / "skills" / "toolkit" / "SKILL.md"
+SKILL = ROOT / "skills" / "agent-toolkit" / "SKILL.md"
 
 
 def _run_lint(path: Path) -> subprocess.CompletedProcess[str]:

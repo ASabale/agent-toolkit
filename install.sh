@@ -1,9 +1,9 @@
 #!/bin/sh
-# Idempotent install: symlink tk and the toolkit skill into the user paths,
+# Idempotent install: symlink tk and the agent-toolkit skill into the user paths,
 # and configure git to use tracked hooks from .githooks/ when inside a git work tree.
 set -eu
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-SKILL_SRC="${REPO_ROOT}/skills/toolkit"
+SKILL_SRC="${REPO_ROOT}/skills/agent-toolkit"
 skill_links=""
 skill_links_skipped=""
 
@@ -80,7 +80,15 @@ add_skill_dir() {
 
 link_skill() {
     dest_parent=$1
-    dest="${dest_parent}/toolkit"
+    dest="${dest_parent}/agent-toolkit"
+    old_dest="${dest_parent}/toolkit"
+    if [ -L "$old_dest" ]; then
+        old_target=$(readlink "$old_dest")
+        old_ours="${REPO_ROOT}/skills/toolkit"
+        if [ "$old_target" = "$old_ours" ] || [ "$old_target" = "${SKILL_SRC}" ]; then
+            rm -f "$old_dest"
+        fi
+    fi
     if [ -e "$dest" ] && [ ! -L "$dest" ]; then
         if [ -d "$dest" ]; then
             append_skipped "$dest" "existing non-symlink directory"
@@ -132,7 +140,7 @@ if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 check_out=$("${REPO_ROOT}/tk" check --json)
 bin_json=$(json_escape "${HOME}/.local/bin/tk")
-skill_json=$(json_escape "${HOME}/.agents/skills/toolkit")
+skill_json=$(json_escape "${HOME}/.agents/skills/agent-toolkit")
 if [ -n "$hooks_path" ]; then
     hooks_json=$(json_escape "$hooks_path")
     printf '%s\n' "{\"installed\":true,\"bin\":\"${bin_json}\",\"skill\":\"${skill_json}\",\"skill_links\":[${skill_links}],\"skill_links_skipped\":[${skill_links_skipped}],\"hooksPath\":\"${hooks_json}\",\"check\":${check_out}}"
