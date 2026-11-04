@@ -17,6 +17,8 @@ import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from lib.catalog import _referenced_arg_names
+
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)*$")
@@ -24,7 +26,6 @@ _VERIFIED_RE = re.compile(r"(?m)^#\s*@tk-verified\s*:.*$")
 _USAGE_EVENTS = {"run", "run_ok", "tool_run", "chain_run"}
 _ERROR_EVENTS = {"run_error", "error"}
 _OPTIONAL_ARG_RE = re.compile(r"\$\{TK_ARG_([A-Z][A-Z0-9_]*):-([^}]*)\}")
-_BARE_ARG_RE = re.compile(r"\bTK_ARG_([A-Z][A-Z0-9_]*)\b")
 _MISS_EVENTS = {"search_miss", "miss"}
 _FAIL_EVENTS = {"run_error", "error"}
 _STOPWORDS = {
@@ -438,8 +439,7 @@ def _infer_arg_specs(script_text: str, declared: set[str]) -> list[str]:
             name, default = match.group(1), match.group(2)
             if name not in defaults or (default and not defaults[name]):
                 defaults[name] = default
-        for match in _BARE_ARG_RE.finditer(line):
-            name = match.group(1)
+        for name in _referenced_arg_names(line):
             if name not in order:
                 order.append(name)
     specs: list[str] = []
