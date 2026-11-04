@@ -680,7 +680,9 @@ def _dry_run_error(
     plan_error = _dry_run_plan_error(payload, safety)
     if plan_error:
         return plan_error
-    if isinstance(payload, dict) and payload.get("dry_run") is not True:
+    if not isinstance(payload, dict):
+        return 'dry-run payload must be a JSON object with "dry_run": true'
+    if payload.get("dry_run") is not True:
         return 'dry-run payload is not marked "dry_run": true'
     return None
 
