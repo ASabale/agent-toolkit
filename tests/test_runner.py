@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import types
@@ -457,6 +458,70 @@ class RunToolTests(unittest.TestCase):
             self.assertEqual(events[1]["kind"], "tool")
             self.assertEqual(events[1]["why"], "refused")
 
+    def test_truncated_int_adds_copy_pasteable_next_with_larger_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "trunc-tool",
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "json.dump({'count': 3, 'truncated': 5, 'items': [1, 2, 3]}, sys.stdout)\n",
+            )
+            item = _item()
+            item["path"] = str(script)
+            code, out, err = run_tool(root, item, {"--name": "ada", "--limit": "3"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(err, "")
+        payload = json.loads(out)
+        self.assertEqual(payload["truncated"], 5)
+        self.assertEqual(payload["next"], "tk run demo.echo --name ada --limit 6")
+        self.assertEqual(
+            out,
+            '{"count":3,"truncated":5,"items":[1,2,3],"next":"tk run demo.echo --name ada --limit 6"}',
+        )
+
+    def test_truncated_zero_and_bool_leave_stdout_byte_identical(self):
+        cases = (
+            ("zero-tool", "{'count': 1, 'truncated': 0, 'items': [1]}", '{"count":1,"truncated":0,"items":[1]}'),
+            ("bool-tool", "{'count': 1, 'truncated': True, 'items': [1]}", '{"count":1,"truncated":true,"items":[1]}'),
+        )
+        for name, dumped, expected in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                script = _write_script(
+                    root,
+                    name,
+                    "#!/usr/bin/env python3\n"
+                    "import json, sys\n"
+                    f"json.dump({dumped}, sys.stdout)\n",
+                )
+                item = _item()
+                item["path"] = str(script)
+                code, out, err = run_tool(root, item, {"--name": "ada", "--limit": "3"})
+            self.assertEqual(code, 0, err)
+            self.assertEqual(err, "")
+            self.assertNotIn("next", json.loads(out))
+            self.assertEqual(out, expected)
+
+    def test_truncated_without_limit_arg_leaves_stdout_byte_identical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "no-limit",
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "json.dump({'count': 1, 'truncated': 4, 'items': [1]}, sys.stdout)\n",
+            )
+            item = _item()
+            item["args"] = [arg for arg in item["args"] if arg["flag"] != "--limit"]
+            item["path"] = str(script)
+            code, out, err = run_tool(root, item, {"--name": "ada"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(err, "")
+        self.assertEqual(out, '{"count":1,"truncated":4,"items":[1]}')
+
     def test_output_over_byte_ceiling_is_output_too_large(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -478,8 +543,11 @@ class RunToolTests(unittest.TestCase):
                 payload = json.loads(err)
                 self.assertEqual(payload["error"], "output_too_large")
                 self.assertIn("exceeds TK_MAX_OUTPUT_BYTES (16)", payload["why"])
-                self.assertIn("--limit", payload["fix"])
-                self.assertIn("json.pick", payload["fix"])
+                self.assertTrue(payload["fix"].startswith("tk run "))
+                self.assertEqual(
+                    payload["fix"],
+                    "tk run demo.echo --name ada --limit 10",
+                )
                 self.assertEqual(self._events(root), [])
 
                 code, out, err = run_tool(root, item, {"--name": "ada"})
@@ -497,6 +565,42 @@ class RunToolTests(unittest.TestCase):
                     os.environ.pop("TK_MAX_OUTPUT_BYTES", None)
                 else:
                     os.environ["TK_MAX_OUTPUT_BYTES"] = previous
+
+    def test_output_too_large_without_limit_pipes_to_json_pick(self):
+        root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        env["TK_MAX_OUTPUT_BYTES"] = "16"
+        env["TK_NO_TELEMETRY"] = "1"
+        env["PATH"] = str(root) + os.pathsep + env.get("PATH", "")
+        failed = subprocess.run(
+            [sys.executable, str(root / "tk"), "run", "env.check"],
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        payload = json.loads(failed.stderr)
+        self.assertEqual(payload["error"], "output_too_large")
+        fix = payload["fix"]
+        self.assertTrue(fix.startswith("TK_MAX_OUTPUT_BYTES="), fix)
+        self.assertIn("tk run env.check", fix)
+        self.assertIn("| tk run json.pick --keys ", fix)
+        self.assertNotIn("ok,binaries,variables,missing_bins,missing_vars", fix)
+        healed = subprocess.run(
+            fix,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+        reduced = json.loads(healed.stdout)
+        self.assertIsInstance(reduced, dict)
+        self.assertLessEqual(len(json.dumps(reduced, separators=(",", ":")).encode()), 16)
 
 
 class RunChainTests(unittest.TestCase):
