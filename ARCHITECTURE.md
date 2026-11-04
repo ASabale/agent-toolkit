@@ -91,7 +91,7 @@ The toolkit evolves from real agent work rather than speculative upfront design:
 2. **Verify (`tk check`)** (`ASabale/agent-toolkit@9c0f0f6`, PR #79):
    - Checks header fields, required flag coverage, and output compactness.
    - Guard: a `mutating` or `destructive` tool with no non-comment `TK_DRY_RUN` reference fails with `<safety> tool must branch on TK_DRY_RUN` and is never executed.
-   - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). Stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
+   - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). Every JSON-object dry-run payload must include `"dry_run": true`. `plan` stays required only for `mutating` and `destructive` tools: stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
 3. **Promote (`tk evolve`)**:
    - **Read-only (`@tk-safety: read-only`)**: Auto-verified via live/smoke execution and marked `@tk-verified: <date>`.
    - **Mutating (`@tk-safety: mutating`)**: Verifies `--dry-run` output and prompts human/agent confirmation before marking verified.

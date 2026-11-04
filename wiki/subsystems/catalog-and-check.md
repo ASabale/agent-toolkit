@@ -32,6 +32,8 @@ On 2026-11-04, chain validation was extended to check `json.pick` and `json.quer
 
 On 2026-11-04, a `TK_DRY_RUN` payload must echo the flags it received and mark itself with `dry_run: true`; result-shaped fields are null, never a plausible number (`ASabale/agent-toolkit#88`).
 
+On 2026-11-04, `ASabale/agent-toolkit@2447b36` made `tk check` fail a JSON-object dry-run payload that was not marked `"dry_run": true`, after the existing mutating and destructive plan errors. `plan` stayed required only for `mutating` and `destructive` tools. Non-object JSON was not failed by that marker check.
+
 ## Python tool SDK
 
 On 2026-11-04, `ASabale/agent-toolkit@0fb0095` added `lib/tool_sdk.py` (104 lines in that commit) and a Python example in the `TK_PYTHON_EXAMPLE` heredoc of `tools/.template`. `discover_catalog` still skips that template because its name starts with `.`. The module imports only the standard library (`json`, `os`, `signal`, `subprocess`, `sys`, `pathlib`). Tests in that commit keep the file at or under 110 lines. Python tools may import it; no catalog tool was rewritten to do so. The example inserts the repo root with `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`, which assumes the tool file lives at `tools/<ns>/<file>.py`. The tool stays a single file, and the `# @tk-*` header remains the manifest.
