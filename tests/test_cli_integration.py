@@ -356,13 +356,15 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(saved.returncode, 0, saved.stderr)
         missed = self._run("find", "deploy-status-missing")
         self.assertEqual(missed.returncode, 0, missed.stderr)
+        ran = self._run("run", "lab.echo")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
 
         before = self._run("evolve")
         self.assertEqual(before.returncode, 0, before.stderr)
         report = json.loads(before.stdout)
         self.assertEqual(report["unused_tools"], [])
         self.assertEqual(report["unused_reason"], "insufficient_telemetry")
-        self.assertEqual(report["telemetry"]["run_events"], 0)
+        self.assertEqual(report["telemetry"]["run_events"], 1)
         self.assertIn("lab.echo", report["promoted"])
         self.assertIn(
             {"query": "deploy-status-missing", "count": 1},
@@ -377,7 +379,7 @@ class CliIntegrationTests(unittest.TestCase):
         after = json.loads(self._run("evolve").stdout)
         self.assertNotIn("lab.echo", after["unused_tools"])
         self.assertEqual(after["unused_reason"], "insufficient_telemetry")
-        self.assertEqual(after["telemetry"]["run_events"], 1)
+        self.assertEqual(after["telemetry"]["run_events"], 2)
         self.assertIn(
             {"query": "deploy-status-missing", "count": 1},
             after["search_misses"],
