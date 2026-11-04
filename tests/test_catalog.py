@@ -1,6 +1,7 @@
 """Seams for lib/catalog.py: header parsing, search, find text, and check_item."""
 
 import json
+import os
 import stat
 import sys
 import tempfile
@@ -18,9 +19,11 @@ from lib.catalog import (  # noqa: E402
     format_find_output,
     format_info_output,
     load_chain,
+    output_keys,
     parse_tool_header,
     suggest_closest_item,
 )
+from lib.runner import run_tool  # noqa: E402
 
 
 def _write(path: Path, text: str, executable: bool = False) -> None:
@@ -697,6 +700,117 @@ exit 2
             result = check_item(root, "test.pipeline")
         self.assertFalse(result["ok"])
         self.assertIn("step 1 (json.pick) key 'checks' not in upstream producer.tool output", result["errors"])
+
+
+class OutputKeysTests(unittest.TestCase):
+    """One @tk-output parser serves chain validation and the too-large fix."""
+
+    DECLARED = "json | {zeta, alpha, mid:{nested}, tail:[1, 2]}"
+
+    def _producer(self, root: Path) -> Path:
+        path = root / "tools" / "order" / "producer"
+        _write(
+            path,
+            "#!/usr/bin/env python3\n"
+            "# @tk-name: order.producer\n"
+            "# @tk-summary: Produce keys in a fixed order\n"
+            "# @tk-safety: read-only\n"
+            f"# @tk-output: {self.DECLARED}\n"
+            "# @tk-example: tk run order.producer\n"
+            "# @tk-verified: none\n"
+            "\n"
+            "import json, os, sys\n"
+            "if os.environ.get('TK_DRY_RUN') == '1':\n"
+            "    json.dump({'dry_run': True}, sys.stdout)\n"
+            "    sys.exit(0)\n"
+            "json.dump(\n"
+            "    {'tail': 'x' * 60, 'alpha': 2, 'zeta': 1, 'mid': {'nested': 3}},\n"
+            "    sys.stdout,\n"
+            ")\n",
+            executable=True,
+        )
+        return path
+
+    def _chain(self, root: Path, pick_keys: str, name: str = "order.pipeline") -> None:
+        _write(
+            root / "tools" / "json" / "pick",
+            _bash_tool(
+                "json.pick",
+                "Keep only named keys",
+                args=[("--keys", "required", "string", "Comma-separated keys")],
+                example="tk run json.pick --keys a,b",
+            ),
+            executable=True,
+        )
+        chain = root / "chains" / f"{name}.json"
+        chain.parent.mkdir(parents=True, exist_ok=True)
+        chain.write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "summary": "Producer then pick",
+                    "safety": "read-only",
+                    "args": [],
+                    "steps": [
+                        {"tool": "order.producer", "args": {}},
+                        {"tool": "json.pick", "args": {"keys": pick_keys}},
+                    ],
+                    "output": "json | object",
+                    "example": f"tk run {name}",
+                    "verified": "none",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_output_keys_keeps_source_order_and_skips_non_braces(self):
+        self.assertEqual(
+            output_keys(self.DECLARED),
+            ["zeta", "alpha", "mid", "tail"],
+        )
+        self.assertEqual(output_keys("json | {count:(1, 2), list:[1, 2], nested:{deep}}"), ["count", "list", "nested"])
+        self.assertIsNone(output_keys("json | Distilled object"))
+        self.assertEqual(output_keys("json | {}"), [])
+
+    def test_check_item_and_too_large_fix_agree_on_one_key_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            producer = self._producer(root)
+            self._chain(root, "zeta,alpha,mid")
+            checked = check_item(root, "order.pipeline")
+            self.assertTrue(checked["ok"], checked["errors"])
+
+            item = parse_tool_header(producer)
+            item["path"] = str(producer)
+            previous = os.environ.get("TK_MAX_OUTPUT_BYTES")
+            os.environ["TK_MAX_OUTPUT_BYTES"] = "40"
+            os.environ["TK_NO_TELEMETRY"] = "1"
+            try:
+                code, out, err = run_tool(root, item, {})
+            finally:
+                if previous is None:
+                    os.environ.pop("TK_MAX_OUTPUT_BYTES", None)
+                else:
+                    os.environ["TK_MAX_OUTPUT_BYTES"] = previous
+        self.assertEqual(code, 1, out + err)
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "output_too_large")
+        fix = payload["fix"]
+        self.assertTrue(fix.endswith(" | tk run json.pick --keys zeta,alpha,mid"), fix)
+        # The order the chain check accepted is the order the fix suggests.
+        self.assertEqual(fix.split("--keys ", 1)[1].split(","), output_keys(self.DECLARED)[:3])
+
+    def test_check_item_rejects_a_key_nested_inside_a_declared_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._producer(root)
+            self._chain(root, "zeta,nested", name="order.bad")
+            result = check_item(root, "order.bad")
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "step 1 (json.pick) key 'nested' not in upstream order.producer output",
+            result["errors"],
+        )
 
 
 class SuggestClosestItemTests(unittest.TestCase):

@@ -16,6 +16,7 @@ import signal
 import subprocess
 from pathlib import Path
 
+from lib.catalog import output_keys
 from lib.evolver import log_event
 
 _INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
@@ -437,44 +438,6 @@ def _maybe_next_payload(item: dict, flags: dict[str, str], parsed: object) -> ob
     return {**parsed, "next": _command_with_limit(item, flags, next_limit)}
 
 
-def _declared_output_keys(output: object) -> list[str]:
-    text = str(output or "").strip()
-    if "|" in text:
-        text = text.split("|", 1)[1].strip()
-    if not text.startswith("{"):
-        return []
-    depth = 0
-    end = -1
-    for idx, char in enumerate(text):
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                end = idx
-                break
-    if end < 0:
-        return []
-    inner = text[1:end]
-    keys: list[str] = []
-    depth = 0
-    start = 0
-    for idx, char in enumerate(inner):
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-        elif char == "," and depth == 0:
-            key = inner[start:idx].strip().split(":")[0].split("[")[0].strip()
-            if key and key not in keys:
-                keys.append(key)
-            start = idx + 1
-    key = inner[start:].strip().split(":")[0].split("[")[0].strip()
-    if key and key not in keys:
-        keys.append(key)
-    return keys
-
-
 def _pick_fix_keys(item: dict, parsed: dict, max_bytes: int) -> list[str]:
     def value_bytes(key: str) -> int:
         return len(_compact(parsed.get(key)).encode("utf-8"))
@@ -483,7 +446,7 @@ def _pick_fix_keys(item: dict, parsed: dict, max_bytes: int) -> list[str]:
         subset = {key: parsed[key] for key in keys if key in parsed}
         return len(_compact(subset).encode("utf-8")) <= max_bytes
 
-    declared = [key for key in _declared_output_keys(item.get("output")) if key in parsed]
+    declared = [key for key in (output_keys(item.get("output")) or []) if key in parsed]
     if declared:
         keys = declared[:3]
     else:
