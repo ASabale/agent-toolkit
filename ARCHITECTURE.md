@@ -31,8 +31,8 @@ flowchart LR
 | `tk info <name>` | Consumer (Optional) | Prints full argument table and safety details only when deeper inspection is needed. |
 | `tk chain <name> [steps...]` | Consumer / Evolver | Runs or saves a deterministic pipeline where step $N$'s JSON output feeds step $N+1$. |
 | `tk save <name> ...` | Evolver | Turns a working command or script into a single-file tool in `tools/` and validates it with `tk check`. |
-| `tk evolve` | Evolver | Inspects `state/events.jsonl` to promote recurring patterns and consolidate unused or overlapping tools. |
-| `tk prune [<name> ...] [--unused] [--dry-run]` | Evolver | Archives named tools or chains to `state/archive/` (refusing if a kept chain still uses one); `--unused` adds the tools `tk evolve` reports as unused, skipping any a chain references. `--dry-run` previews. |
+| `tk evolve` | Evolver | Inspects `state/events.jsonl`. Auto-promotes an unverified read-only tool or chain only after `check_item` passes and that name has a `run_ok`. Check-passing items with no `run_ok` are reported as `awaiting_live_run` (also with `--no-promote`). `unused_tools` stays empty until 50 `run_ok`/`run_error` events; below that the report sets `unused_reason` `insufficient_telemetry`. |
+| `tk prune [<name> ...] [--unused] [--dry-run]` | Evolver | Archives named tools or chains to `state/archive/` (refusing if a kept chain still uses one); `--unused` adds the tools `tk evolve` reports as unused, skipping any a chain references. `--dry-run` previews. `--unused` and `--unused --dry-run` exit 2 with `insufficient_telemetry` when fewer than 50 `run_ok`/`run_error` events exist. Explicit `tk prune <name>` still archives that name. |
 | `tk check [name]` | Maintainer | Validates header completeness, flag parity, dry-run support, output compactness, name uniqueness (duplicate-name), and name/path layout parity. |
 
 ### Global Modifiers (Order-Independent)
