@@ -1,5 +1,7 @@
 """Guards for git option injection, SQLite URI quoting, and non-public URLs."""
 
+from __future__ import annotations
+
 import os
 import tempfile
 import threading
