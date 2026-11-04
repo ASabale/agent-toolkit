@@ -306,6 +306,28 @@ def broken(
         self.assertFalse(result["ok"])
         self.assertTrue(any("syntax" in err.lower() for err in result["errors"]))
 
+    def test_check_item_rejects_required_flag_without_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            _write(
+                path,
+                _bash_tool(
+                    "demo.echo",
+                    "Echo a target id",
+                    example="tk run demo.echo --target",
+                    args=[
+                        ("--target", "required", "string", "Target resource identifier"),
+                        ("--verbose", "required", "bool", "Print extra detail"),
+                    ],
+                ),
+                executable=True,
+            )
+            result = check_item(root, "demo.echo")
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("missing value" in err and "--target" in err for err in result["errors"]))
+        self.assertFalse(any("--verbose" in err and "missing value" in err for err in result["errors"]))
+
     def test_check_item_broken_dry_run_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

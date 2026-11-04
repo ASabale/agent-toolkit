@@ -92,6 +92,7 @@ def main() -> int:
         ],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if proc.returncode != 0:
         return emit(
@@ -128,6 +129,32 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "gh timed out after 30s",
+                    "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'gh'} not found",
+                    "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
     except Exception as exc:
         sys.stderr.write(
             json.dumps(

@@ -1,6 +1,7 @@
 """Isolated unit tests for lib.runner (CODING_STANDARDS.md §2.2)."""
 
 import json
+import os
 import stat
 import sys
 import tempfile
@@ -96,6 +97,13 @@ class ParseCliFlagsTests(unittest.TestCase):
         self.assertTrue(dry_run)
         self.assertEqual(flags, {"--verbose": "true", "--name": "-1"})
         self.assertEqual(positional, [])
+
+    def test_dry_run_equals_false_is_not_a_dry_run(self):
+        for value in ("0", "false", "FALSE", "no", "off"):
+            flags, dry_run, positional = parse_cli_flags([f"--dry-run={value}", "--name", "ada"])
+            self.assertFalse(dry_run, value)
+            self.assertEqual(flags, {"--name": "ada"})
+            self.assertEqual(positional, [])
 
     def test_positional_tokens_are_collected(self):
         flags, dry_run, positional = parse_cli_flags(["pos", "--name", "ada", "tail"])
@@ -261,6 +269,39 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(out, "")
         self.assertEqual(json.loads(err), {"error": "nope", "why": "bad", "fix": "tk check"})
+
+    def test_tool_timeout_returns_tool_timeout_and_logs_unless_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "slow-tool",
+                "#!/bin/sh\nsleep 30\nprintf '%s\\n' '{\"ok\":true}'\n",
+            )
+            item = _item()
+            item["path"] = str(script)
+            previous = os.environ.get("TK_TIMEOUT")
+            os.environ["TK_TIMEOUT"] = "0.2"
+            try:
+                code, out, err = run_tool(root, item, {"--name": "ada"}, dry_run=True)
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertEqual(json.loads(err)["error"], "tool_timeout")
+                self.assertEqual(self._events(root), [])
+
+                code, out, err = run_tool(root, item, {"--name": "ada"})
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertEqual(json.loads(err)["error"], "tool_timeout")
+                events = self._events(root)
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["event"], "run_error")
+                self.assertEqual(events[0]["name"], "demo.echo")
+            finally:
+                if previous is None:
+                    os.environ.pop("TK_TIMEOUT", None)
+                else:
+                    os.environ["TK_TIMEOUT"] = previous
 
     def test_success_requires_json_stdout(self):
         with tempfile.TemporaryDirectory() as tmp:

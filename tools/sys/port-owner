@@ -77,6 +77,7 @@ def main() -> int:
         ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-F", "pcu"],
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if proc.returncode not in (0, 1):
         return emit(
@@ -93,6 +94,32 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "lsof timed out after 30s",
+                    "fix": "tk run sys.port-owner --port <port>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'lsof'} not found",
+                    "fix": "tk run sys.port-owner --port <port>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
     except Exception as exc:
         sys.stderr.write(
             json.dumps(

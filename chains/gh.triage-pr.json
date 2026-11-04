@@ -1,0 +1,37 @@
+{
+  "kind": "chain",
+  "name": "gh.triage-pr",
+  "summary": "Failing and pending CI counts for one GitHub pull request",
+  "safety": "read-only",
+  "args": [
+    {
+      "flag": "--repo",
+      "env_var": "TK_ARG_REPO",
+      "required": true,
+      "type": "string",
+      "description": "Repository in owner/name form",
+      "default": null
+    },
+    {
+      "flag": "--pr",
+      "env_var": "TK_ARG_PR",
+      "required": true,
+      "type": "int",
+      "description": "Pull request number",
+      "default": null
+    }
+  ],
+  "steps": [
+    {
+      "tool": "gh.pr-failure-digest",
+      "args": {"repo": "$input.repo", "pr": "$input.pr"}
+    },
+    {
+      "tool": "json.pick",
+      "args": {"keys": "repo,pr,fail,pending,checks"}
+    }
+  ],
+  "output": "json | {repo, pr, fail, pending, checks}",
+  "example": "tk run gh.triage-pr --repo owner/name --pr 1",
+  "verified": "none"
+}

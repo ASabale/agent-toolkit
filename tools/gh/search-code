@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+# @tk-name: gh.search-code
+# @tk-summary: Compact GitHub code search hits for a query, optionally scoped to one repo
+# @tk-safety: read-only
+# @tk-arg: --query | required | string | Code search query
+# @tk-arg: --repo | optional | string | Limit search to owner/name (default: all)
+# @tk-arg: --limit | optional | int | Max matches to return (default: 5)
+# @tk-output: json | {query, repo, count, matches:[{repo, path, snippet}]}
+# @tk-example: tk run gh.search-code --query "def main" --repo cli/cli --limit 5
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import subprocess
+import sys
+
+_SNIPPET_CAP = 180
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def clip(text: str) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= _SNIPPET_CAP:
+        return text
+    return text[: _SNIPPET_CAP - 1].rstrip() + "…"
+
+
+def main() -> int:
+    query = os.environ.get("TK_ARG_QUERY", "")
+    repo = os.environ.get("TK_ARG_REPO") or "all"
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "5"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        limit = int(limit_raw) if limit_raw.isdigit() else 5
+        return emit(
+            {
+                "dry_run": True,
+                "query": query or "example",
+                "repo": repo,
+                "limit": limit,
+            }
+        )
+    if not query:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_QUERY is required",
+                "fix": "tk run gh.search-code --query <text>",
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run gh.search-code --query <text> --limit 5",
+            },
+            2,
+        )
+    if limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 0",
+                "fix": "tk run gh.search-code --query <text> --limit 5",
+            },
+            2,
+        )
+    cmd = [
+        "gh",
+        "search",
+        "code",
+        query,
+        "--limit",
+        str(limit),
+        "--json",
+        "path,repository,textMatches",
+    ]
+    if repo and repo != "all":
+        cmd.extend(["--repo", repo])
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        return emit(
+            {
+                "error": "gh_failed",
+                "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
+                "fix": "tk run gh.search-code --query <text>",
+            },
+            1,
+        )
+    rows = json.loads(proc.stdout or "[]")
+    matches = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        repository = row.get("repository") or {}
+        snippet = ""
+        for hit in row.get("textMatches") or []:
+            if isinstance(hit, dict) and hit.get("fragment"):
+                snippet = clip(str(hit["fragment"]))
+                break
+        matches.append(
+            {
+                "repo": repository.get("nameWithOwner") or repository.get("name") or "",
+                "path": row.get("path") or "",
+                "snippet": snippet,
+            }
+        )
+    return emit(
+        {
+            "query": query,
+            "repo": repo,
+            "count": len(matches),
+            "matches": matches,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "gh timed out after 30s",
+                    "fix": "tk run gh.search-code --query <text>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'gh'} not found",
+                    "fix": "tk run gh.search-code --query <text>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run gh.search-code --query <text>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

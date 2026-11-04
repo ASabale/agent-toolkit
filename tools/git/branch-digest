@@ -24,6 +24,7 @@ def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
         ["git", "-C", repo, *args],
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 
@@ -60,23 +61,35 @@ def main() -> int:
             1,
         )
     head = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    if head.returncode != 0:
-        return emit(
-            {
-                "error": "git_failed",
-                "why": head.stderr.strip() or "rev-parse failed",
-                "fix": "tk run git.branch-digest --repo <git-dir>",
-            },
-            1,
-        )
-    detached = head.stdout.strip() == "HEAD"
-    if detached:
+    unborn = head.returncode != 0
+    if unborn:
+        sym = git(repo, "symbolic-ref", "--short", "HEAD")
+        if sym.returncode == 0 and sym.stdout.strip():
+            branch = sym.stdout.strip()
+            detached = False
+        else:
+            branch = "HEAD"
+            detached = True
+    else:
+        detached = head.stdout.strip() == "HEAD"
+    if not unborn and detached:
         short = git(repo, "rev-parse", "--short", "HEAD")
         branch = short.stdout.strip()
-    else:
+    elif not unborn:
         branch = head.stdout.strip()
     status = git(repo, "status", "--porcelain")
     dirty = len([line for line in status.stdout.splitlines() if line.strip()])
+    if unborn:
+        return emit(
+            {
+                "branch": branch,
+                "ahead": 0,
+                "behind": 0,
+                "dirty": dirty,
+                "detached": detached,
+                "upstream": None,
+            }
+        )
     upstream_proc = git(repo, "rev-parse", "--abbrev-ref", "@{upstream}")
     if upstream_proc.returncode != 0:
         upstream = None
@@ -103,6 +116,32 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "git timed out after 30s",
+                    "fix": "tk run git.branch-digest --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'git'} not found",
+                    "fix": "tk run git.branch-digest --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
     except Exception as exc:
         sys.stderr.write(
             json.dumps(

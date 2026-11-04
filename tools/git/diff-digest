@@ -4,7 +4,8 @@
 # @tk-safety: read-only
 # @tk-arg: --repo | required | string | Path to the git working tree
 # @tk-arg: --ref  | optional | string | Git ref to compare against the working tree (default: HEAD)
-# @tk-output: json | {repo, ref, files_changed, insertions, deletions, files:[{path, status, added, deleted}]}
+# @tk-arg: --limit | optional | int | Maximum changed files to list (default: 40)
+# @tk-output: json | {repo, ref, files_changed, insertions, deletions, truncated, files:[{path, status, added, deleted}]}
 # @tk-example: tk run git.diff-digest --repo . --ref HEAD
 # @tk-verified: 2026-11-03
 
@@ -35,35 +36,85 @@ def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
         ["git", "-C", repo, *args],
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 
-def parse_name_status(text: str) -> list[tuple[str, str]]:
+def parse_name_status(blob: str) -> list[tuple[str, str]]:
+    """Parse `git diff --name-status -z`. Renames keep the destination path."""
+    parts = blob.split("\0")
     rows: list[tuple[str, str]] = []
-    for line in text.splitlines():
-        if not line.strip():
+    index = 0
+    while index < len(parts):
+        status = parts[index]
+        if not status:
+            index += 1
             continue
-        parts = line.split("\t")
-        letter = parts[0][:1]
-        rows.append((_STATUS.get(letter, letter or "modified"), parts[-1]))
+        letter = status[:1]
+        label = _STATUS.get(letter, letter or "modified")
+        if letter in {"R", "C"}:
+            if index + 2 >= len(parts):
+                break
+            rows.append((label, parts[index + 2]))
+            index += 3
+            continue
+        if index + 1 >= len(parts):
+            break
+        rows.append((label, parts[index + 1]))
+        index += 2
     return rows
 
 
-def parse_numstat(text: str) -> dict[str, tuple[int, int]]:
+def parse_numstat(blob: str) -> dict[str, tuple[int, int]]:
+    """Parse `git diff --numstat -z`. Renames are keyed by the new path."""
+    parts = blob.split("\0")
     counts: dict[str, tuple[int, int]] = {}
-    for line in text.splitlines():
-        if not line.strip():
+    index = 0
+    while index < len(parts):
+        record = parts[index]
+        if not record.strip():
+            index += 1
             continue
-        added_s, deleted_s, path = line.split("\t", 2)
+        added_s, deleted_s, path = record.split("\t", 2)
         added = 0 if added_s == "-" else int(added_s)
         deleted = 0 if deleted_s == "-" else int(deleted_s)
+        if path == "":
+            if index + 2 >= len(parts):
+                break
+            path = parts[index + 2]
+            index += 3
+        else:
+            index += 1
         counts[path] = (added, deleted)
     return counts
+
+
+def _limit() -> tuple[int | None, dict | None]:
+    raw = os.environ.get("TK_ARG_LIMIT") or "40"
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"limit is not an int: {raw}",
+            "fix": "tk run git.diff-digest --repo <git-dir> --limit 40",
+        }
+    if limit < 1:
+        return None, {
+            "error": "invalid_flag",
+            "why": "limit must be >= 1",
+            "fix": "tk run git.diff-digest --repo <git-dir> --limit 40",
+        }
+    return limit, None
 
 
 def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     ref = os.environ.get("TK_ARG_REF") or "HEAD"
+    limit, limit_err = _limit()
+    if limit_err is not None:
+        return emit(limit_err, 2)
+    assert limit is not None
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
@@ -72,6 +123,7 @@ def main() -> int:
                 "files_changed": 0,
                 "insertions": 0,
                 "deletions": 0,
+                "truncated": 0,
                 "files": [],
             }
         )
@@ -94,8 +146,8 @@ def main() -> int:
             },
             1,
         )
-    names = git(repo, "diff", "--name-status", ref)
-    stats = git(repo, "diff", "--numstat", ref)
+    names = git(repo, "diff", "--name-status", "-z", ref)
+    stats = git(repo, "diff", "--numstat", "-z", ref)
     if names.returncode != 0 or stats.returncode != 0:
         why = (names.stderr or stats.stderr).strip() or "git diff failed"
         return emit(
@@ -121,14 +173,17 @@ def main() -> int:
         files.append(
             {"path": path, "status": "modified", "added": added, "deleted": deleted}
         )
+    total = len(files)
+    listed = files[:limit]
     return emit(
         {
             "repo": repo,
             "ref": ref,
-            "files_changed": len(files),
+            "files_changed": total,
             "insertions": sum(item["added"] for item in files),
             "deletions": sum(item["deleted"] for item in files),
-            "files": files,
+            "truncated": max(0, total - limit),
+            "files": listed,
         }
     )
 
@@ -136,6 +191,32 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "git timed out after 30s",
+                    "fix": "tk run git.diff-digest --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'git'} not found",
+                    "fix": "tk run git.diff-digest --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
     except Exception as exc:
         sys.stderr.write(
             json.dumps(

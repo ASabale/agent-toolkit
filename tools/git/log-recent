@@ -25,6 +25,7 @@ def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
         ["git", "-C", repo, *args],
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 
@@ -107,6 +108,32 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "git timed out after 30s",
+                    "fix": "tk run git.log-recent --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'git'} not found",
+                    "fix": "tk run git.log-recent --repo <git-dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
     except Exception as exc:
         sys.stderr.write(
             json.dumps(

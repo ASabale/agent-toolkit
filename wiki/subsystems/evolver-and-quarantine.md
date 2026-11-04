@@ -1,0 +1,34 @@
+# Evolver and quarantine
+
+On 2026-11-03, `ASabale/agent-toolkit@9d469d7` added `lib/evolver.py` (921 lines in that commit). The module docstring named three public behaviors: `log_event` (append-only telemetry that does not raise), `save_tool` / `save_chain` (write a draft, validate with `check_item`, roll back on failure), and `evolve_report` (promote read-only tools that pass check, and summarize friction). `CODING_STANDARDS.md` at the same commit described that seam and did not define `prune_tools`. `tk` at the same commit exposed `tk evolve [--no-promote]` and did not expose `tk prune`. See [0003](../decisions/0003-autonomous-chief-of-staff-governance.md).
+
+## Telemetry
+
+On 2026-11-03, `log_event` created `state/`, appended one compact JSON object to `state/events.jsonl` with `ts` (UTC ISO timestamp) and `event`, copied payload keys other than `ts` and `event`, and returned on any exception.
+
+On 2026-11-03, `tk` logged `search_miss` from `tk find` (empty match set), from `tk info` (unknown name), and from `tk run` (unknown name). `lib/runner.py` logged `run_ok` or `run_error` only when the call was not a dry-run. See [Runner and chains](runner-and-chains.md).
+
+On 2026-11-03, `_summarize_events` treated `run`, `run_ok`, `tool_run`, and `chain_run` as usage; `run_error` and `error` as failures; and `search_miss` and `miss` as misses. Miss queries were counted and sorted by descending count, then query text.
+
+## Save and quarantine
+
+On 2026-11-03, `save_tool` wrote `tools/<namespace>/<rest>` when the name contained a dot (`git.branch-digest` → `tools/git/branch-digest`), mode `0o755`, from either `--from-cmd` or `--file`, with a generated `# @tk-*` header. `save_chain` wrote `chains/<name>.json` with `verified: "none"`. Both went through `_commit_draft`.
+
+On 2026-11-03, `_commit_draft` refused an existing destination unless `force` was true (`already_exists`). It wrote the new text, chmod'd tools to `0o755`, and called `check_item` (the catalog implementation when importable, otherwise a fallback checker in `lib/evolver.py`). On failure it called `_quarantine`, then either deleted the new file (and removed empty parent directories up to `tools/` or `chains/`) or restored the previous bytes. The error returned to the caller was `check_failed` with the check errors joined into `why` and `fix` `tk check`. On success it logged `tool_saved` or `chain_saved` and printed compact JSON `{"ok":true,"name", "kind", "path", "safety"}` on stdout.
+
+On 2026-11-03, `_quarantine` wrote the rejected text to `state/quarantine/<safe-filename>.<UTC-stamp>`. The stamp format was `%Y%m%dT%H%M%S%fZ`. Characters outside `[A-Za-z0-9._-]` in the filename became underscores. Quarantine I/O failures were swallowed. That directory was the rollback copy; the catalog path did not keep the invalid draft. The single-file contract those drafts had to satisfy was recorded in [0001](../decisions/0001-clean-slate-single-file-contract.md). Header checks at the same commit were recorded in [Catalog and check](catalog-and-check.md).
+
+## Promotion and overlap
+
+On 2026-11-03, `evolve_report` read the catalog and `state/events.jsonl`. For each item it ran `check_item`. Check errors and recorded `run_error` lines were listed under `failing_tools`. Names absent from the usage set were listed under `unused_tools` (the report did not delete those files). When `auto_promote` was true, a tool (not a chain) with safety `read-only`, a passing check, and `verified` empty or one of `none`, `unverified`, or `null` had its first `# @tk-verified:` line replaced with `# @tk-verified: <YYYY-MM-DD>` from `date.today()`, and the executable bits were set. `tk evolve --no-promote` passed `auto_promote=False`. An unexpected failure returned empty lists for `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates`.
+
+On 2026-11-03, `_overlap_candidates` tokenized each name and summary into lowercase words of length at least 3, dropped the stopword set `a`, `an`, `and`, `for`, `from`, `into`, `json`, `only`, `per`, `that`, `the`, `this`, `tool`, `tools`, `via`, `with`, `when`, `your`, and emitted a pair when the intersection had at least two tokens. `score` was the Jaccard ratio rounded to three decimals. The function did not drop pairs below a score cutoff, and it did not delete either tool.
+
+On 2026-11-03, `chains/git.repo-health.json` still had `"verified": "none"` in `ASabale/agent-toolkit@9d469d7`. `evolve_report` promoted only `kind == "tool"`, so that chain was outside auto-promotion.
+
+## Related
+
+- [0001 — Clean-slate single-file contract](../decisions/0001-clean-slate-single-file-contract.md)
+- [0003 — Autonomous Chief-of-Staff governance](../decisions/0003-autonomous-chief-of-staff-governance.md)
+- [Catalog and check](catalog-and-check.md)
+- [Runner and chains](runner-and-chains.md)

@@ -4,6 +4,7 @@ Public seam (CODING_STANDARDS.md §2.3):
 - log_event: append-only telemetry; never raises
 - save_tool / save_chain: write a draft, validate with check_item, roll back on failure
 - evolve_report: promote verified-passing read-only tools and summarize friction
+- prune_tools: archive tools or chains, refusing to break a live chain
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import os
 import py_compile
 import re
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -32,17 +34,31 @@ _STOPWORDS = {
     "for",
     "from",
     "into",
+    "check",
+    "count",
+    "digest",
+    "file",
+    "files",
+    "get",
+    "info",
     "json",
+    "list",
     "only",
+    "path",
     "per",
+    "repo",
+    "run",
+    "status",
     "that",
     "the",
     "this",
     "tool",
     "tools",
+    "tree",
     "via",
     "with",
     "when",
+    "working",
     "your",
 }
 _DUMMY = {"string": "example", "int": "1", "float": "1", "bool": "true"}
@@ -167,6 +183,55 @@ def save_chain(
             saved_payload={"name": name, "path": str(dest), "safety": safety, "kind": "chain"},
             catalog_root=root / "chains",
         )
+    except Exception as exc:
+        return _failure("internal_error", str(exc), "tk check")
+
+
+def prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tuple[int, str, str]:
+    """Archive named tools or chains. Refuse when a kept chain still references a target."""
+    try:
+        root = Path(root_dir)
+        catalog = _discover(root)
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            if name not in catalog:
+                return 2, "", _error_json("not_found", f"{name} is not in the catalog", "tk find")
+            ordered.append(name)
+        blockers: list[tuple[str, str]] = []
+        for item in catalog.values():
+            if item.get("kind") != "chain" or item.get("name") in seen:
+                continue
+            chain_name = str(item.get("name") or "")
+            for step in item.get("steps") or []:
+                tool = step.get("tool") if isinstance(step, dict) else None
+                if isinstance(tool, str) and tool in seen:
+                    blockers.append((tool, chain_name))
+        if blockers:
+            why = "; ".join(f"{tool} is used by {chain}" for tool, chain in blockers)
+            chains = sorted({chain for _, chain in blockers})
+            fix = "tk prune " + " ".join([*chains, *ordered])
+            return 2, "", _error_json("tool_in_use_by_chain", why, fix)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        pruned: list[str] = []
+        archived: list[str] = []
+        for name in ordered:
+            src = Path(str(catalog[name].get("path") or ""))
+            dest = root / "state" / "archive" / f"{stamp}-{name}"
+            archived.append(str(dest))
+            pruned.append(name)
+            if dry_run:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dest)
+            if catalog[name].get("kind") == "tool":
+                _prune_empty_dirs(src.parent, root / "tools")
+            log_event(root, "tool_pruned", {"name": name, "archived_to": str(dest), "dry_run": False})
+        payload = {"pruned": pruned, "archived_to": archived, "dry_run": bool(dry_run)}
+        return 0, json.dumps(payload, separators=(",", ":")), ""
     except Exception as exc:
         return _failure("internal_error", str(exc), "tk check")
 
@@ -437,7 +502,8 @@ def _build_example(name: str, flags: list[tuple[str, str]]) -> str:
     parts = [f"tk run {name}"]
     for flag, value in flags:
         parts.append(flag)
-        parts.append(value)
+        text = "" if value is None else str(value)
+        parts.append(shlex.quote(text) if any(ch.isspace() for ch in text) else text)
     return " ".join(parts)
 
 
@@ -520,11 +586,15 @@ def _check_item(root: Path, name_or_path: str | Path) -> dict:
 
 
 def _discover(root: Path) -> dict[str, dict]:
-    fallback = _fallback_discover(root)
-    catalog_result = _catalog_call("discover_catalog", root)
-    if isinstance(catalog_result, dict) and (catalog_result or not fallback):
-        return catalog_result
-    return fallback
+    try:
+        import lib.catalog as catalog
+    except Exception:
+        return _fallback_discover(root)
+    try:
+        result = catalog.discover_catalog(root)
+    except Exception:
+        return {}
+    return result if isinstance(result, dict) else {}
 
 
 def _catalog_call(fn_name: str, *args):
@@ -904,8 +974,12 @@ def _overlap_candidates(catalog: dict[str, dict]) -> list[dict]:
             shared = tokens[left] & tokens[right]
             if len(shared) < 2:
                 continue
+            if _chain_composes(catalog, left, right):
+                continue
             union = tokens[left] | tokens[right]
             score = len(shared) / len(union) if union else 0
+            if score < 0.35:
+                continue
             pairs.append(
                 {
                     "tools": [left, right],
@@ -914,6 +988,19 @@ def _overlap_candidates(catalog: dict[str, dict]) -> list[dict]:
                 }
             )
     return pairs
+
+
+def _chain_composes(catalog: dict[str, dict], left: str, right: str) -> bool:
+    """A chain that lists the other item in steps is composition, not a duplicate."""
+    for chain_name, other in ((left, right), (right, left)):
+        item = catalog.get(chain_name) or {}
+        if item.get("kind") != "chain":
+            continue
+        for step in item.get("steps") or []:
+            tool = step.get("tool") if isinstance(step, dict) else step
+            if tool == other:
+                return True
+    return False
 
 
 def _tokens(name: str, summary: str) -> set[str]:

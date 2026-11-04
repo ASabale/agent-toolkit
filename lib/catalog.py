@@ -10,6 +10,7 @@ import json
 import os
 import py_compile
 import re
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -318,20 +319,46 @@ def _dummy(typ: str) -> str:
     return "example"
 
 
+def _flag_present(tokens: list[str], flag: str) -> bool:
+    return any(token == flag or token.startswith(flag + "=") for token in tokens)
+
+
+def _flag_has_value(tokens: list[str], flag: str) -> bool:
+    for index, token in enumerate(tokens):
+        if token == flag:
+            if index + 1 >= len(tokens):
+                return False
+            nxt = tokens[index + 1]
+            return bool(nxt) and not nxt.startswith("--")
+        if token.startswith(flag + "="):
+            return bool(token.split("=", 1)[1])
+    return False
+
+
 def _example_ok(name: str, example: str, args: list[dict]) -> list[str]:
     errors: list[str] = []
     text = (example or "").strip()
     prefix = f"tk run {name}"
     if not name or not (text == prefix or text.startswith(prefix + " ")):
         errors.append(f"example must start with 'tk run {name}'")
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        errors.append(f"example is not a valid command: {exc}")
+        return errors
     for arg in args:
         if not arg.get("required"):
             continue
         flag = str(arg.get("flag") or "")
         if not flag:
             continue
-        if not re.search(rf"(?:^|\s){re.escape(flag)}(?:\s|=|$)", text):
+        if not _flag_present(tokens, flag):
             errors.append(f"example missing required flag {flag}")
+            continue
+        if str(arg.get("type") or "string") == "bool":
+            continue
+        if not _flag_has_value(tokens, flag):
+            errors.append(f"example missing value for required flag {flag}")
     return errors
 
 

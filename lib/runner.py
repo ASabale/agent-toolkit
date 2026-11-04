@@ -89,8 +89,13 @@ def parse_cli_flags(argv: list[str]) -> tuple[dict[str, str], bool, list[str]]:
     index = 0
     while index < len(argv):
         token = argv[index]
-        if token == "--dry-run" or token.startswith("--dry-run="):
+        if token == "--dry-run":
             dry_run = True
+            index += 1
+            continue
+        if token.startswith("--dry-run="):
+            value = token.split("=", 1)[1].strip().lower()
+            dry_run = value not in {"0", "false", "no", "off"}
             index += 1
             continue
         if token.startswith("--"):
@@ -250,15 +255,30 @@ def run_tool(
 
         env = os.environ.copy()
         env.update(built)
-        completed = subprocess.run(
-            [str(item["path"])],
-            input=stdin_data,
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=str(root_dir),
-            check=False,
-        )
+        timeout = float(os.environ.get("TK_TIMEOUT", "60"))
+        try:
+            completed = subprocess.run(
+                [str(item["path"])],
+                input=stdin_data,
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(root_dir),
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return _record_and_return(
+                root_dir, item, dry_run,
+                _failure(
+                    1,
+                    {
+                        "error": "tool_timeout",
+                        "why": f"tool exceeded {timeout:g}s",
+                        "fix": _example(item),
+                    },
+                ),
+            )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         if completed.returncode != 0:

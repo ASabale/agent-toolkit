@@ -31,12 +31,13 @@ When `tk find` misses and you solve a repeatable or noisy multi-step task with r
    ```
    Or save a multi-tool pipeline as one command:
    ```bash
-   tk chain save <namespace>.<name> --summary "<1-line summary>" <tool-1> <tool-2>
+   tk chain save <namespace>.<name> --summary "<1-line summary>" --steps '<json-or-names>'
    ```
 2. **Verify** contract and dry-run:
    ```bash
    tk check <namespace>.<name> && tk run <namespace>.<name> --dry-run
    ```
+3. **Review and prune** the catalog: `tk evolve` reports unused tools, failures, and overlap; `tk prune` archives tools you no longer want.
 
 ## Rules for Every Tool
 - **Minimum tokens**: Distill outputs—strip noise, logs, and unused fields before printing to `stdout`.

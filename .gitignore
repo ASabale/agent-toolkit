@@ -1,7 +1,7 @@
-# Runtime telemetry, gap journal, and local state
-state/*.jsonl
-state/*.log
+# Runtime telemetry, quarantine, archive, and local state
+state/*
 !state/.gitkeep
+HANDOFF.md
 
 # OS & Python artifacts
 .DS_Store

@@ -104,7 +104,10 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 - **`save_chain(root_dir: Path, name: str, summary: str, steps: list[dict], args: list[dict] | None = None, safety: str = "read-only", example: str | None = None, force: bool = False) -> tuple[int, str, str]`**
   Writes `chains/<name>.json`, validates via `check_item`, rolls back on failure, logs `chain_saved`, and returns `(0, compact_json, "")`.
 - **`evolve_report(root_dir: Path, auto_promote: bool = True) -> dict`**
-  Analyzes `state/events.jsonl` + catalog: auto-promotes unverified `read-only` tools that pass `check_item` (updating `@tk-verified` to today's YYYY-MM-DD), and reports `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates`.
+  Analyzes `state/events.jsonl` + catalog: auto-promotes unverified `read-only` tools that pass `check_item` (updating `@tk-verified` to today's YYYY-MM-DD), and reports `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates` (excluding structural stopwords like `digest`, `file`, `tree`, `json`, `get`, `list`, `path`, `repo` and requiring `>= 2` shared domain tokens with Jaccard `score >= 0.35`).
+- **`prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tuple[int, str, str]`**
+  Retires named tools or chains from `tools/` or `chains/` by moving them into `state/archive/<timestamp>-<name>` (when `dry_run=False`), logging `tool_pruned`, and returning `(0, compact_json, "")` with `{"pruned": [...], "archived_to": [...], "dry_run": bool}`.
+  **Safety Invariant**: If any target tool is referenced as a step inside an active chain (that is not itself in `names`), `prune_tools` must refuse to break the chain and return `(2, "", error_json)` with `error="tool_in_use_by_chain"`.
 
 ---
 
@@ -119,3 +122,4 @@ Supports:
 - `tk save <name> --summary "<text>" [--safety <tier>] [--from-cmd "<cmd>" | --file <path>] [--arg "<spec>" ...] [--force]`
 - `tk check [name] [--json]`
 - `tk evolve [--no-promote]`
+- `tk prune [<name> ...] [--unused] [--dry-run]`

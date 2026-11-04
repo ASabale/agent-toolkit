@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# @tk-name: docs.python-symbol
+# @tk-summary: Signature and distilled docstring for an installed Python module or symbol
+# @tk-safety: read-only
+# @tk-arg: --target | required | string | Dotted module or symbol, such as json.dumps or pathlib.Path
+# @tk-arg: --max-lines | optional | int | Docstring lines to keep (default: 20)
+# @tk-output: json | {target, kind, signature, summary, doc}
+# @tk-example: tk run docs.python-symbol --target json.dumps --max-lines 20
+# @tk-verified: 2026-11-03
+
+import importlib
+import inspect
+import json
+import os
+import sys
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def kind_of(obj) -> str:
+    if inspect.ismodule(obj):
+        return "module"
+    if inspect.isclass(obj):
+        return "class"
+    if inspect.isbuiltin(obj) or inspect.isfunction(obj):
+        return "function"
+    if inspect.ismethod(obj) or inspect.ismethoddescriptor(obj):
+        return "method"
+    return "object"
+
+
+def signature_of(obj) -> str:
+    try:
+        return str(inspect.signature(obj))
+    except (TypeError, ValueError):
+        return ""
+
+
+def resolve(target: str):
+    parts = [part for part in target.split(".") if part]
+    if not parts or len(parts) != target.count(".") + 1:
+        raise ValueError(f"not a dotted name: {target}")
+    module = None
+    rest: list[str] = []
+    error: Exception | None = None
+    for index in range(len(parts), 0, -1):
+        name = ".".join(parts[:index])
+        try:
+            module = importlib.import_module(name)
+            rest = parts[index:]
+            error = None
+            break
+        except ModuleNotFoundError as exc:
+            error = exc
+            continue
+    if module is None:
+        raise ModuleNotFoundError(str(error) if error else target)
+    obj = module
+    for attr in rest:
+        obj = getattr(obj, attr)
+    return obj
+
+
+def distill(obj, max_lines: int) -> tuple[str, str]:
+    doc = inspect.getdoc(obj) or ""
+    lines = doc.splitlines()
+    summary = next((line.strip() for line in lines if line.strip()), "")
+    kept = "\n".join(lines[:max_lines])
+    return summary, kept
+
+
+def main() -> int:
+    target = os.environ.get("TK_ARG_TARGET", "")
+    lines_raw = os.environ.get("TK_ARG_MAX_LINES") or "20"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        max_lines = int(lines_raw) if lines_raw.isdigit() else 20
+        return emit(
+            {
+                "dry_run": True,
+                "target": target or "json.dumps",
+                "max_lines": max_lines,
+            }
+        )
+    if not target:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_TARGET is required",
+                "fix": "tk run docs.python-symbol --target json.dumps",
+            },
+            2,
+        )
+    try:
+        max_lines = int(lines_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"max-lines is not an int: {lines_raw}",
+                "fix": "tk run docs.python-symbol --target json.dumps --max-lines 20",
+            },
+            2,
+        )
+    if max_lines < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "max-lines must be >= 0",
+                "fix": "tk run docs.python-symbol --target json.dumps --max-lines 20",
+            },
+            2,
+        )
+    try:
+        obj = resolve(target)
+    except (ModuleNotFoundError, AttributeError, ValueError) as exc:
+        return emit(
+            {
+                "error": "symbol_not_found",
+                "why": str(exc),
+                "fix": "tk run docs.python-symbol --target <module.symbol>",
+            },
+            1,
+        )
+    summary, doc = distill(obj, max_lines)
+    return emit(
+        {
+            "target": target,
+            "kind": kind_of(obj),
+            "signature": signature_of(obj),
+            "summary": summary,
+            "doc": doc,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run docs.python-symbol --target json.dumps",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

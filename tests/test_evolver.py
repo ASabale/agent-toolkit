@@ -15,7 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lib.evolver import evolve_report, log_event, save_chain, save_tool  # noqa: E402
+from lib.evolver import (  # noqa: E402
+    _build_example,
+    _overlap_candidates,
+    evolve_report,
+    log_event,
+    prune_tools,
+    save_chain,
+    save_tool,
+)
 
 
 def _tool_script(*, name: str, summary: str, safety: str, body: str, arg_line: str | None = None) -> str:
@@ -241,6 +249,10 @@ class EvolverTests(unittest.TestCase):
         self.assertEqual(saved["steps"][0]["tool"], "demo.echo")
         self.assertTrue(saved["example"].startswith("tk run demo.pipe"))
         self.assertIn("--token", saved["example"])
+        self.assertEqual(
+            _build_example("demo.pipe", [("--note", "hello world")]),
+            "tk run demo.pipe --note 'hello world'",
+        )
         events = (self.root / "state" / "events.jsonl").read_text(encoding="utf-8")
         self.assertIn("chain_saved", events)
 
@@ -347,6 +359,122 @@ class EvolverTests(unittest.TestCase):
         self.assertEqual(held["promoted"], [])
         self.assertEqual((self.root / "tools" / "beta" / "ship").read_text(encoding="utf-8"), snapshot)
         self.assertNotIn("alpha.list-prs", held["promoted"])
+
+    def test_overlap_ignores_structural_tokens_and_weak_jaccard(self) -> None:
+        for name, summary in (
+            ("alpha.file-tree", "List files in a working tree path"),
+            ("beta.file-status", "Get file status info for a repo"),
+            ("gamma.one", "Apple banana cherry date elderberry"),
+            ("gamma.two", "Apple banana fig grape honeydew"),
+        ):
+            ok, _, err = save_tool(
+                self.root,
+                name,
+                summary,
+                from_cmd="printf '%s\\n' '{\"ok\":true}'",
+            )
+            self.assertEqual(ok, 0, err)
+        report = evolve_report(self.root, auto_promote=False)
+        pair_sets = {tuple(pair["tools"]) for pair in report["overlap_candidates"]}
+        self.assertNotIn(("alpha.file-tree", "beta.file-status"), pair_sets)
+        self.assertNotIn(("gamma.one", "gamma.two"), pair_sets)
+        wrapped, _, err = save_tool(
+            self.root,
+            "delta.list-prs",
+            "List pull requests for a repository review",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(wrapped, 0, err)
+        chain_ok, _, err = save_chain(
+            self.root,
+            "delta.review-prs",
+            "List pull requests for a repository review",
+            steps=[{"tool": "delta.list-prs"}],
+        )
+        self.assertEqual(chain_ok, 0, err)
+        skipped = evolve_report(self.root, auto_promote=False)
+        skipped_pairs = {tuple(pair["tools"]) for pair in skipped["overlap_candidates"]}
+        self.assertNotIn(("delta.list-prs", "delta.review-prs"), skipped_pairs)
+        direct = _overlap_candidates(
+            {
+                "delta.list-prs": {
+                    "kind": "tool",
+                    "summary": "List pull requests for a repository review",
+                },
+                "delta.review-prs": {
+                    "kind": "chain",
+                    "summary": "List pull requests for a repository review",
+                    "steps": [{"tool": "delta.list-prs"}],
+                },
+            }
+        )
+        self.assertEqual(direct, [])
+        for pair in report["overlap_candidates"]:
+            self.assertGreaterEqual(pair["score"], 0.35)
+            self.assertGreaterEqual(len(pair["shared"]), 2)
+
+    def test_prune_tools_archives_and_refuses_live_chain_deps(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "lab.echo",
+            "Echo a fixed JSON object",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        ok, _, err = save_tool(
+            self.root,
+            "lab.other",
+            "Echo another JSON object",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        ok, _, err = save_chain(
+            self.root,
+            "lab.pipe",
+            "Echo via a chain",
+            [{"tool": "lab.echo"}],
+        )
+        self.assertEqual(ok, 0, err)
+        tool_path = self.root / "tools" / "lab" / "echo"
+        other_path = self.root / "tools" / "lab" / "other"
+
+        blocked, out, err = prune_tools(self.root, ["lab.echo"])
+        self.assertEqual(blocked, 2)
+        self.assertEqual(out, "")
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "tool_in_use_by_chain")
+        self.assertIn("fix", payload)
+        self.assertTrue(tool_path.is_file())
+
+        preview, out, err = prune_tools(self.root, ["lab.other"], dry_run=True)
+        self.assertEqual(preview, 0, err)
+        preview_payload = json.loads(out)
+        self.assertEqual(preview_payload["pruned"], ["lab.other"])
+        self.assertTrue(preview_payload["dry_run"])
+        self.assertTrue(other_path.is_file())
+        self.assertEqual(preview_payload["archived_to"][0].count("state/archive/"), 1)
+
+        code, out, err = prune_tools(self.root, ["lab.pipe", "lab.echo"])
+        self.assertEqual(code, 0, err)
+        done = json.loads(out)
+        self.assertEqual(done["pruned"], ["lab.pipe", "lab.echo"])
+        self.assertFalse(done["dry_run"])
+        self.assertFalse(tool_path.exists())
+        self.assertTrue(other_path.is_file())
+        code, out, err = prune_tools(self.root, ["lab.other"])
+        self.assertEqual(code, 0, err)
+        self.assertFalse(other_path.exists())
+        self.assertFalse((self.root / "tools" / "lab").exists())
+        self.assertFalse((self.root / "chains" / "lab.pipe.json").exists())
+        for archived in done["archived_to"]:
+            self.assertTrue(Path(archived).is_file())
+        events = [
+            json.loads(line)
+            for line in (self.root / "state" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        pruned_events = [event for event in events if event["event"] == "tool_pruned"]
+        self.assertEqual([event["name"] for event in pruned_events], ["lab.pipe", "lab.echo", "lab.other"])
 
     def test_evolve_report_empty_state(self) -> None:
         report = evolve_report(self.root)

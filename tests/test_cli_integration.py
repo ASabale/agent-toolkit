@@ -156,6 +156,66 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertEqual(json.loads(ran.stdout), {"ok": True})
 
+    def test_chain_save_arg_force_and_plain_check_json(self) -> None:
+        saved = self._run(
+            "save",
+            "lab.echo",
+            "--summary",
+            "Echo a fixed JSON object",
+            "--from-cmd",
+            "printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        chained = self._run(
+            "chain",
+            "save",
+            "lab.pipe",
+            "--summary",
+            "Echo via a chain",
+            "--steps",
+            "lab.echo",
+            "--arg",
+            "--token | required | string | Token to pass",
+            "--example",
+            "tk run lab.pipe --token example",
+        )
+        self.assertEqual(chained.returncode, 0, chained.stderr)
+        document = json.loads((self.root / "chains" / "lab.pipe.json").read_text(encoding="utf-8"))
+        self.assertEqual(document["args"][0]["flag"], "--token")
+        self.assertEqual(document["example"], "tk run lab.pipe --token example")
+
+        refused = self._run(
+            "chain",
+            "save",
+            "lab.pipe",
+            "--summary",
+            "Echo via a chain again",
+            "--steps",
+            "lab.echo",
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(json.loads(refused.stderr)["error"], "already_exists")
+
+        forced = self._run(
+            "chain",
+            "save",
+            "lab.pipe",
+            "--summary",
+            "Echo via a replaced chain",
+            "--steps",
+            "lab.echo",
+            "--force",
+        )
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        replaced = json.loads((self.root / "chains" / "lab.pipe.json").read_text(encoding="utf-8"))
+        self.assertEqual(replaced["summary"], "Echo via a replaced chain")
+
+        checked = self._run("check")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        payload = json.loads(checked.stdout)
+        self.assertIn("checked", payload)
+        self.assertTrue(payload["ok"])
+
     def test_check_json(self) -> None:
         checked = self._run("check", "--json")
         self.assertEqual(checked.returncode, 0, checked.stderr)
@@ -200,6 +260,49 @@ class CliIntegrationTests(unittest.TestCase):
             after["search_misses"],
         )
         self.assertNotIn("lab.echo", after["promoted"])
+
+    def test_prune_unused_dry_run_keeps_chain_dependencies(self) -> None:
+        saved = self._run(
+            "save",
+            "lab.echo",
+            "--summary",
+            "Echo a fixed JSON object",
+            "--from-cmd",
+            "printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        kept = self._run(
+            "save",
+            "lab.keep",
+            "--summary",
+            "Echo a kept JSON object",
+            "--from-cmd",
+            "printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(kept.returncode, 0, kept.stderr)
+        chained = self._run(
+            "chain",
+            "save",
+            "lab.pipe",
+            "--summary",
+            "Keep echo behind a used chain",
+            "--steps",
+            '[{"tool":"lab.keep"}]',
+        )
+        self.assertEqual(chained.returncode, 0, chained.stderr)
+        ran = self._run("run", "lab.pipe")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+
+        preview = self._run("prune", "--unused", "--dry-run")
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        payload = json.loads(preview.stdout)
+        self.assertTrue(payload["dry_run"])
+        self.assertIn("lab.echo", payload["pruned"])
+        self.assertNotIn("lab.keep", payload["pruned"])
+        self.assertNotIn("lab.pipe", payload["pruned"])
+        self.assertTrue((self.root / "tools" / "lab" / "echo").is_file())
+        self.assertTrue((self.root / "tools" / "lab" / "keep").is_file())
+        self.assertTrue((self.root / "chains" / "lab.pipe.json").is_file())
 
 
 if __name__ == "__main__":

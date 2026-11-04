@@ -4,16 +4,26 @@
 # @tk-safety: read-only
 # @tk-arg: --path      | required | string | Directory to summarize
 # @tk-arg: --max-depth | optional | int    | How many levels below path to include (default: 2)
-# @tk-output: json | {path, files, dirs, top_extensions, entries}
-# @tk-example: tk run fs.tree-digest --path . --max-depth 2
+# @tk-arg: --limit | optional | int | Max entries to list (default: 40)
+# @tk-output: json | {path, files, dirs, top_extensions, entries, truncated}
+# @tk-example: tk run fs.tree-digest --path . --max-depth 2 --limit 40
 # @tk-verified: 2026-11-03
 
 import json
 import os
 import sys
 
-_SKIP = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_SKIP = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    ".code-review-graph",
+    ".DS_Store",
+    ".gitkeep",
+}
 _TOP_N = 8
+_DEFAULT_LIMIT = 40
 
 
 def emit(payload: dict, code: int = 0) -> int:
@@ -22,7 +32,7 @@ def emit(payload: dict, code: int = 0) -> int:
     return code
 
 
-def digest(root: str, max_depth: int) -> dict:
+def digest(root: str, max_depth: int, limit: int) -> dict:
     files = 0
     dirs = 0
     ext_counts: dict[str, int] = {}
@@ -52,18 +62,21 @@ def digest(root: str, max_depth: int) -> dict:
                 ext_counts[suffix] = ext_counts.get(suffix, 0) + 1
     top = sorted(ext_counts.items(), key=lambda item: (-item[1], item[0]))[:_TOP_N]
     entries.sort(key=lambda item: item["path"])
+    omitted = max(0, len(entries) - limit)
     return {
         "path": root,
         "files": files,
         "dirs": dirs,
         "top_extensions": [{"ext": ext, "count": count} for ext, count in top],
-        "entries": entries,
+        "entries": entries[:limit],
+        "truncated": omitted,
     }
 
 
 def main() -> int:
     path = os.environ.get("TK_ARG_PATH", "")
     depth_raw = os.environ.get("TK_ARG_MAX_DEPTH") or "2"
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
@@ -72,6 +85,7 @@ def main() -> int:
                 "dirs": 0,
                 "top_extensions": [],
                 "entries": [],
+                "truncated": 0,
             }
         )
     if not path:
@@ -103,6 +117,26 @@ def main() -> int:
             },
             2,
         )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run fs.tree-digest --path <dir> --limit 40",
+            },
+            2,
+        )
+    if limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 0",
+                "fix": "tk run fs.tree-digest --path <dir> --limit 40",
+            },
+            2,
+        )
     if not os.path.isdir(path):
         return emit(
             {
@@ -112,7 +146,7 @@ def main() -> int:
             },
             1,
         )
-    return emit(digest(path, max_depth))
+    return emit(digest(path, max_depth, limit))
 
 
 if __name__ == "__main__":

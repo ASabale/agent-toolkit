@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+# @tk-name: gh.issue-view
+# @tk-summary: Issue or pull request metadata plus the last N comments
+# @tk-safety: read-only
+# @tk-arg: --repo | required | string | Repository in owner/name form
+# @tk-arg: --number | required | int | Issue or pull request number
+# @tk-arg: --comments | optional | int | How many trailing comments to keep (default: 5)
+# @tk-output: json | {repo, number, title, state, author, url, body, comments:[{author, body, created_at}]}
+# @tk-example: tk run gh.issue-view --repo cli/cli --number 1 --comments 5
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import subprocess
+import sys
+
+_BODY_CAP = 500
+_COMMENT_CAP = 280
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def clip(text: str, cap: int) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= cap:
+        return text
+    return text[: cap - 1].rstrip() + "…"
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    number_raw = os.environ.get("TK_ARG_NUMBER", "")
+    comments_raw = os.environ.get("TK_ARG_COMMENTS") or "5"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        number = int(number_raw) if number_raw.isdigit() else 1
+        comments = int(comments_raw) if comments_raw.isdigit() else 5
+        return emit(
+            {
+                "dry_run": True,
+                "repo": repo or "example",
+                "number": number,
+                "comments": comments,
+            }
+        )
+    if not repo or not number_raw:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_REPO and TK_ARG_NUMBER are required",
+                "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
+            },
+            2,
+        )
+    try:
+        number = int(number_raw)
+        comments = int(comments_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "number and comments must be ints",
+                "fix": "tk run gh.issue-view --repo <owner/name> --number 1 --comments 5",
+            },
+            2,
+        )
+    if comments < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "comments must be >= 0",
+                "fix": "tk run gh.issue-view --repo <owner/name> --number 1 --comments 5",
+            },
+            2,
+        )
+    proc = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(number),
+            "--repo",
+            repo,
+            "--json",
+            "number,title,state,author,url,body,comments",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return emit(
+            {
+                "error": "gh_failed",
+                "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
+                "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
+            },
+            1,
+        )
+    payload = json.loads(proc.stdout or "{}")
+    author = payload.get("author") or {}
+    raw_comments = payload.get("comments") or []
+    tail = raw_comments[-comments:] if comments else []
+    distilled = []
+    for comment in tail:
+        if not isinstance(comment, dict):
+            continue
+        who = comment.get("author") or {}
+        distilled.append(
+            {
+                "author": who.get("login") or "",
+                "body": clip(str(comment.get("body") or ""), _COMMENT_CAP),
+                "created_at": comment.get("createdAt") or "",
+            }
+        )
+    return emit(
+        {
+            "repo": repo,
+            "number": payload.get("number") or number,
+            "title": payload.get("title") or "",
+            "state": payload.get("state") or "",
+            "author": author.get("login") or "",
+            "url": payload.get("url") or "",
+            "body": clip(str(payload.get("body") or ""), _BODY_CAP),
+            "comments": distilled,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "gh timed out after 30s",
+                    "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'gh'} not found",
+                    "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run gh.issue-view --repo <owner/name> --number <n>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

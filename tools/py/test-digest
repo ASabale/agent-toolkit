@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+# @tk-name: py.test-digest
+# @tk-summary: Distill a unittest discover run into pass counts and failure messages
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | Directory or package path to discover
+# @tk-arg: --pattern | optional | string | unittest file pattern (default: test*.py)
+# @tk-output: json | {ok, ran, failed, errors, failures:[{test, message}]}
+# @tk-example: tk run py.test-digest --path tests --pattern test*.py
+# @tk-verified: 2026-11-03
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+_HEADER = re.compile(r"^(FAIL|ERROR): (.+)$", re.MULTILINE)
+_RAN = re.compile(r"^Ran (\d+) tests?", re.MULTILINE)
+_FAILED = re.compile(r"^FAILED \((.+)\)\s*$", re.MULTILINE)
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def count_field(blob: str, name: str) -> int:
+    match = re.search(rf"{name}=(\d+)", blob)
+    return int(match.group(1)) if match else 0
+
+
+def distill(text: str, returncode: int) -> dict:
+    ran_match = _RAN.search(text)
+    ran = int(ran_match.group(1)) if ran_match else 0
+    failed_match = _FAILED.search(text)
+    if failed_match:
+        blob = failed_match.group(1)
+        failed = count_field(blob, "failures")
+        errors = count_field(blob, "errors")
+    else:
+        failed = 0
+        errors = 0
+    failures = []
+    headers = list(_HEADER.finditer(text))
+    for index, header in enumerate(headers):
+        start = header.end()
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        block = text[start:end]
+        parts = block.split("\n" + "-" * 10, 1)
+        body = parts[1] if len(parts) == 2 else block
+        if "\nRan " in body:
+            body = body.split("\nRan ", 1)[0]
+        lines = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped or set(stripped) <= {"=", "-"}:
+                continue
+            lines.append(stripped)
+        message = ""
+        for line in reversed(lines):
+            if line.startswith("File ") or line.startswith("Traceback"):
+                continue
+            message = line
+            break
+        failures.append({"test": header.group(2).strip(), "message": message})
+    ok = returncode == 0 and failed == 0 and errors == 0
+    return {
+        "ok": ok,
+        "ran": ran,
+        "failed": failed,
+        "errors": errors,
+        "failures": failures,
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    pattern = os.environ.get("TK_ARG_PATTERN") or "test*.py"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit({"dry_run": True, "path": path or "example", "pattern": pattern})
+    if not path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATH is required",
+                "fix": "tk run py.test-digest --path <dir>",
+            },
+            2,
+        )
+    if not os.path.isdir(path):
+        return emit(
+            {
+                "error": "not_a_directory",
+                "why": f"{path} is not a directory",
+                "fix": "tk run py.test-digest --path <dir>",
+            },
+            1,
+        )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            path,
+            "-p",
+            pattern,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    text = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    if proc.returncode != 0 and not _RAN.search(text):
+        return emit(
+            {
+                "error": "unittest_failed",
+                "why": text.strip() or f"unittest exited {proc.returncode}",
+                "fix": "tk run py.test-digest --path <dir> --pattern test*.py",
+            },
+            1,
+        )
+    return emit(distill(text, proc.returncode))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run py.test-digest --path <dir>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
