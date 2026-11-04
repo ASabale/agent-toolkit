@@ -27,12 +27,30 @@ def emit(payload: dict, code: int = 0) -> int:
     return code
 
 
+# Repo-location variables. These make `git -C <repo>` operate on the caller's
+# checkout (as a hook's GIT_DIR does). Transport and credential variables
+# (GIT_SSH_COMMAND, GIT_ASKPASS, GIT_CONFIG_COUNT, and the KEY/VALUE pairs)
+# stay in the environment so fetch and push still authenticate.
+_REPO_LOCATION_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE",
+)
+
+
 def _git_env() -> dict[str, str]:
-    """Ignore inherited GIT_DIR so -C always selects --repo, even inside a hook."""
     env = os.environ.copy()
-    for key in list(env):
-        if key.startswith("GIT_"):
-            env.pop(key, None)
+    for key in _REPO_LOCATION_ENV:
+        env.pop(key, None)
     return env
 
 
@@ -143,18 +161,22 @@ def _smoke_plan(remote: str, base: str) -> dict:
         return dry_run_payload(str(repo), remote, base)
 
 
+def _git_c(repo: str, *args: str) -> str:
+    return " ".join(["git", "-C", shlex.quote(repo), *args])
+
+
 def _feature_fix(repo: str) -> str:
-    return f"git checkout -b fix/sync && {sync_command(repo)}"
+    return f"{_git_c(repo, 'checkout', '-b', 'fix/sync')} && {sync_command(repo)}"
 
 
 def _not_a_repo_fix(repo: str) -> str:
-    quoted = shlex.quote(repo)
-    init = f"git init -b fix/sync -- {quoted}"
-    commit = (
-        f"git -C {quoted} -c user.email=ada@example.com -c user.name=Ada "
-        "commit --allow-empty -m init"
-    )
-    return f"{init} && {commit} && {sync_command(repo)}"
+    """Init the path. No commit and no identity: a new repo has no remote yet."""
+    path = Path(repo)
+    if path.is_dir():
+        return _git_c(str(path), "init", "-b", "fix/sync")
+    parent = path.parent
+    parent_text = str(parent) if str(parent) else "."
+    return f"git -C {shlex.quote(parent_text)} init -b fix/sync -- {shlex.quote(path.name)}"
 
 
 def refuse_current_branch(repo: str, current: str, base: str) -> int | None:
@@ -211,11 +233,7 @@ def _sync(repo: str, remote: str, base: str, current: str, retry: str) -> int:
     if behind != 0:
         pair, error, why = rebase_onto(repo, remote, base)
         if pair is None:
-            fix = (
-                f"resolve the conflicting commit in {shlex.quote(repo)}, then retry {retry}"
-                if error == "rebase_conflict"
-                else retry
-            )
+            fix = f"{_git_c(repo, 'status')} && {retry}" if error == "rebase_conflict" else retry
             return fail(error, why, fix)
         ahead, behind = pair
         rebased = True
@@ -224,7 +242,14 @@ def _sync(repo: str, remote: str, base: str, current: str, retry: str) -> int:
         return fail(
             "git_failed",
             pushed.stderr.strip() or "git push failed",
-            f"git push --force-with-lease --set-upstream {shlex.quote(remote)} {shlex.quote(current)}",
+            _git_c(
+                repo,
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                shlex.quote(remote),
+                shlex.quote(current),
+            ),
         )
     return emit(
         {

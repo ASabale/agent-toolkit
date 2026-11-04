@@ -204,7 +204,8 @@ class GitSyncTests(unittest.TestCase):
         self.assertTrue(dry_payload["why"])
         self.assertIn(branch, dry_payload["why"])
         fix = str(dry_payload["fix"])
-        self.assertIn("git checkout -b fix/sync && tk run git.sync --repo ", fix)
+        self.assertIn(f"git -C {shlex.quote(str(clone))} checkout -b fix/sync && ", fix)
+        self.assertIn("tk run git.sync --repo ", fix)
         self.assertNotIn("<", fix)
         self.assertNotIn(">", fix)
         self.assertEqual(_git(origin, "rev-parse", "refs/heads/main").stdout, before)
@@ -272,7 +273,10 @@ class GitSyncTests(unittest.TestCase):
             self.assertIn(shlex.quote("upstream"), fix)
             self.assertIn(shlex.quote("develop"), fix)
             commands = _split_and(fix)
-            self.assertEqual(commands[0], ["git", "checkout", "-b", "fix/sync"])
+            self.assertEqual(
+                commands[0],
+                ["git", "-C", str(clone), "checkout", "-b", "fix/sync"],
+            )
             tk_argv = commands[-1]
             self.assertEqual(tk_argv[:3], ["tk", "run", "git.sync"])
             self.assertEqual(tk_argv[tk_argv.index("--repo") + 1], str(clone))
@@ -289,6 +293,70 @@ class GitSyncTests(unittest.TestCase):
             self.assertEqual(synced["base"], "develop")
             self.assertEqual(_git(clone, "symbolic-ref", "--short", "HEAD").stdout.strip(), "fix/sync")
             self.assertEqual(_git(origin, "rev-parse", "refs/heads/main").stdout, before)
+
+    def test_branch_fix_acts_on_target_repo_not_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            origin, _clone_a, clone = _pair(root)
+            _ok(clone, "checkout", "-b", "develop")
+            _ok(clone, "push", "-u", "origin", "develop")
+            outside = root / "outside"
+            _ok(root, "init", "-b", "main", str(outside))
+            _ok(outside, "config", "user.name", "Ada")
+            _ok(outside, "config", "user.email", "ada@example.com")
+            (outside / "note.txt").write_text("x\n", encoding="utf-8")
+            _ok(outside, "add", "note.txt")
+            _ok(outside, "commit", "-m", "outside")
+            proc = _run(
+                {
+                    "TK_ARG_REPO": str(clone),
+                    "TK_ARG_REMOTE": "origin",
+                    "TK_ARG_BRANCH": "develop",
+                }
+            )
+            self.assertEqual(proc.returncode, 2, proc.stderr)
+            payload = json.loads(proc.stderr)
+            self.assertEqual(payload["error"], "on_base")
+            fix = str(payload["fix"])
+            checkout = _split_and(fix)[0]
+            self.assertEqual(checkout[:3], ["git", "-C", str(clone)])
+            self.assertEqual(checkout[3:], ["checkout", "-b", "fix/sync"])
+            results = _run_fix(fix, outside)
+            self.assertEqual(results[0].returncode, 0, results[0].stderr)
+            self.assertEqual(_git(clone, "symbolic-ref", "--short", "HEAD").stdout.strip(), "fix/sync")
+            self.assertEqual(_git(outside, "symbolic-ref", "--short", "HEAD").stdout.strip(), "main")
+            self.assertNotIn("fix/sync", _git(outside, "branch", "--list").stdout)
+            self.assertEqual(results[-1].returncode, 0, results[-1].stderr + results[-1].stdout)
+
+    def test_real_fetch_keeps_ssh_command_and_askpass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _origin, _clone_a, clone = _pair(root)
+            _ok(clone, "checkout", "-b", "feature")
+            _ok(clone, "remote", "set-url", "origin", "ssh://git@example.invalid/repo.git")
+            marker = root / "ssh-marker"
+            script = root / "ssh-wrap"
+            script.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$GIT_ASKPASS\" > {shlex.quote(str(marker))}\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+            askpass = "askpass-sentinel"
+            proc = _run(
+                {
+                    "TK_ARG_REPO": str(clone),
+                    "TK_ARG_REMOTE": "origin",
+                    "TK_ARG_BRANCH": "main",
+                    "GIT_SSH_COMMAND": str(script),
+                    "GIT_ASKPASS": askpass,
+                }
+            )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn("git_failed", proc.stderr)
+            self.assertTrue(marker.is_file(), proc.stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8").strip(), askpass)
 
     def test_dry_run_not_a_repo_matches_real_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -310,22 +378,21 @@ class GitSyncTests(unittest.TestCase):
             fix = str(payload["fix"])
             self.assertNotIn("<", fix)
             self.assertNotIn(">", fix)
+            self.assertNotIn("user.email", fix)
+            self.assertNotIn("user.name", fix)
+            self.assertNotIn("ada@example.com", fix)
+            self.assertNotIn("tk run git.sync", fix)
             self.assertIn(shlex.quote(str(missing)), fix)
-            retry = _split_and(fix)[-1]
-            self.assertEqual(retry[retry.index("--repo") + 1], str(missing))
+            commands = _split_and(fix)
+            self.assertEqual(commands[-1][:3], ["git", "-C", str(missing)])
             self.assertFalse((missing / ".git").exists())
-            results = _run_fix(fix, missing)
-            self.assertGreaterEqual(len(results), 3)
-            self.assertEqual(results[0].returncode, 0, results[0].stderr)
-            self.assertEqual(results[1].returncode, 0, results[1].stderr)
-            self.assertTrue((missing / ".git").is_dir())
+            outside = root / "elsewhere"
+            outside.mkdir()
+            results = _run_fix(fix, outside)
             last = results[-1]
-            if last.returncode != 0:
-                self.assertNotEqual(json.loads(last.stderr)["error"], "not_a_repo")
-            again = _run({"TK_ARG_REPO": str(missing), "TK_DRY_RUN": "1"})
-            self.assertEqual(again.returncode, 0, again.stderr)
-            self.assertNotEqual(json.loads(again.stdout).get("error"), "not_a_repo")
-            self.assertIs(json.loads(again.stdout)["dry_run"], True)
+            self.assertEqual(last.returncode, 0, last.stderr + last.stdout)
+            self.assertTrue((missing / ".git").is_dir())
+            self.assertFalse((outside / ".git").exists())
 
     def test_dry_run_detached_head_matches_real_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
