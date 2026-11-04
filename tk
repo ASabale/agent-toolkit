@@ -459,7 +459,7 @@ def _cmd_prune(catalog, evolver, argv: list[str]) -> int:
             _err(
                 "insufficient_telemetry",
                 f"{run_events} run events < {minimum}",
-                "tk prune <name> --dry-run",
+                "tk evolve --no-promote",
             )
             return 2
         pool = [name for name in (report.get("unused_tools") or []) if isinstance(name, str)]

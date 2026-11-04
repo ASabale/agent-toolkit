@@ -76,7 +76,7 @@ class CliIntegrationTests(unittest.TestCase):
         payload = json.loads(proc.stderr)
         self.assertEqual(payload["error"], "insufficient_telemetry")
         self.assertEqual(payload["why"], f"{run_events} run events < {MIN_UNUSED_RUN_EVENTS}")
-        self.assertEqual(payload["fix"], "tk prune <name> --dry-run")
+        self.assertEqual(payload["fix"], "tk evolve --no-promote")
 
     def test_find_logs_misses_and_not_hits(self) -> None:
         hit = self._run("find", "json.pick")
@@ -473,6 +473,24 @@ class CliIntegrationTests(unittest.TestCase):
         self._assert_insufficient_telemetry(almost, MIN_UNUSED_RUN_EVENTS - 1)
         self.assertTrue(echo.is_file())
         self.assertTrue(chain.is_file())
+
+    def test_insufficient_telemetry_printed_fix_runs_verbatim(self) -> None:
+        env = self._base_env.copy()
+        env["TK_STATE_DIR"] = str(self.root / "fresh-state")
+        env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
+        refused = self._run("prune", "--unused", "--dry-run", env=env)
+        self._assert_insufficient_telemetry(refused)
+        fix = json.loads(refused.stderr)["fix"]
+        healed = subprocess.run(
+            fix,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(self.root),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
 
     def test_evolve_no_promote_fresh_state_prints_telemetry(self) -> None:
         env = self._base_env.copy()
