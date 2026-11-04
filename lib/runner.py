@@ -84,6 +84,46 @@ def _example(item: dict) -> str:
     return item.get("example") or "tk check"
 
 
+def _example_flag_value(item: dict, flag: str, kind: str) -> str:
+    """Valid stand-in for one flag, taken from the catalog example when present."""
+    example = str(item.get("example") or "")
+    try:
+        tokens = shlex.split(example)
+    except ValueError:
+        tokens = example.split()
+    for index, token in enumerate(tokens):
+        if token == flag and index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+            return tokens[index + 1]
+        if token.startswith(flag + "="):
+            return token.split("=", 1)[1]
+    for arg in item.get("args") or []:
+        if arg.get("flag") == flag and arg.get("default") not in (None, ""):
+            return str(arg["default"])
+    if kind == "bool":
+        return "true"
+    if kind == "int":
+        return "1"
+    if kind == "float":
+        return "1.0"
+    return "value"
+
+
+def _invalid_type_fix(
+    item: dict,
+    flags: dict[str, str],
+    flag: str,
+    kind: str,
+    dry_run: bool,
+) -> str:
+    """Caller command with only the bad flag replaced by a valid example value."""
+    supplied = dict(flags)
+    supplied[flag] = _example_flag_value(item, flag, kind)
+    command = _fix_command(item, supplied)
+    if dry_run:
+        command += " --dry-run"
+    return command
+
+
 _BOOL_FLAG_VALUES = {"true", "false", "1", "0", "yes", "no"}
 
 
@@ -246,7 +286,7 @@ def validate_and_build_env(
                 type_errors.append({
                     "error": "invalid_type",
                     "why": f"{flag} expects bool, got {raw!r}",
-                    "fix": _example(item),
+                    "fix": _invalid_type_fix(item, flags, flag, kind, dry_run),
                 })
                 continue
             normalized[flag] = value
@@ -255,7 +295,7 @@ def validate_and_build_env(
                 type_errors.append({
                     "error": "invalid_type",
                     "why": f"{flag} expects int, got {raw!r}",
-                    "fix": _example(item),
+                    "fix": _invalid_type_fix(item, flags, flag, kind, dry_run),
                 })
                 continue
             normalized[flag] = raw
@@ -264,7 +304,7 @@ def validate_and_build_env(
                 type_errors.append({
                     "error": "invalid_type",
                     "why": f"{flag} expects float, got {raw!r}",
-                    "fix": _example(item),
+                    "fix": _invalid_type_fix(item, flags, flag, kind, dry_run),
                 })
                 continue
             normalized[flag] = raw
