@@ -137,6 +137,7 @@ def save_tool(
             saved_event="tool_saved",
             saved_payload={"name": name, "path": str(dest), "safety": safety, "kind": "tool"},
             catalog_root=root / "tools",
+            already_exists_fix=f"tk save {name} --summary \"<text>\" --force",
         )
     except Exception as exc:
         return _failure("internal_error", str(exc), "tk check")
@@ -195,6 +196,7 @@ def save_chain(
             saved_event="chain_saved",
             saved_payload={"name": name, "path": str(dest), "safety": safety, "kind": "chain"},
             catalog_root=root / "chains",
+            already_exists_fix=f"tk chain save {name} --summary \"<text>\" --force",
         )
     except Exception as exc:
         return _failure("internal_error", str(exc), "tk check")
@@ -609,9 +611,10 @@ def _commit_draft(
     saved_event: str,
     saved_payload: dict,
     catalog_root: Path,
+    already_exists_fix: str,
 ) -> tuple[int, str, str]:
     if dest.exists() and not force:
-        return _failure("already_exists", f"{dest.name} already exists", "pass force=True to replace it")
+        return _failure("already_exists", f"{dest.name} already exists", already_exists_fix)
     previous = dest.read_bytes() if dest.exists() and dest.is_file() else None
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")

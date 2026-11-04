@@ -230,7 +230,10 @@ class EvolverTests(unittest.TestCase):
             from_cmd="printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(again, 1)
-        self.assertEqual(json.loads(err)["error"], "already_exists")
+        err_body = json.loads(err)
+        self.assertEqual(err_body["error"], "already_exists")
+        self.assertTrue(err_body["fix"].startswith("tk "), f"fix must start with 'tk ': {err_body['fix']}")
+        self.assertIn("--force", err_body["fix"], f"fix must contain '--force': {err_body['fix']}")
         self.assertEqual((self.root / "tools" / "demo" / "echo").read_text(encoding="utf-8"), original)
 
         broken = self.root / "broken.sh"
@@ -309,7 +312,10 @@ class EvolverTests(unittest.TestCase):
             "Nope",
             steps=[{"tool": "demo.echo"}],
         )
-        self.assertEqual(json.loads(err)["error"], "already_exists")
+        err_body = json.loads(err)
+        self.assertEqual(err_body["error"], "already_exists")
+        self.assertTrue(err_body["fix"].startswith("tk "), f"fix must start with 'tk ': {err_body['fix']}")
+        self.assertIn("--force", err_body["fix"], f"fix must contain '--force': {err_body['fix']}")
         self.assertEqual(chain_path.read_text(encoding="utf-8"), original)
 
         bad_force, _, err = save_chain(
