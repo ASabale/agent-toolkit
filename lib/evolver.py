@@ -256,9 +256,10 @@ def prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tupl
 
 
 def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
-    """Promote unverified read-only tools and chains that pass check_item."""
+    """Promote unverified read-only tools and chains that pass check and have a live run_ok."""
     empty = {
         "promoted": [],
+        "awaiting_live_run": [],
         "search_misses": [],
         "failing_tools": [],
         "unused_tools": [],
@@ -272,8 +273,10 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         catalog = _discover(root)
         events = _read_events(_state_dir(root) / "events.jsonl")
         used, failed_runs, misses = _summarize_events(events)
+        live_runs = _live_run_names(events)
         today = date.today().isoformat()
         promoted: list[str] = []
+        awaiting_live_run: list[str] = []
         failing: list[dict] = []
         for name in sorted(catalog):
             item = catalog[name]
@@ -287,21 +290,28 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
                 errors.extend(run_errors)
             if errors:
                 failing.append({"name": name, "errors": errors})
-            if (
-                auto_promote
-                and check.get("ok")
+            eligible = (
+                check.get("ok")
                 and item.get("safety") == "read-only"
                 and _is_unverified(item.get("verified"))
-            ):
-                path = Path(str(item.get("path") or ""))
-                kind = item.get("kind")
-                if kind == "tool" and path.is_file() and _promote_tool(path, today):
-                    promoted.append(name)
-                elif kind == "chain" and path.is_file() and _promote_chain(path, today):
-                    promoted.append(name)
+            )
+            if not eligible:
+                continue
+            if name not in live_runs:
+                awaiting_live_run.append(name)
+                continue
+            if not auto_promote:
+                continue
+            path = Path(str(item.get("path") or ""))
+            kind = item.get("kind")
+            if kind == "tool" and path.is_file() and _promote_tool(path, today):
+                promoted.append(name)
+            elif kind == "chain" and path.is_file() and _promote_chain(path, today):
+                promoted.append(name)
         unused, telemetry, unused_reason = _unused_tools(catalog, used, events)
         report = {
             "promoted": promoted,
+            "awaiting_live_run": awaiting_live_run,
             "search_misses": misses,
             "failing_tools": failing,
             "unused_tools": unused,
@@ -846,6 +856,17 @@ def _unused_tools(
             continue
         unused.append(name)
     return unused, telemetry, None
+
+
+def _live_run_names(events: list[dict]) -> set[str]:
+    names: set[str] = set()
+    for record in events:
+        if record.get("event") != "run_ok":
+            continue
+        name = _event_name(record)
+        if name:
+            names.add(name)
+    return names
 
 
 def _summarize_events(events: list[dict]) -> tuple[set[str], dict[str, list[str]], list[dict]]:

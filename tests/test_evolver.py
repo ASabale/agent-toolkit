@@ -456,6 +456,7 @@ class EvolverTests(unittest.TestCase):
         log_event(self.root, "search_miss", {"query": "deploy status"})
         log_event(self.root, "search_miss", {"query": "budget"})
         log_event(self.root, "run", {"name": "alpha.list-prs"})
+        log_event(self.root, "run_ok", {"name": "alpha.show-prs"})
         log_event(self.root, "run_error", {"name": "beta.ship", "why": "rejected"})
         self._seed_run_events(MIN_UNUSED_RUN_EVENTS - 1, "alpha.list-prs")
 
@@ -565,6 +566,7 @@ class EvolverTests(unittest.TestCase):
             safety="mutating",
         )
         self.assertEqual(mutating_ok, 0, err)
+        log_event(self.root, "run_ok", {"name": "nsone.flow"})
 
         report = evolve_report(self.root, auto_promote=True)
         today = date.today().isoformat()
@@ -711,6 +713,7 @@ class EvolverTests(unittest.TestCase):
             report,
             {
                 "promoted": [],
+                "awaiting_live_run": [],
                 "search_misses": [],
                 "failing_tools": [],
                 "unused_tools": [],
