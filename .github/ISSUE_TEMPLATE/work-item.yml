@@ -1,0 +1,42 @@
+name: Work Item
+description: Request a feature, fix, or task for the toolkit
+labels: []
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be done?
+    validations:
+      required: true
+
+  - type: textarea
+    id: vision-alignment
+    attributes:
+      label: VISION.md Alignment
+      description: How does this serve the three pillars (Easy to Use, Easy to Extend, Easy to Maintain)?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - build (implementation-ready)
+        - research (exploratory, needs design)
+        - steward (governance or vision enforcement)
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: How will we know this is done?
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: Paths this work may change. The pull request must stay inside this list.

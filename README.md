@@ -56,3 +56,4 @@ agent-toolkit/
 - Designing modules, CLI grammar, tool headers, or composition seams → read [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Working on this repository as a coding agent → read [`AGENTS.md`](AGENTS.md).
 - Using or evolving the toolkit from any agentic harness → read [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md).
+- Multi-agent coordination (claiming work, avoiding collisions, steward review) → read [`COORDINATION.md`](COORDINATION.md).

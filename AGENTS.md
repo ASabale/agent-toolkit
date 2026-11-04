@@ -17,6 +17,7 @@ Every agent touching this repository must uphold four non-negotiable laws:
 - Evaluating product scope, why this replaces MCPs, or core principles → read [`VISION.md`](VISION.md).
 - Designing CLI commands, module seams, tool header metadata, or token budgets → read [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Editing the portable agent skill consumed by external harnesses → read [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md).
+- Multi-agent coordination (claiming work, avoiding collisions, steward review) → read [`COORDINATION.md`](COORDINATION.md).
 
 ## Architectural Invariants
 
@@ -36,7 +37,7 @@ Every agent touching this repository must uphold four non-negotiable laws:
 
 ## Workflow & Verification
 
-1. **Always Pull Latest First (Remote Multi-Agent Sync)**: Multiple agents work on `ASabale/agent-toolkit` concurrently. Always run `git pull --rebase --autostash origin main` (or `tk run git.sync --repo .`) **before** starting work and again **before** committing/pushing so remote changes integrate cleanly without overwriting peer work.
+1. **Always Pull Latest First (Remote Multi-Agent Sync)**: Multiple agents work on `ASabale/agent-toolkit` concurrently. Always run `git pull --rebase --autostash origin main` (or `tk run git.sync --repo .`) **before** starting work and again **before** committing/pushing your branch so remote changes integrate cleanly without overwriting peer work. Never push to `main`; every change goes through a PR (see COORDINATION.md).
 2. **Before adding or changing core behavior**: Check [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CODING_STANDARDS.md`](CODING_STANDARDS.md) to ensure the change respects module seams and the single-file contract.
 3. **Smoke verify every change**: Run the actual `tk` CLI against a real tool in `tools/` and observe both `stdout` and exit code. Unit tests never substitute for a live CLI smoke run.
 4. **Done criteria for any feature or tool**:
