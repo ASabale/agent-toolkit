@@ -127,7 +127,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 ### 2.4 `./tk` — CLI Entrypoint
 
 Supports:
-- `tk find [query] [--namespace <ns>] [--limit <n>]`
+- `tk find [query] [--namespace <ns>] [--limit <n>]` — non-empty query defaults to 5 items (explicit `--limit N` overrides; empty query is uncapped); zero matches for a non-empty query log `search_miss` and write one stderr JSON line `{"error":"no_match","why":"no tool or chain matches '<query>'","fix":"tk find"}` (`fix` is `tk find --namespace <ns>` when the first query token is an existing namespace)
 - `tk info <name>`
 - `tk run <name> [--flag value ...] [--dry-run]`
 - `tk chain run <name> [--flag value ...] [--dry-run]` (also runnable directly via `tk run <chain-name>`)

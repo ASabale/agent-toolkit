@@ -140,6 +140,8 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
             query_parts.append(token)
         index += 1
     query = " ".join(query_parts).strip()
+    if limit is None and query:
+        limit = 5
     items = catalog.find_items(ROOT, query, limit=limit, namespace=namespace)
     if not items:
         evolver.log_event(
@@ -147,6 +149,19 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
             "search_miss",
             {"query": query or (f"namespace:{namespace}" if namespace else "")},
         )
+        if query:
+            first = query_parts[0]
+            namespaces = {
+                str(name).split(".", 1)[0].lower()
+                for name in catalog.discover_catalog(ROOT)
+                if str(name).strip()
+            }
+            miss_fix = (
+                f"tk find --namespace {first}"
+                if first.lower() in namespaces
+                else "tk find"
+            )
+            _err("no_match", f"no tool or chain matches '{query}'", miss_fix)
     _write_text(catalog.format_find_output(items))
     return 0
 
