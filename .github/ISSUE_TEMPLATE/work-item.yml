@@ -34,3 +34,9 @@ body:
     attributes:
       label: Acceptance Criteria
       description: How will we know this is done?
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: Paths this work may change. The pull request must stay inside this list.

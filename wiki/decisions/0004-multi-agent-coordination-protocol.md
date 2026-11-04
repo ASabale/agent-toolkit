@@ -8,9 +8,9 @@ On 2026-11-04, independent agent systems (Cursor, Claude Code, OMP, Codex, Devin
 
 ## What the protocol records
 
-[`COORDINATION.md`](../../COORDINATION.md) is the single source of claim, branch, overlap, review, and verification rules. Pull request #25 also adds `.github/ISSUE_TEMPLATE/work-item.yml` and a short `.github/PULL_REQUEST_TEMPLATE.md` that points at that checklist plus `Closes #N` and the verification commands.
+[`COORDINATION.md`](../../COORDINATION.md) is the single source of claim, branch, overlap, review, and verification rules. Pull request #25 also adds `.github/ISSUE_TEMPLATE/work-item.yml` and a short `.github/PULL_REQUEST_TEMPLATE.md` that points at that file.
 
-The Steward is Akshay Sabale (`ASabale`). That assignment is recorded here and in [`COORDINATION.md`](../../COORDINATION.md). It changes only when an approved pull request updates those records. The `steward` label means an issue was filed by the Steward; it does not grant merge rights.
+The Steward is the single designated review agent. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, or other agent may merge. The role changes only via an approved pull request that updates [`COORDINATION.md`](../../COORDINATION.md). The `steward` label means an issue was filed by the Steward; it does not grant merge rights.
 
 On 2026-11-04 the `needs-review` label existed. Cross-team questions go to issue #26. That issue is not pinned.
 

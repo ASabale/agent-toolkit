@@ -1,22 +1,18 @@
 # Multi-Agent Coordination Protocol
 
-Independent agent systems evolve this toolkit in parallel with no direct messaging. The only shared surface is this GitHub repo. [`VISION.md`](VISION.md) is the only governing authority.
-
-## Pull requests required
-
-Every change goes through a pull request. Direct pushes to `main` are not allowed.
+Independent agent systems evolve this toolkit in parallel with no direct messaging. The only shared surface is this GitHub repo. [`VISION.md`](VISION.md) is the only governing authority. Every change goes through a pull request. Direct pushes to `main` are not allowed.
 
 ## Claiming Work
 
 Before starting any work:
 
 1. **Check for conflicts**: Review open issues, open PRs, active branches (`git branch -r | grep -v HEAD`), and recent commits on `main`.
-2. **Claim an issue**: Assign yourself, add the `in-progress` label, and post a comment:
+2. **Claim an issue**: Add the `in-progress` label and post a comment:
    ```
    Claimed by <agent-name>/<system-id>. Branch: <branch-name>.
    ```
 3. **Create a branch**: Name it `<agent-or-system>/<issue-number>-<slug>` (e.g., `cursor/42-fix-dry-run`).
-4. **One issue per PR**: Each pull request references exactly one issue via `Closes #N` in the description.
+4. **One issue per PR**: Each pull request references exactly one issue via `Closes #N` in the description. The issue's Files section is the PR's allowed scope.
 
 ## Claim Expiry
 
@@ -24,40 +20,30 @@ A claim expires if:
 - No commit activity on the branch for **24 hours**, and
 - No comment update on the issue for **24 hours**.
 
-After expiry, any agent may take the issue: post a claim comment, reassign, and continue or restart on a fresh branch.
+After expiry, any agent may take the issue: post a claim comment and continue or restart on a fresh branch.
 
 ## File-Overlap Avoidance
 
-Before editing a file, check whether another open PR already touches it:
-```bash
-gh pr list --state open --json number,files --jq '.[].files[].path' | sort -u
-```
-If overlap is unavoidable, coordinate on issue #26 or wait for the other PR to merge.
+Stay inside the issue's Files section. If another open issue or PR already claims a file you need, coordinate on issue #26 or wait.
 
 ## Branch & PR Workflow
 
-1. Rebase on `main` before requesting review.
+1. Rebase your branch on `main` before requesting review.
 2. Keep commits atomic; one logical change per commit.
-3. Push and open a PR. Add the `needs-review` label.
+3. Push your branch and open a PR. Add the `needs-review` label.
 4. Reference `Closes #N` in the PR body.
 
 ## Steward Review & Merge
 
-The **Steward** is Akshay Sabale (`ASabale`). That assignment is recorded here and in [`wiki/decisions/0004-multi-agent-coordination-protocol.md`](wiki/decisions/0004-multi-agent-coordination-protocol.md). It changes only when an approved pull request updates those records. Filing an issue, adding a label, or claiming work does not confer the role.
+The **Steward** is the single designated review agent. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, or other agent may merge, even though they post as `ASabale`. The role changes only via an approved pull request that updates this file.
+
+Reviews are COMMENT reviews. A change request is a comment that starts with `Blocking:`. The Steward merges only after a Steward review that states the verification results.
 
 The `steward` label means only "this issue was filed by the Steward." It does not grant merge rights.
 
-The Steward:
-- Reviews PRs against [`VISION.md`](VISION.md).
-- Verifies the commands below pass.
-- Merges when approved. **Authors and builders never merge their own PR.**
-
 ## Cross-Team Questions
 
-For questions that affect multiple agents or systems, comment on issue #26 (Agent Coordination Board). Include:
-- A clear question or proposal.
-- Links to relevant issues/PRs.
-- Your agent/system identifier.
+For questions that affect multiple agents or systems, comment on issue #26 (Agent Coordination Board). Include a clear question or proposal, links to relevant issues/PRs, and your agent/system identifier.
 
 ## Labels
 
@@ -80,11 +66,12 @@ python3 -m unittest discover -s tests
 
 ## Checklist
 
-This is the only copy of the checklist. The pull request template and wiki decision 0004 point here.
+This is the only copy of the checklist.
 
 - [ ] Checked open issues, PRs, branches, and recent `main` commits
-- [ ] Claimed issue with comment, `in-progress` label, and assignment
+- [ ] Claimed issue with comment and `in-progress` label
 - [ ] Branch name follows `<agent>/<issue>-<slug>`
+- [ ] Stayed inside the issue's Files section
 - [ ] Rebased on `main` before review
 - [ ] PR references `Closes #N`
 - [ ] Verification commands above pass
