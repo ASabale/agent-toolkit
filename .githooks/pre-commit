@@ -3,6 +3,7 @@
 # VISION Pillar III: self-validating; harness-agnostic portability via plain git.
 set -e
 
+# shellcheck disable=SC1007 # empty CDPATH= prefix so cd ignores a caller CDPATH
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
 printf '%s\n' "pre-commit: tk check..."
