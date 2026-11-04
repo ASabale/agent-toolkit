@@ -1,5 +1,7 @@
 """Seams for gh.pr-diff-digest, gh.pr-failure-digest, and http.health-probe."""
 
+from __future__ import annotations
+
 import json
 import os
 import stat

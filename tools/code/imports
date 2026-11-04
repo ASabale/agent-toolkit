@@ -8,6 +8,8 @@
 # @tk-example: tk run code.imports --path lib --limit 20
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import ast
 import json
 import os

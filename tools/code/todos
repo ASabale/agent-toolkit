@@ -9,6 +9,8 @@
 # @tk-example: tk run code.todos --path . --tags TODO,FIXME --limit 20
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import io
 import json
 import os

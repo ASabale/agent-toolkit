@@ -8,6 +8,8 @@
 # @tk-example: tk run data.csv-digest --path data.csv --limit 10
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import csv
 import json
 import os

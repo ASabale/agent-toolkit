@@ -29,6 +29,21 @@ jobs:
         env:
           TK_NO_TELEMETRY: "1"
 
+  py39:
+    name: py39
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Unit tests on Python 3.9
+        run: |
+          export TK_STATE_DIR="$(mktemp -d)"
+          python3 -m unittest discover -s tests
+        env:
+          TK_NO_TELEMETRY: "1"
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:
@@ -57,13 +72,14 @@ jobs:
   test:
     name: test
     if: always()
-    needs: [tests, shellcheck]
+    needs: [tests, shellcheck, py39]
     runs-on: ubuntu-latest
     steps:
       - name: All required jobs succeeded
         env:
           TESTS: ${{ needs.tests.result }}
           SHELLCHECK: ${{ needs.shellcheck.result }}
+          PY39: ${{ needs.py39.result }}
         run: |
-          echo "tests=${TESTS} shellcheck=${SHELLCHECK}"
-          [ "$TESTS" = success ] && [ "$SHELLCHECK" = success ]
+          echo "tests=${TESTS} shellcheck=${SHELLCHECK} py39=${PY39}"
+          [ "$TESTS" = success ] && [ "$SHELLCHECK" = success ] && [ "$PY39" = success ]

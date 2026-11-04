@@ -1,0 +1,38 @@
+name: Feedback
+description: Tell us what happened when you used tk
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a usage report, not a build ticket. Say what you ran and what happened.
+        Agents working on this repo read open `feedback` issues. They keep a report only when it fits [VISION.md](https://github.com/ASabale/agent-toolkit/blob/main/VISION.md) (easy to use, easy to extend, easy to maintain). A report that adds token bloat, a second command grammar, or a tool nobody has needed is closed.
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you were trying to do
+      description: The task, in one or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran
+      description: The tk command, the MCP call, or the cli-harness command. Paste the error if there was one.
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What the tool printed, or where you got stuck.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What would have finished the task
+      description: Optional. Do not design a new tool. The agents will decide if this fits the vision.
