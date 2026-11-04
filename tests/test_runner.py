@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -80,6 +81,16 @@ def _write_script(directory: Path, name: str, body: str) -> Path:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return path
+
+
+def _pid_alive(pid: int) -> bool:
+    check = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "pid="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return check.returncode == 0 and bool(check.stdout.strip())
 
 
 class ParseCliFlagsTests(unittest.TestCase):
@@ -322,33 +333,97 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(json.loads(err), {"error": "nope", "why": "bad", "fix": "tk check"})
 
-    def test_tool_timeout_returns_tool_timeout_and_logs_unless_dry_run(self):
+    def test_tool_timeout_kills_descendants_and_logs_unless_dry_run(self):
+        tracked_pids: list[int] = []
+
+        def _reap_tracked() -> None:
+            for pid in tracked_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+        self.addCleanup(_reap_tracked)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            pid_file = root / "child.pid"
             script = _write_script(
                 root,
                 "slow-tool",
-                "#!/bin/sh\nsleep 30\nprintf '%s\\n' '{\"ok\":true}'\n",
+                "#!/bin/sh\n"
+                "sleep 30 &\n"
+                f"echo $! > '{pid_file}'\n"
+                "wait\n"
+                "printf '%s\\n' '{\"ok\":true}'\n",
             )
             item = _item()
             item["path"] = str(script)
             previous = os.environ.get("TK_TIMEOUT")
-            os.environ["TK_TIMEOUT"] = "0.2"
+            os.environ["TK_TIMEOUT"] = "2"
             try:
                 code, out, err = run_tool(root, item, {"--name": "ada"}, dry_run=True)
                 self.assertEqual(code, 1)
                 self.assertEqual(out, "")
-                self.assertEqual(json.loads(err)["error"], "tool_timeout")
+                payload = json.loads(err)
+                self.assertEqual(payload["error"], "tool_timeout")
+                self.assertEqual(payload["fix"], "TK_TIMEOUT=4 tk run demo.echo --name ada")
+                self.assertNotEqual(payload["fix"], item["example"])
+                self.assertTrue(pid_file.is_file(), "descendant pid file was not written")
+                child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+                tracked_pids.append(child_pid)
+                self.assertFalse(_pid_alive(child_pid), f"descendant {child_pid} survived timeout")
                 self.assertEqual(self._events(root), [])
 
                 code, out, err = run_tool(root, item, {"--name": "ada"})
                 self.assertEqual(code, 1)
                 self.assertEqual(out, "")
-                self.assertEqual(json.loads(err)["error"], "tool_timeout")
+                payload = json.loads(err)
+                self.assertEqual(payload["error"], "tool_timeout")
+                self.assertEqual(payload["fix"], "TK_TIMEOUT=4 tk run demo.echo --name ada")
+                child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+                tracked_pids.append(child_pid)
+                self.assertFalse(_pid_alive(child_pid), f"descendant {child_pid} survived timeout")
                 events = self._events(root)
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]["event"], "run_error")
                 self.assertEqual(events[0]["name"], "demo.echo")
+            finally:
+                if previous is None:
+                    os.environ.pop("TK_TIMEOUT", None)
+                else:
+                    os.environ["TK_TIMEOUT"] = previous
+
+    def test_timeout_fix_is_runnable_with_larger_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "brief-slow",
+                "#!/usr/bin/env python3\n"
+                "import time\n"
+                "time.sleep(1.2)\n"
+                "print('{\"ok\":true}')\n",
+            )
+            item = _item()
+            item["path"] = str(script)
+            previous = os.environ.get("TK_TIMEOUT")
+            os.environ["TK_TIMEOUT"] = "1"
+            try:
+                code, out, err = run_tool(root, item, {"--name": "ada"})
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                payload = json.loads(err)
+                self.assertEqual(payload["error"], "tool_timeout")
+                original = "tk run demo.echo --name ada"
+                self.assertEqual(payload["fix"], "TK_TIMEOUT=2 " + original)
+                self.assertNotEqual(payload["fix"], original)
+                self.assertNotEqual(payload["fix"], item["example"])
+                raised = payload["fix"].split(None, 1)[0]
+                self.assertTrue(raised.startswith("TK_TIMEOUT="), payload["fix"])
+                os.environ["TK_TIMEOUT"] = raised.split("=", 1)[1]
+                code, out, err = run_tool(root, item, {"--name": "ada"})
+                self.assertEqual(code, 0, err)
+                self.assertEqual(out, '{"ok":true}')
             finally:
                 if previous is None:
                     os.environ.pop("TK_TIMEOUT", None)

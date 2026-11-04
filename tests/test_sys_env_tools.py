@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -54,11 +55,17 @@ class ProcInfoTests(unittest.TestCase):
         script.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         self.addCleanup(script.unlink, missing_ok=True)
-        child = subprocess.Popen([str(script), "--extra-arg"])
+        child = subprocess.Popen(
+            [str(script), "--extra-arg"],
+            start_new_session=True,
+        )
 
         def _stop() -> None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             if child.poll() is None:
-                child.kill()
                 child.wait(timeout=5)
 
         self.addCleanup(_stop)
