@@ -53,7 +53,11 @@ class EvolverTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        self._env_patcher = patch.dict(os.environ, {"TK_NO_TELEMETRY": ""}, clear=False)
+        self._env_patcher = patch.dict(
+            os.environ,
+            {"TK_NO_TELEMETRY": "", "TK_STATE_DIR": ""},
+            clear=False,
+        )
         self._env_patcher.start()
 
     def tearDown(self) -> None:
