@@ -23,7 +23,7 @@ tk run wiki.lint --path wiki
 {"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/agent-toolkit","skill_links":["$HOME/.agents/skills/agent-toolkit"],"skill_links_skipped":[],"check":{"ok":true,"checked":...}}
 ```
 
-Stderr also prints the opt-in command for the tracked pre-commit hooks. To enable them:
+Stderr prints the opt-in command for the tracked pre-commit hooks only when `./install.sh` runs inside a git work tree. To enable them:
 
 ```sh
 git -C <repo> config core.hooksPath .githooks
