@@ -207,10 +207,15 @@ def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chain
         _err("not_a_chain", f"{name} is a tool", f"tk run {name}")
         return 2
     flags, dry_run, positional = runner.parse_cli_flags(flag_argv, item)
+    confirmed = any(token == "--yes" or token.startswith("--yes=") for token in flag_argv)
     if item.get("kind") == "chain":
-        code, out, err = runner.run_chain(ROOT, item, flags, positional, dry_run)
+        code, out, err = runner.run_chain(
+            ROOT, item, flags, positional, dry_run, confirmed=confirmed
+        )
     else:
-        code, out, err = runner.run_tool(ROOT, item, flags, positional, dry_run, _stdin_data())
+        code, out, err = runner.run_tool(
+            ROOT, item, flags, positional, dry_run, _stdin_data(), confirmed=confirmed
+        )
     _emit_streams(out or "", err or "")
     return int(code)
 

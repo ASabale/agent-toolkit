@@ -37,8 +37,8 @@ When `tk find` misses:
 3. **Prune**: `tk evolve` reports unused, failures, overlap; `tk prune` archives drops.
 
 ## Rules
-- Distill `stdout`. Named `--flags` only; no positional args; no hardcoded IDs, hosts, or paths.
-- Do not wrap one UNIX command; save tools that collapse steps, filter noise, or enforce safety.
+- Distill `stdout`. Named `--flags` only; no positional args; no hardcoded IDs. Do not wrap one UNIX command.
+- A mutating tool returns its plan unless you pass `--yes`.
 
 ## 3. Migrate off MCP or cli-harness
 

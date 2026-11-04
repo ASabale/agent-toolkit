@@ -150,6 +150,7 @@ def sync_command(repo: str, remote: str | None = None) -> str:
     branch = _supplied("TK_ARG_BRANCH")
     if branch is not None:
         parts.extend(["--branch", shlex.quote(branch)])
+    parts.append("--yes")
     return " ".join(parts)
 
 

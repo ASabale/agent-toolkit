@@ -149,12 +149,20 @@ def _is_raw_token(token: str) -> bool:
     return token == "--raw" or token.startswith("--raw=")
 
 
+def _is_yes_token(token: str) -> bool:
+    return token == "--yes" or token.startswith("--yes=")
+
+
+def _is_global_modifier(token: str) -> bool:
+    return _is_dry_run_token(token) or _is_raw_token(token) or _is_yes_token(token)
+
+
 def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str, str], bool, list[str]]:
-    """Extract ``--dry-run``, ignore ``--raw``, parse ``--flag`` values, and stray tokens.
+    """Extract ``--dry-run``, ignore ``--raw`` and ``--yes``, parse ``--flag`` values, and stray tokens.
 
     When ``item`` is set, boolean args only swallow a following token that is
     an explicit bool literal. Other declared (and unknown) flags take the next
-    token even when it starts with ``-``, except ``--dry-run`` and ``--raw``.
+    token even when it starts with ``-``, except ``--dry-run``, ``--raw``, and ``--yes``.
     """
     flags: dict[str, str] = {}
     positional: list[str] = []
@@ -172,7 +180,7 @@ def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str
             dry_run = value not in {"0", "false", "no", "off"}
             index += 1
             continue
-        if _is_raw_token(token):
+        if _is_raw_token(token) or _is_yes_token(token):
             index += 1
             continue
         if token.startswith("--"):
@@ -181,11 +189,7 @@ def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str
                 flags[name] = value
                 index += 1
                 continue
-            if (
-                index + 1 < len(argv)
-                and not _is_dry_run_token(argv[index + 1])
-                and not _is_raw_token(argv[index + 1])
-            ):
+            if index + 1 < len(argv) and not _is_global_modifier(argv[index + 1]):
                 nxt = argv[index + 1]
                 if schema is None:
                     if not nxt.startswith("--"):
@@ -507,6 +511,36 @@ def _output_too_large_fix(
     return f"{raised} | tk run json.pick --keys {','.join(keys)}"
 
 
+def _writes(item: dict) -> bool:
+    return str(item.get("safety") or "") in {"mutating", "destructive"}
+
+
+def _apply_command(item: dict, flags: dict[str, str]) -> str:
+    return _fix_command(item, flags) + " --yes"
+
+
+def _safe_write_result(item: dict, flags: dict[str, str], payload: object) -> dict:
+    plan = payload.get("plan") if isinstance(payload, dict) else None
+    if not isinstance(plan, list):
+        plan = []
+    return {"dry_run": True, "plan": plan, "apply": _apply_command(item, flags)}
+
+
+def _chain_writes(root_dir: Path, chain_item: dict) -> bool:
+    if _writes(chain_item):
+        return True
+    from lib.catalog import discover_catalog
+
+    catalog = discover_catalog(root_dir)
+    for step in chain_item.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        tool = catalog.get(step.get("tool"))
+        if tool is not None and _writes(tool):
+            return True
+    return False
+
+
 def run_tool(
     root_dir: Path,
     item: dict,
@@ -514,9 +548,18 @@ def run_tool(
     positional: list[str] | None = None,
     dry_run: bool = False,
     stdin_data: str | None = None,
+    confirmed: bool = True,
 ) -> tuple[int, str, str]:
-    """Validate ``flags``, execute ``item['path']``, and compact JSON stdout."""
+    """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
+
+    ``confirmed`` defaults to true so in-process callers keep today's behavior.
+    ``tk run`` passes false unless argv contains ``--yes``. A mutating or
+    destructive tool then runs as a dry-run and returns ``plan`` plus ``apply``.
+    """
     try:
+        gated = (not confirmed) and _writes(item)
+        if gated:
+            dry_run = True
         ok, built, err = validate_and_build_env(
             item, flags, list(positional or []), dry_run
         )
@@ -613,6 +656,8 @@ def run_tool(
                 ),
             )
         hinted = _maybe_next_payload(item, flags, parsed)
+        if gated:
+            hinted = _safe_write_result(item, flags, hinted)
         return _record_and_return(root_dir, item, dry_run, (0, _compact(hinted), ""))
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         return _record_and_return(
@@ -759,9 +804,18 @@ def run_chain(
     flags: dict[str, str],
     positional: list[str] | None = None,
     dry_run: bool = False,
+    confirmed: bool = True,
 ) -> tuple[int, str, str]:
-    """Validate chain flags, resolve step references, and stop on the first error."""
+    """Validate chain flags, resolve step references, and stop on the first error.
+
+    A chain that writes, or that calls a mutating or destructive step, follows
+    the same ``--yes`` rule as ``run_tool`` when ``confirmed`` is false.
+    """
     try:
+        gated = (not confirmed) and _chain_writes(root_dir, chain_item)
+        if gated:
+            dry_run = True
+        plans: list = []
         ok, env, err = validate_and_build_env(
             chain_item, flags, list(positional or []), dry_run
         )
@@ -848,7 +902,13 @@ def run_chain(
                 return _record_and_return(root_dir, chain_item, dry_run, (code, stdout, stderr))
             prev = json.loads(stdout)
             outputs.append(prev)
+            if isinstance(prev, dict) and isinstance(prev.get("plan"), list):
+                plans.extend(prev["plan"])
             last_stdout = stdout
+        if gated:
+            last_stdout = _compact(
+                {"dry_run": True, "plan": plans, "apply": _apply_command(chain_item, flags)}
+            )
         return _record_and_return(root_dir, chain_item, dry_run, (0, last_stdout, ""))
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         return _record_and_return(
