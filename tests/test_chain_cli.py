@@ -132,6 +132,31 @@ class ChainCliTests(unittest.TestCase):
             'tk chain save demo.bad --summary "<text>" --steps \'<json>\'',
         )
 
+
+    def test_flag_value_still_runs_chain(self) -> None:
+        before = sorted(p.name for p in (self.root / "chains").glob("*.json"))
+        proc = self._run("chain", "git.repo-audit", "--repo", ".", "--dry-run")
+        after = sorted(p.name for p in (self.root / "chains").glob("*.json"))
+        self.assertEqual(before, after)
+        self.assertNotIn("chain_saved", proc.stdout)
+        if proc.stderr.strip():
+            payload = json.loads(proc.stderr)
+            self.assertNotEqual(payload.get("error"), "unknown_flag")
+            self.assertNotEqual(payload.get("error"), "invalid_steps")
+        repo = self._run("chain", "git.repo-audit", "--repo", ".")
+        self.assertEqual(before, sorted(p.name for p in (self.root / "chains").glob("*.json")))
+        self.assertNotIn("chain_saved", repo.stdout)
+        if repo.stderr.strip():
+            payload = json.loads(repo.stderr)
+            self.assertNotEqual(payload.get("error"), "unknown_flag")
+            self.assertNotEqual(payload.get("error"), "invalid_steps")
+
+    def test_force_does_not_swallow_step(self) -> None:
+        proc = self._run("chain", "demo.force", "--force", "sys.env-digest")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._chain("demo.force")["steps"], [{"tool": "sys.env-digest"}])
+        self.assertFalse((ROOT / "chains" / "demo.force.json").exists())
+
     def test_no_args_unchanged(self) -> None:
         proc = self._run("chain")
         self.assertEqual(proc.returncode, 2)

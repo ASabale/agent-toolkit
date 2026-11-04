@@ -163,7 +163,7 @@ Supports:
 - `tk find [query] [--namespace <ns>] [--limit <n>]` — non-empty query defaults to 5 items (explicit `--limit N` overrides; empty query is uncapped); zero matches for a non-empty query log `search_miss` and write one stderr JSON line `{"error":"no_match","why":"no tool or chain matches '<query>'","fix":"tk find"}` (`fix` is `tk find --namespace <ns>` when the first query token is an existing namespace)
 - `tk info <name>`
 - `tk run <name> [--flag value ...] [--dry-run]`
-- `tk chain run <name> [--flag value ...] [--dry-run]` (also `tk chain <name>` when every later token is a flag, and `tk run <chain-name>`)
+- `tk chain run <name> [--flag value ...] [--dry-run]` (also `tk chain <name> [--flag value ...]`, which runs when no later token is a positional step: a step is not a flag and was not consumed as a flag value. `--dry-run`, `--yes`, and `--force` do not consume the next token; other flags do unless written `--flag=value`. Also `tk run <chain-name>`)
 - `tk chain <name> '<tool>' ['<tool> --flag value' ...]` — same file as `tk chain save`; omitted `--summary` joins the raw step strings with ` → `. Optional `--summary`, `--safety`, `--example`, `--force`.
 - `tk chain save <name> --summary "<text>" --steps '<json-or-space-list>' [--safety <tier>]`
 - `tk save <name> --summary "<text>" [--safety <tier>] [--from-cmd "<cmd>" | --file <path>] [--arg "<spec>" ...] [--force]`

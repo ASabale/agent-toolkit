@@ -403,6 +403,29 @@ def _cmd_chain_vision(evolver, name: str, argv: list[str]) -> int:
     return int(code)
 
 
+def _chain_positional_steps(argv: list[str]) -> list[str]:
+    """Tokens that are steps: not flags, and not consumed as a flag value.
+
+    `--dry-run`, `--yes`, and `--force` do not take the next token.
+    Every other `--flag` consumes the next token unless it is `--flag=value`.
+    """
+    switches = {"dry-run", "yes", "force"}
+    steps: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token.startswith("--") and token != "--":
+            name, eq, _inline = token[2:].partition("=")
+            if eq or name in switches:
+                index += 1
+                continue
+            index += 2 if index + 1 < len(argv) else 1
+            continue
+        steps.append(token)
+        index += 1
+    return steps
+
+
 def _cmd_chain(catalog, runner, evolver, argv: list[str]) -> int:
     if not argv:
         _err(
@@ -427,9 +450,9 @@ def _cmd_chain(catalog, runner, evolver, argv: list[str]) -> int:
         )
         return 2
     rest = argv[1:]
-    if all(token.startswith("--") for token in rest):
-        return _cmd_run(catalog, runner, evolver, sub, rest, chains_only=True)
-    return _cmd_chain_vision(evolver, sub, rest)
+    if _chain_positional_steps(rest):
+        return _cmd_chain_vision(evolver, sub, rest)
+    return _cmd_run(catalog, runner, evolver, sub, rest, chains_only=True)
 
 
 def _chain_args(evolver, specs) -> list[dict] | None:
