@@ -13,6 +13,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+_INSTALL_CMDS = (
+    "sh",
+    "od",
+    "mkdir",
+    "ln",
+    "mktemp",
+    "rm",
+    "grep",
+    "git",
+    "uname",
+    "readlink",
+    "printf",
+    "dirname",
+)
+
 
 def _hooks_path(repo: Path) -> str | None:
     proc = subprocess.run(
@@ -78,6 +93,16 @@ class InstallTests(unittest.TestCase):
             env.update(extra)
         return env
 
+    def _isolated_path(self, include: tuple[str, ...] = ()) -> str:
+        bin_dir = Path(tempfile.mkdtemp(dir=self.tmp))
+        for name in (*_INSTALL_CMDS, *include):
+            src = shutil.which(name)
+            self.assertIsNotNone(src, name)
+            dest = bin_dir / name
+            if not dest.exists():
+                dest.symlink_to(src)
+        return str(bin_dir)
+
     def _install(self, extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["sh", str(self.repo / "install.sh")],
@@ -98,6 +123,21 @@ class InstallTests(unittest.TestCase):
     def _assert_skill_link(self, dest: Path) -> None:
         self.assertTrue(dest.is_symlink(), dest)
         self.assertEqual(dest.resolve(), (self.repo / "skills" / "agent-toolkit").resolve())
+
+    def _stderr_diag(
+        self, proc: subprocess.CompletedProcess[str], error: str | None = None
+    ) -> dict:
+        found: list[dict] = []
+        for line in proc.stderr.splitlines():
+            text = line.strip()
+            if not text.startswith("{"):
+                continue
+            payload = json.loads(text)
+            self.assertIsInstance(payload, dict)
+            if error is None or payload.get("error") == error:
+                return payload
+            found.append(payload)
+        self.fail(f"no JSON diagnostic {error or ''} on stderr: {proc.stderr!r} ({found})")
 
     def test_no_claude_dir_links_only_agents_skill(self) -> None:
         payload = self._payload()
@@ -238,3 +278,46 @@ class InstallTests(unittest.TestCase):
         self._assert_skill_link(new)
         self.assertEqual(payload["skill_links"], [str(new)])
         self.assertEqual(payload["skill_links_skipped"], [])
+
+    def test_missing_python3_exits_nonzero_with_install_hint(self) -> None:
+        proc = self._install({"PATH": self._isolated_path()})
+        self.assertNotEqual(proc.returncode, 0)
+        err = self._stderr_diag(proc, "python3_missing")
+        self.assertEqual(err["error"], "python3_missing")
+        self.assertIn("python3", err["why"])
+        self.assertIn("python3", err["fix"])
+        self.assertFalse((self.home / ".local" / "bin" / "tk").exists())
+
+    def test_missing_gh_warns_and_continues(self) -> None:
+        proc = self._install({"PATH": self._isolated_path(include=("python3",))})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["installed"])
+        err = self._stderr_diag(proc, "gh_missing")
+        self.assertEqual(err["error"], "gh_missing")
+        self.assertIn("gh", err["why"])
+        self.assertIn("gh", err["fix"])
+        self._assert_skill_link(self.home / ".agents" / "skills" / "agent-toolkit")
+
+    def test_default_install_does_not_change_hooks_path(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "core.hooksPath", "keep-me"],
+            check=True,
+            capture_output=True,
+        )
+        proc = self._install()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(_hooks_path(self.repo), "keep-me")
+        self.assertNotIn("hooksPath", payload)
+        hint = self._stderr_diag(proc, "hooksPath_unchanged")
+        self.assertIn("core.hooksPath", hint["why"] + hint["fix"])
+        self.assertIn(".githooks", hint["fix"])
+
+    def test_default_install_leaves_unset_hooks_path(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.repo, check=True, capture_output=True)
+        self.assertIsNone(_hooks_path(self.repo))
+        payload = self._payload()
+        self.assertIsNone(_hooks_path(self.repo))
+        self.assertNotIn("hooksPath", payload)
