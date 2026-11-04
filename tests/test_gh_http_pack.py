@@ -1,4 +1,4 @@
-"""Seams for gh.pr-diff-digest, gh.pr-failure-digest, gh.pr-overview, and http.health-probe."""
+"""Seams for gh.pr-diff-digest, gh.pr-failure-digest, and http.health-probe."""
 
 import json
 import os
@@ -13,9 +13,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-
-from lib.catalog import load_chain
-from lib.runner import run_chain
 
 _VIEW = {
     "number": 7,
@@ -245,28 +242,21 @@ class PrDiffDigestTests(unittest.TestCase):
         self.assertEqual(error["fix"], "install gh: https://cli.github.com")
 
 
-class PrOverviewChainTests(unittest.TestCase):
-    def test_chain_picks_overview_keys(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "gh"
-            fake.write_text(_FAKE_GH, encoding="utf-8")
-            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-            previous = os.environ.get("PATH", "")
-            os.environ["PATH"] = str(fake.parent) + os.pathsep + previous
-            try:
-                item = load_chain(ROOT / "chains/gh.pr-overview.json")
-                code, stdout, stderr = run_chain(ROOT, item, {"--repo": "cli/cli", "--pr": "7"})
-            finally:
-                os.environ["PATH"] = previous
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(
-            set(payload),
-            {"repo", "pr", "title", "state", "files_changed", "additions", "deletions", "files"},
+class PrOverviewFindTests(unittest.TestCase):
+    def test_find_pr_overview_surfaces_diff_digest(self) -> None:
+        env = os.environ.copy()
+        env["TK_NO_TELEMETRY"] = "1"
+        env.pop("TK_STATE_DIR", None)
+        proc = subprocess.run(
+            [str(ROOT / "tk"), "find", "pr", "overview"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
         )
-        self.assertEqual(payload["title"], "Fix parser")
-        self.assertEqual(len(payload["files"]), 2)
-        self.assertNotIn("truncated", payload)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("gh.pr-diff-digest", proc.stdout)
+        self.assertNotIn("gh.pr-overview", proc.stdout)
 
 
 class HealthProbeTests(unittest.TestCase):
