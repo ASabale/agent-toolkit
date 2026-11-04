@@ -614,7 +614,12 @@ def _dry_run_plan_error(payload: object, safety: str) -> str | None:
     return None
 
 
-def _dry_run_error(path: Path, args: list[dict], safety: str = "") -> str | None:
+def _dry_run_error(
+    path: Path,
+    args: list[dict],
+    safety: str = "",
+    root_dir: Path | None = None,
+) -> str | None:
     env = os.environ.copy()
     for key in list(env):
         if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
@@ -625,6 +630,10 @@ def _dry_run_error(path: Path, args: list[dict], safety: str = "") -> str | None
             env_var = str(arg.get("env_var") or "")
             if env_var:
                 env[env_var] = _dummy(str(arg.get("type") or "string"))
+    root = str(root_dir if root_dir is not None else path.resolve().parents[2])
+    env["TK_ROOT_DIR"] = root
+    prior_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = root if not prior_pythonpath else root + os.pathsep + prior_pythonpath
 
     def invoke(cwd: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -638,12 +647,10 @@ def _dry_run_error(path: Path, args: list[dict], safety: str = "") -> str | None
         )
 
     try:
-        if safety in {"mutating", "destructive"}:
-            with tempfile.TemporaryDirectory() as scratch:
+        with tempfile.TemporaryDirectory() as scratch:
+            if safety in {"mutating", "destructive"}:
                 env["HOME"] = scratch
-                proc = invoke(scratch)
-        else:
-            proc = invoke(str(path.parent))
+            proc = invoke(scratch)
     except subprocess.TimeoutExpired:
         return "dry-run timed out"
     except OSError as exc:
@@ -961,6 +968,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                         path,
                         item.get("args") or [],
                         str(item.get("safety") or ""),
+                        root_dir=root_dir,
                     )
                     if dry:
                         errors.append(dry)
