@@ -1,6 +1,6 @@
 # 0004 — Multi-Agent Coordination Protocol
 
-On 2026-11-04, pull request #25 proposed a coordination protocol against base `ASabale/agent-toolkit@7daa9fa`. The rules live in [`COORDINATION.md`](../../COORDINATION.md). This record states why the protocol exists; it does not restate the checklist.
+On 2026-11-04, pull request #25 proposed a coordination protocol against base `ASabale/agent-toolkit@d4ad154`. The rules live in [`COORDINATION.md`](../../COORDINATION.md). This record states why the protocol exists; it does not restate the checklist.
 
 ## Why coordination is needed
 
@@ -16,7 +16,7 @@ On 2026-11-04 the `needs-review` label existed. Cross-team questions go to issue
 
 ## How the protocol serves VISION.md
 
-On 2026-11-04, [`VISION.md`](../../VISION.md) at `ASabale/agent-toolkit@7daa9fa` required minimum cognitive load, minimum token spend, and subtract-to-grow. One protocol file, existing GitHub primitives, and a single checklist keep coordination cheap and prevent the same rules from drifting in three places.
+On 2026-11-04, [`VISION.md`](../../VISION.md) at `ASabale/agent-toolkit@d4ad154` required minimum cognitive load, minimum token spend, and subtract-to-grow. One protocol file, existing GitHub primitives, and a single checklist keep coordination cheap and prevent the same rules from drifting in three places.
 
 ## Related
 
