@@ -87,11 +87,20 @@ def main() -> int:
         return fail("missing_flag", "TK_ARG_REPO is required", "tk run git.sync --repo <path>", 2)
     try:
         current = current_branch(repo)
-        if current == "main":
+        create = f"git checkout -b fix/sync && tk run git.sync --repo {repo}"
+        if current == "HEAD" or not current:
             return fail(
-                "on_main",
-                "git.sync refuses to mutate main; every change goes through a feature-branch pull request",
-                f"git checkout -b <feature-branch> && tk run git.sync --repo {repo}",
+                "detached_head",
+                "git.sync needs a named feature branch; HEAD is detached",
+                create,
+                2,
+            )
+        if current == "main" or current == base:
+            error = "on_main" if current == "main" else "on_base"
+            return fail(
+                error,
+                f"git.sync refuses to mutate {current}; every change goes through a feature-branch pull request",
+                create,
                 2,
             )
         fetched = git(repo, "fetch", remote, base)
