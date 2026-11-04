@@ -82,6 +82,7 @@ class GitSyncTests(unittest.TestCase):
             _ok(clone_a, "add", "shared.txt")
             _ok(clone_a, "commit", "-m", "ahead on a")
             _ok(clone_a, "push", "origin", "main")
+            _ok(clone_b, "checkout", "-b", "feature")
             dirty = clone_b / "local.txt"
             dirty.write_text("keep\ndirty\n", encoding="utf-8")
             proc = _run(
@@ -108,6 +109,7 @@ class GitSyncTests(unittest.TestCase):
             _ok(clone_a, "add", "shared.txt")
             _ok(clone_a, "commit", "-m", "a edit")
             _ok(clone_a, "push", "origin", "main")
+            _ok(clone_b, "checkout", "-b", "feature")
             (clone_b / "shared.txt").write_text("from-b\n", encoding="utf-8")
             _ok(clone_b, "add", "shared.txt")
             _ok(clone_b, "commit", "-m", "b edit")
@@ -116,7 +118,7 @@ class GitSyncTests(unittest.TestCase):
             self.assertIn("rebase_conflict", proc.stderr)
             self.assertEqual(proc.stdout.strip(), "")
             head = _git(clone_b, "symbolic-ref", "--short", "HEAD")
-            self.assertEqual(head.stdout.strip(), "main")
+            self.assertEqual(head.stdout.strip(), "feature")
             rebase = _git(clone_b, "rev-parse", "--git-path", "rebase-merge")
             path = Path(rebase.stdout.strip())
             if not path.is_absolute():

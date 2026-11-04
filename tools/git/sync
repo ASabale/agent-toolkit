@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # @tk-name: git.sync
-# @tk-summary: Fetch and rebase-sync a git working tree with its remote branch safely
+# @tk-summary: Rebase the current feature branch onto origin/main and push it
 # @tk-safety: mutating
 # @tk-arg: --repo | required | string | Path to the git working tree
 # @tk-arg: --remote | optional | string | Remote name to sync with (default: origin)
-# @tk-arg: --branch | optional | string | Branch name to sync (default: main)
-# @tk-output: json | {repo, remote, branch, status, ahead, behind, rebased}
-# @tk-example: tk run git.sync --repo . --remote origin --branch main
+# @tk-arg: --branch | optional | string | Base branch to rebase onto (default: main)
+# @tk-output: json | {repo, remote, branch, base, status, ahead, behind, rebased, pushed}
+# @tk-example: tk run git.sync --repo .
 # @tk-verified: 2026-11-04
 
 import json
@@ -30,8 +30,8 @@ def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def counts(repo: str, remote: str, branch: str) -> tuple[int, int] | None:
-    probe = git(repo, "rev-list", "--left-right", "--count", f"HEAD...{remote}/{branch}")
+def counts(repo: str, remote: str, base: str) -> tuple[int, int] | None:
+    probe = git(repo, "rev-list", "--left-right", "--count", f"HEAD...{remote}/{base}")
     if probe.returncode != 0:
         return None
     parts = probe.stdout.split()
@@ -40,107 +40,104 @@ def counts(repo: str, remote: str, branch: str) -> tuple[int, int] | None:
     return int(parts[0]), int(parts[1])
 
 
+def fail(error: str, why: str, fix: str, code: int = 1) -> int:
+    return emit({"error": error, "why": why, "fix": fix}, code)
+
+
+def current_branch(repo: str) -> str:
+    head = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    return head.stdout.strip() if head.returncode == 0 else ""
+
+
+def dry_run_payload(repo: str, remote: str, base: str) -> dict:
+    return {
+        "dry_run": True,
+        "repo": repo,
+        "remote": remote,
+        "base": base,
+        "branch": "<current-feature-branch>",
+        "plan": [
+            f"fetch {remote}/{base}",
+            f"rebase current feature branch onto {remote}/{base}",
+            f"push current feature branch to {remote} (refuse if on main)",
+        ],
+    }
+
+
+def rebase_onto(repo: str, remote: str, base: str) -> tuple[tuple[int, int] | None, str, str]:
+    pulled = git(repo, "pull", "--rebase", "--autostash", remote, base)
+    if pulled.returncode != 0:
+        git(repo, "rebase", "--abort")
+        why = (pulled.stderr or pulled.stdout).strip() or "rebase failed"
+        return None, "rebase_conflict", why
+    pair = counts(repo, remote, base)
+    if pair is None:
+        return None, "git_failed", "rebase succeeded but ahead/behind could not be recomputed"
+    return pair, "", ""
+
+
 def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     remote = os.environ.get("TK_ARG_REMOTE") or "origin"
-    branch = os.environ.get("TK_ARG_BRANCH") or "main"
+    base = os.environ.get("TK_ARG_BRANCH") or "main"
+    retry = f"tk run git.sync --repo {repo or '<git-dir>'}"
     if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit({"dry_run": True, "repo": repo, "remote": remote, "branch": branch})
+        return emit(dry_run_payload(repo, remote, base))
     if not repo:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_REPO is required",
-                "fix": "tk run git.sync --repo <path>",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_REPO is required", "tk run git.sync --repo <path>", 2)
     try:
-        fetched = git(repo, "fetch", remote, branch)
+        current = current_branch(repo)
+        if current == "main":
+            return fail(
+                "on_main",
+                "git.sync refuses to mutate main; every change goes through a feature-branch pull request",
+                f"git checkout -b <feature-branch> && tk run git.sync --repo {repo}",
+                2,
+            )
+        fetched = git(repo, "fetch", remote, base)
         if fetched.returncode != 0:
-            return emit(
-                {
-                    "error": "git_failed",
-                    "why": fetched.stderr.strip() or "git fetch failed",
-                    "fix": "tk run git.sync --repo <git-dir> --remote origin --branch main",
-                },
-                1,
-            )
-        pair = counts(repo, remote, branch)
+            return fail("git_failed", fetched.stderr.strip() or "git fetch failed", retry)
+        pair = counts(repo, remote, base)
         if pair is None:
-            return emit(
-                {
-                    "error": "git_failed",
-                    "why": f"could not compare HEAD with {remote}/{branch}",
-                    "fix": "tk run git.sync --repo <git-dir> --remote origin --branch main",
-                },
-                1,
-            )
+            return fail("git_failed", f"could not compare HEAD with {remote}/{base}", retry)
         ahead, behind = pair
-        if behind == 0:
-            return emit(
-                {
-                    "repo": repo,
-                    "remote": remote,
-                    "branch": branch,
-                    "status": "up_to_date",
-                    "ahead": ahead,
-                    "behind": 0,
-                    "rebased": False,
-                }
+        rebased = False
+        if behind != 0:
+            pair, error, why = rebase_onto(repo, remote, base)
+            if pair is None:
+                fix = (
+                    f"resolve the conflicting commit in {repo}, then retry {retry}"
+                    if error == "rebase_conflict"
+                    else retry
+                )
+                return fail(error, why, fix)
+            ahead, behind = pair
+            rebased = True
+        pushed = git(repo, "push", "--force-with-lease", "--set-upstream", remote, current)
+        if pushed.returncode != 0:
+            return fail(
+                "git_failed",
+                pushed.stderr.strip() or "git push failed",
+                f"git push --force-with-lease --set-upstream {remote} {current}",
             )
-        pulled = git(repo, "pull", "--rebase", "--autostash", remote, branch)
-        if pulled.returncode != 0:
-            git(repo, "rebase", "--abort")
-            return emit(
-                {
-                    "error": "rebase_conflict",
-                    "why": (pulled.stderr or pulled.stdout).strip() or "rebase failed",
-                    "fix": f"resolve the conflicting commit in {repo}, then retry tk run git.sync --repo {repo}",
-                },
-                1,
-            )
-        pair = counts(repo, remote, branch)
-        if pair is None:
-            return emit(
-                {
-                    "error": "git_failed",
-                    "why": "rebase succeeded but ahead/behind could not be recomputed",
-                    "fix": "tk run git.sync --repo <git-dir> --remote origin --branch main",
-                },
-                1,
-            )
-        ahead, behind = pair
         return emit(
             {
                 "repo": repo,
                 "remote": remote,
-                "branch": branch,
-                "status": "rebased",
+                "branch": current,
+                "base": base,
+                "status": "rebased" if rebased else "up_to_date",
                 "ahead": ahead,
                 "behind": behind,
-                "rebased": True,
+                "rebased": rebased,
+                "pushed": True,
             }
         )
     except subprocess.TimeoutExpired:
         git(repo, "rebase", "--abort")
-        return emit(
-            {
-                "error": "git_failed",
-                "why": "git command timed out",
-                "fix": "tk run git.sync --repo <git-dir> --remote origin --branch main",
-            },
-            1,
-        )
+        return fail("git_failed", "git command timed out", retry)
     except Exception as exc:
-        return emit(
-            {
-                "error": "internal_error",
-                "why": str(exc),
-                "fix": "tk check git.sync",
-            },
-            1,
-        )
+        return fail("internal_error", str(exc), "tk check git.sync")
 
 
 if __name__ == "__main__":
