@@ -176,3 +176,28 @@ Supports:
 2. **Discovery Line Ceiling**: Every item in `tk find` output must be exactly 2 lines (`<name> [<safety>] — <summary>` and `  run: <example>`), with each line `<= 140` characters.
 3. **Historical Wiki Integrity (`wiki.lint`)**: Every file under `wiki/` (except `wiki/index.md`) must be linked from `wiki/index.md`, every relative link in `wiki/**/*.md` must resolve on disk, and every wiki page must contain dated (`YYYY-MM-DD`) and commit-cited (`@<sha>`) historical claims.
 4. **Remote Multi-Agent Sync**: Because multiple agents work on this repo concurrently, on `main` run `git pull --rebase --autostash origin main` before launching a build wave. On a feature branch, run `tk run git.sync --repo .` to rebase onto `origin/main` and push the branch, before launching a build wave and again before pushing.
+
+---
+
+## 4. Tool Admission
+
+[`VISION.md`](VISION.md) Pillar III: tools are born from real usage friction, and every iteration subtracts as well as adds. A pull request that adds a tool under `tools/` or a chain under `chains/` follows both rules in this section. Probation already runs in `lib/evolver.py` (issue #5, pull request #65; issue #16, pull request #72). The five uncited tools and the `unused_tools` check are recorded in [0008 — Tool probation](wiki/decisions/0008-tool-probation.md).
+
+### 4.1 Born from
+
+The pull request description cites an origin for each new tool or chain. An origin is a `search_miss` event, a `run_error` event, an issue, or a real task. The new tool file ships this header line:
+
+```
+# @tk-verified: none
+```
+
+A new chain ships `"verified": "none"`. `tk evolve` promotes a read-only item after `check_item` passes and a `run_ok` is in `state/events.jsonl`. Until that `run_ok`, `tk evolve --no-promote` lists the item in `awaiting_live_run`.
+
+### 4.2 No harness-duplicate tools
+
+Do not build a tool that merely wraps single-file reading, regex code search, directory listing, or AST symbol lookup (`fs.read-slice`, `code.search`, `code.todos`, `md.section`). Claude Code, Cursor, OMP, and Codex already provide native `Read`, `Grep` (`ripgrep`), `Glob`, and `LSP`.
+
+Every new tool in `tools/` passes one admission test:
+
+1. It distills an external service, database, or daemon (`gh`, `sql`, `http`, `docker`, `vercel`) so an MCP server can be turned off, or
+2. It collapses `>= 3` local shell commands into a single low-token JSON payload (`git.branch-digest`, `py.test-digest`, `git.sync`).
