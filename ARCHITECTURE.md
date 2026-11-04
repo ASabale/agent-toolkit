@@ -26,7 +26,7 @@ flowchart LR
 
 | Subcommand | Nature | Contract |
 |---|---|---|
-| `tk find [query]` | Consumer | Ranks matching tools/chains (or lists all if `[query]` omitted) with inline `tk run` usage; logs a `miss` event if empty. |
+| `tk find [query] [--limit <n>] [--namespace <ns>]` | Consumer | Ranks matching tools/chains (or lists all if `[query]` omitted) with inline `tk run` usage. A non-empty query defaults to 5 items (`--limit N` overrides; empty query stays uncapped). `--namespace <ns>` filters by name prefix. A zero-match query writes one stderr JSON line `{"error":"no_match","why":"...","fix":"tk find"}` (`fix` is `tk find --namespace <ns>` when the first query token is an existing namespace), exits 0 with empty stdout, and logs `search_miss`. |
 | `tk run <name> [--flag val ...]` | Consumer | Validates flags against the tool header, executes the tool, emits distilled JSON on `stdout`, and logs telemetry. |
 | `tk info <name>` | Consumer (Optional) | Prints full argument table and safety details only when deeper inspection is needed. |
 | `tk chain <name> [steps...]` | Consumer / Evolver | Runs or saves a deterministic pipeline where step $N$'s JSON output feeds step $N+1$. |
