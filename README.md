@@ -17,10 +17,10 @@ tk find wiki
 tk run wiki.lint --path wiki
 ```
 
-`./install.sh` creates `~/.local/bin` and `~/.agents/skills` if needed, symlinks `tk` and `skills/toolkit` (and `~/.claude/skills/toolkit` when `~/.claude` exists), sets `core.hooksPath` to `.githooks` in this clone, and runs `tk check`. It prints one JSON object:
+`./install.sh` creates `~/.local/bin` and `~/.agents/skills` if needed, symlinks `tk` and `skills/agent-toolkit` (and `~/.claude/skills/agent-toolkit` when `~/.claude` exists), sets `core.hooksPath` to `.githooks` in this clone, and runs `tk check`. It prints one JSON object:
 
 ```text
-{"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/toolkit","skill_links":["$HOME/.agents/skills/toolkit"],"skill_links_skipped":[],"hooksPath":".githooks","check":{"ok":true,"checked":...}}
+{"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/agent-toolkit","skill_links":["$HOME/.agents/skills/agent-toolkit"],"skill_links_skipped":[],"hooksPath":".githooks","check":{"ok":true,"checked":...}}
 ```
 
 `tk find wiki` prints two lines per match (the runnable command is on the second line):
@@ -36,7 +36,7 @@ wiki.lint [read-only] — Report wiki orphans, broken relative links, and pages 
 {"ok":true,"path":"wiki","pages":...,"orphans":[],"broken_links":[],"undated_pages":[]}
 ```
 
-Point the harness at `~/.agents/skills/toolkit/SKILL.md` (or `~/.claude/skills/toolkit/SKILL.md`).
+Point the harness at `~/.agents/skills/agent-toolkit/SKILL.md` (or `~/.claude/skills/agent-toolkit/SKILL.md`).
 
 Agents: skip to [For agents](#for-agents).
 
@@ -46,7 +46,7 @@ Agents: skip to [For agents](#for-agents).
 | --- | --- |
 | **tool** | One executable under `tools/` whose `# @tk-*` header is the contract. No sidecar YAML. |
 | **chain** | A saved pipeline in `chains/<name>.json`. Run it with `tk run <name>` like a tool. |
-| **skill pointer** | Compact [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md) kept in context; tool definitions stay on disk. |
+| **skill pointer** | Compact [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md) kept in context; tool definitions stay on disk. |
 | **`tk find`** | Ranks tools and chains by intent and prints a copy-pasteable `tk run` example. |
 | **`tk check`** | Validates headers, flags, dry-run smoke, and catalog integrity. |
 | **`tk evolve`** | Promotes passing unverified read-only items after a live run; reports unused, failing, overlapping, and chain candidates. |
@@ -69,7 +69,7 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 - Create: `tk save` / `tk chain save`, then `tk check <name>`. Invalid drafts are quarantined.
 - Maintain: `tk evolve` (promote + friction report); `tk prune` (archive).
 - Commands: `find`, `info`, `run`, `chain`, `save`, `check`, `evolve`, `prune`.
-- Skill: [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md) (install links `~/.agents/skills/toolkit`, and `~/.claude/skills/toolkit` when `~/.claude` exists).
+- Skill: [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md) (install links `~/.agents/skills/agent-toolkit`, and `~/.claude/skills/agent-toolkit` when `~/.claude` exists).
 - Building this repo: [`AGENTS.md`](AGENTS.md), [`COORDINATION.md`](COORDINATION.md).
 - Contracts: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - Authority: [`VISION.md`](VISION.md). History: [`wiki/index.md`](wiki/index.md).
@@ -77,3 +77,11 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## skills.sh
+
+```sh
+npx skills add ASabale/agent-toolkit
+```
+
+[![skills.sh](https://skills.sh/b/ASabale/agent-toolkit)](https://skills.sh/ASabale/agent-toolkit)
