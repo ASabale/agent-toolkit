@@ -7,16 +7,15 @@
 # @tk-example: tk run git.branch-digest --repo .
 # @tk-verified: 2026-11-03
 
-import json
-import os
 import subprocess
 import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_str, dry_run_ok, emit, fail, is_dry_run
 
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
+_FIX = "tk run git.branch-digest --repo <path>"
+_FIX_REPO = "tk run git.branch-digest --repo <git-dir>"
 
 
 def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -29,37 +28,25 @@ def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def main() -> int:
-    repo = os.environ.get("TK_ARG_REPO", "")
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit(
-            {
-                "dry_run": True,
-                "repo": repo or "example",
-                "branch": None,
-                "ahead": None,
-                "behind": None,
-                "dirty": None,
-                "detached": None,
-                "upstream": None,
-            }
+    repo = arg_str("REPO")
+    if is_dry_run():
+        return dry_run_ok(
+            repo=repo or "example",
+            branch=None,
+            ahead=None,
+            behind=None,
+            dirty=None,
+            detached=None,
+            upstream=None,
         )
     if not repo:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_REPO is required",
-                "fix": "tk run git.branch-digest --repo <path>",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_REPO is required", _FIX, 2)
     probe = git(repo, "rev-parse", "--is-inside-work-tree")
     if probe.returncode != 0 or probe.stdout.strip() != "true":
-        return emit(
-            {
-                "error": "not_a_repo",
-                "why": probe.stderr.strip() or f"{repo} is not a git working tree",
-                "fix": "tk run git.branch-digest --repo <git-dir>",
-            },
+        return fail(
+            "not_a_repo",
+            probe.stderr.strip() or f"{repo} is not a git working tree",
+            _FIX_REPO,
             1,
         )
     head = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
@@ -119,41 +106,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except subprocess.TimeoutExpired:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "timeout",
-                    "why": "git timed out after 30s",
-                    "fix": "tk run git.branch-digest --repo <git-dir>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("timeout", "git timed out after 30s", _FIX_REPO))
     except FileNotFoundError as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "not_found",
-                    "why": f"{exc.filename or 'git'} not found",
-                    "fix": "tk run git.branch-digest --repo <git-dir>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("not_found", f"{exc.filename or 'git'} not found", _FIX_REPO))
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run git.branch-digest --repo <git-dir>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX_REPO))

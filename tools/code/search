@@ -15,17 +15,17 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, arg_str, dry_run_ok, emit, fail, is_dry_run
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
 _DEFAULT_LIMIT = 30
 _TEXT_CAP = 160
 _MAX_DEFAULT_BYTES = 2048
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
+_FIX = "tk run code.search --path <path> --pattern <regex>"
+_FIX_LIMIT = "tk run code.search --path <path> --pattern <regex> --limit 30"
 
 
 def _iter_files(root: str):
@@ -117,82 +117,27 @@ def search(root: str, pattern: str, glob: str, limit: int) -> dict:
 
 
 def main() -> int:
-    path = os.environ.get("TK_ARG_PATH", "")
-    pattern = os.environ.get("TK_ARG_PATTERN", "")
-    glob = os.environ.get("TK_ARG_GLOB") or "all"
+    path = arg_str("PATH")
+    pattern = arg_str("PATTERN")
+    glob = arg_str("GLOB", "all")
     limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
+    if is_dry_run():
         try:
             limit = int(limit_raw)
         except ValueError:
             limit = _DEFAULT_LIMIT
-        return emit(
-            {
-                "dry_run": True,
-                "path": path,
-                "pattern": pattern,
-                "glob": glob,
-                "limit": limit,
-            }
-        )
+        return dry_run_ok(path=path, pattern=pattern, glob=glob, limit=limit)
     if not path:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_PATH is required",
-                "fix": "tk run code.search --path <path> --pattern <regex>",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_PATH is required", _FIX, 2)
     if not pattern:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_PATTERN is required",
-                "fix": "tk run code.search --path <path> --pattern <regex>",
-            },
-            2,
-        )
-    try:
-        limit = int(limit_raw)
-    except ValueError:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": f"limit is not an int: {limit_raw}",
-                "fix": "tk run code.search --path <path> --pattern <regex> --limit 30",
-            },
-            2,
-        )
-    if limit < 0:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "limit must be >= 0",
-                "fix": "tk run code.search --path <path> --pattern <regex> --limit 30",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_PATTERN is required", _FIX, 2)
+    limit = arg_int("LIMIT", _DEFAULT_LIMIT, min_val=0, fix=_FIX_LIMIT)
     try:
         re.compile(pattern)
     except re.error as exc:
-        return emit(
-            {
-                "error": "invalid_regex",
-                "why": str(exc),
-                "fix": "tk run code.search --path <path> --pattern <regex>",
-            },
-            2,
-        )
+        return fail("invalid_regex", str(exc), _FIX, 2)
     if not os.path.exists(path):
-        return emit(
-            {
-                "error": "not_found",
-                "why": f"{path} does not exist",
-                "fix": "tk run code.search --path <path> --pattern <regex>",
-            },
-            1,
-        )
+        return fail("not_found", f"{path} does not exist", _FIX, 1)
     payload = search(path, pattern, glob, limit)
     # The 2 KB cap applies to the default limit of 30. An explicit --limit
     # above 30 is honored in full and is not clamped to 30.
@@ -205,15 +150,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run code.search --path <path> --pattern <regex>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))

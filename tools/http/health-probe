@@ -8,21 +8,18 @@
 # @tk-example: tk run http.health-probe --urls https://example.com --timeout 5
 # @tk-verified: 2026-11-04
 
-import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, arg_str, dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run http.health-probe --urls https://example.com --timeout 5"
-
-
-def emit(payload: dict, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
 
 
 def split_urls(raw: str) -> list[str]:
@@ -68,27 +65,16 @@ def probe(url: str, timeout: int) -> dict:
 
 
 def main() -> int:
-    urls_raw = os.environ.get("TK_ARG_URLS", "")
+    urls_raw = arg_str("URLS")
     timeout_raw = os.environ.get("TK_ARG_TIMEOUT") or "5"
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
+    if is_dry_run():
         urls = split_urls(urls_raw) or ["example"]
         timeout = int(timeout_raw) if str(timeout_raw).lstrip("-").isdigit() else 5
-        return emit({"dry_run": True, "urls": urls, "timeout": timeout})
+        return dry_run_ok(urls=urls, timeout=timeout)
     urls = split_urls(urls_raw)
     if not urls:
-        return emit(
-            {"error": "missing_flag", "why": "TK_ARG_URLS is required", "fix": _FIX},
-            2,
-        )
-    try:
-        timeout = int(timeout_raw)
-    except ValueError:
-        return emit(
-            {"error": "invalid_flag", "why": f"timeout is not an int: {timeout_raw}", "fix": _FIX},
-            2,
-        )
-    if timeout < 1:
-        return emit({"error": "invalid_flag", "why": "timeout must be >= 1", "fix": _FIX}, 2)
+        return fail("missing_flag", "TK_ARG_URLS is required", _FIX, 2)
+    timeout = arg_int("TIMEOUT", 5, fix=_FIX)
     results = [probe(url, timeout) for url in urls]
     healthy = sum(1 for row in results if row["ok"])
     return emit(
@@ -106,11 +92,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {"error": "tool_error", "why": str(exc), "fix": _FIX},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))
