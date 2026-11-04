@@ -74,7 +74,10 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   3. `example` starts with `tk run <name>` and includes every required `--flag`.
   4. Syntax check passes (`bash -n` for `sh`/`bash` shebang; `py_compile` for `python` shebang).
   5. No duplicate `--flag` names in `args`, any `(default: X)` value conforms to the declared arg `type`, and every `TK_ARG_<NAME>` referenced in the tool's non-comment script body is declared in `args` (`undeclared arg env var in script: TK_ARG_<NAME>`).
-  6. Dry-run smoke check: running the tool with `TK_DRY_RUN=1` and synthetic dummy values for required flags (`"example"` for string, `"1"` for int/float, `"true"` for bool) exits `0` and produces valid JSON on `stdout`.
+  6. Dry-run guard and smoke check:
+     - A `mutating` or `destructive` tool must mention `TK_DRY_RUN` on a non-comment line. Otherwise `check_item` records `<safety> tool must branch on TK_DRY_RUN` and does **not** execute the file. `tk save` and `tk evolve` call `check_item`, so an unguarded non-read-only tool is never launched by `tk check` / `tk save` / `tk evolve`. `tk run <name> --dry-run` on one returns `{"error":"dry_run_unsupported","why":"<safety> tool must branch on TK_DRY_RUN","fix":"tk check <name>"}` without executing it.
+     - When the guard passes, the tool is run with `TK_DRY_RUN=1` and synthetic dummy values for required flags (`"example"` for string, `"1"` for int/float, `"true"` for bool). For `mutating` / `destructive`, `cwd` and `HOME` are a fresh `tempfile.TemporaryDirectory()`. The process must exit `0` and print valid JSON on `stdout`.
+     - For `mutating` / `destructive`, that JSON must be an object with `"dry_run": true` and a non-empty `"plan"` list (`{"dry_run":true,"plan":[...]}`). Read-only tools keep the prior smoke (exit `0`, valid JSON) and are not required to emit `plan`.
   7. For chains:
      - Every step's `"tool"` exists in `discover_catalog(root_dir)`.
      - Every step's `args` keys are declared `--flags` on that step's target tool (rejecting unknown step flags at check time).

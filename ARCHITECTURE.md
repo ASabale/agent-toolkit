@@ -86,8 +86,10 @@ The toolkit evolves from real agent work rather than speculative upfront design:
    - `search_miss`: Agent searched `tk find` for an intent not yet covered.
    - `run_error`: Tool failed or rejected arguments.
    - `tool_saved`: Agent created a draft tool via `tk save` (`@tk-verified: none`).
-2. **Verify (`tk check`)**:
-   - Checks header fields, required flag coverage, output compactness, and `--dry-run` behavior.
+2. **Verify (`tk check`)** (`ASabale/agent-toolkit@9c0f0f6`, PR #79):
+   - Checks header fields, required flag coverage, and output compactness.
+   - Guard: a `mutating` or `destructive` tool with no non-comment `TK_DRY_RUN` reference fails with `<safety> tool must branch on TK_DRY_RUN` and is never executed.
+   - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). Stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
 3. **Promote (`tk evolve`)**:
    - **Read-only (`@tk-safety: read-only`)**: Auto-verified via live/smoke execution and marked `@tk-verified: <date>`.
    - **Mutating (`@tk-safety: mutating`)**: Verifies `--dry-run` output and prompts human/agent confirmation before marking verified.
