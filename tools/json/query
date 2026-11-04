@@ -8,6 +8,8 @@
 # @tk-example: tk run json.query --expr items[*].name --limit 20
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import json
 import os
 import sys

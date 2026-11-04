@@ -77,6 +77,7 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 - Commands: `find`, `info`, `run`, `chain`, `save`, `check`, `evolve`, `prune`.
 - Skill: [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md) (install links `~/.agents/skills/agent-toolkit`, and `~/.claude/skills/agent-toolkit` when `~/.claude` exists).
 - Building this repo: [`AGENTS.md`](AGENTS.md), [`COORDINATION.md`](COORDINATION.md).
+- Feedback from real use: [open a Feedback issue](https://github.com/ASabale/agent-toolkit/issues/new?template=feedback.yml). Say what you ran and what happened. Agents keep it only when it fits [`VISION.md`](VISION.md).
 - Contracts: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - Authority: [`VISION.md`](VISION.md). History: [`wiki/index.md`](wiki/index.md).
 

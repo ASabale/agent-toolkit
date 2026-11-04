@@ -18,7 +18,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
    - All errors, warnings, and diagnostics go exclusively to `stderr` as single-line JSON with `error`, `why`, and `fix`.
 3. **Quarantine on Save**: `tk save` and `tk chain save` must run `check_item` before completing. If validation fails, the draft file must be removed immediately so an invalid tool or chain never pollutes the catalog.
 4. **Telemetry Never Breaks Execution**: `log_event` in `lib/evolver.py` must wrap all file I/O in `try...except Exception:` so a read-only filesystem or missing directory never interrupts `tk find` or `tk run`.
-5. **Zero External Dependencies**: Use Python 3.10+ standard library only (`sys`, `os`, `json`, `re`, `subprocess`, `pathlib`, `shlex`, `datetime`, `unittest`).
+5. **Zero External Dependencies**: Use Python 3.9+ standard library only (`sys`, `os`, `json`, `re`, `subprocess`, `pathlib`, `shlex`, `datetime`, `unittest`). Every Python file that uses PEP 604 unions (`X | Y`), including `tk` and tools, must start with `from __future__ import annotations` so those annotations are not evaluated on 3.9.
 
 ---
 
@@ -172,7 +172,7 @@ Supports:
 
 ## 3. Token Budget, Wiki Integrity & Multi-Agent Sync Gates
 
-1. **Idle Skill Ceiling**: `skills/agent-toolkit/SKILL.md` must never exceed `45` lines or `1,800` bytes.
+1. **Idle Skill Ceiling**: `skills/agent-toolkit/SKILL.md` must never exceed `51` lines or `2,700` bytes. The room above the original 45-line / 1,800-byte cap is the migrate-off-MCP section and the one-line Feedback issue pointer added on 2026-11-04.
 2. **Discovery Line Ceiling**: Every item in `tk find` output must be exactly 2 lines (`<name> [<safety>] — <summary>` and `  run: <example>`), with each line `<= 140` characters.
 3. **Historical Wiki Integrity (`wiki.lint`)**: Every file under `wiki/` (except `wiki/index.md`) must be linked from `wiki/index.md`, every relative link in `wiki/**/*.md` must resolve on disk, and every wiki page must contain dated (`YYYY-MM-DD`) and commit-cited (`@<sha>`) historical claims.
 4. **Remote Multi-Agent Sync**: Because multiple agents work on this repo concurrently, on `main` run `git pull --rebase --autostash origin main` before launching a build wave. On a feature branch, run `tk run git.sync --repo .` to rebase onto `origin/main` and push the branch, before launching a build wave and again before pushing.

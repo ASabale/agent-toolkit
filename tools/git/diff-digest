@@ -9,6 +9,8 @@
 # @tk-example: tk run git.diff-digest --repo . --ref HEAD
 # @tk-verified: 2026-11-03
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess

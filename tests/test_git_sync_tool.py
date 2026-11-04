@@ -1,5 +1,7 @@
 """Seam for git.sync: rebase onto a remote branch, or abort on conflict."""
 
+from __future__ import annotations
+
 import json
 import os
 import shlex

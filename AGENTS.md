@@ -44,3 +44,4 @@ Every agent touching this repository must uphold four non-negotiable laws:
    - `tk check` exits `0` with zero contract warnings.
    - All automated tests in `tests/` pass.
    - If the user-facing CLI surface or skill workflow changed, [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md) is updated in the same commit.
+5. **Read usage feedback before new work**: Open issues with the `feedback` label (filed through [`.github/ISSUE_TEMPLATE/feedback.yml`](.github/ISSUE_TEMPLATE/feedback.yml)) are reports from people using `tk`. Read them. Incorporate one only when it serves the three pillars in [`VISION.md`](VISION.md). If it does not, close it and name the pillar it breaks. Do not turn a wish into a speculative tool.

@@ -9,6 +9,8 @@
 # @tk-example: tk run sql.query --db example.db --sql "SELECT 1"
 # @tk-verified: 2026-11-03
 
+from __future__ import annotations
+
 import json
 import os
 import re

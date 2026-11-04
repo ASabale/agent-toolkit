@@ -10,6 +10,8 @@
 # @tk-example: tk run http.json-get --url https://example.com/data.json --keys name --max-bytes 0
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import json
 import os
 import shlex

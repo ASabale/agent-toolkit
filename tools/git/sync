@@ -9,6 +9,8 @@
 # @tk-example: tk run git.sync --repo .
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import json
 import os
 import shlex

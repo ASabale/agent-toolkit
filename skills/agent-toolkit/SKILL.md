@@ -39,3 +39,13 @@ When `tk find` misses:
 ## Rules
 - Distill `stdout`. Named `--flags` only; no positional args; no hardcoded IDs, hosts, or paths.
 - Do not wrap one UNIX command; save tools that collapse steps, filter noise, or enforce safety.
+
+## 3. Migrate off MCP or cli-harness
+
+One real task, one file. Do not paste an MCP schema or a cli-harness yaml sidecar into the repo.
+
+1. `tk find "<intent>"`. If a tool hits, run it and turn that MCP off.
+2. Otherwise save a command that already worked and prints one JSON value: `tk save <ns>.<name> --summary "<one line>" --from-cmd "<command>"`. Plain text is refused.
+3. Named `--flag value` only. No positional args, no `--instance` ordering, and no secrets, hosts, or paths written into the file.
+4. `tk check <ns>.<name>`. A mutating tool must pass `tk run <ns>.<name> --dry-run` and include `"dry_run": true` before you delete the old MCP entry or the yaml-plus-script pair.
+5. Hit friction worth keeping? Open a Feedback issue: `https://github.com/ASabale/agent-toolkit/issues/new?template=feedback.yml`. Say what you ran and what happened. Agents keep it only when it fits `VISION.md`.

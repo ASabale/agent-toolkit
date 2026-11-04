@@ -9,6 +9,8 @@
 # @tk-example: tk run gh.pr-failure-digest --repo cli/cli --pr 1 --log-tail 30
 # @tk-verified: 2026-11-03
 
+from __future__ import annotations
+
 import json
 import os
 import re

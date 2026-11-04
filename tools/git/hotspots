@@ -9,6 +9,8 @@
 # @tk-example: tk run git.hotspots --repo . --max-commits 50 --limit 10
 # @tk-verified: 2026-11-04
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess

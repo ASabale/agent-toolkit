@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """tk — dispatcher for the agent toolkit."""
 
+from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path
