@@ -75,6 +75,10 @@ OVERSIZE_ARRAY_FIXTURE = [
     {"id": index, "name": f"item-{index:02d}", "desc": "y" * 80}
     for index in range(50)
 ]
+BULK_ARRAY_FIXTURE = [
+    {"id": index, "name": f"n{index}", "desc": "y" * 8}
+    for index in range(2000)
+]
 
 
 class _RepoHandler(BaseHTTPRequestHandler):
@@ -86,6 +90,8 @@ class _RepoHandler(BaseHTTPRequestHandler):
             body = json.dumps(OVERSIZE_REPO_FIXTURE).encode("utf-8")
         elif path == "/list":
             body = json.dumps(OVERSIZE_ARRAY_FIXTURE).encode("utf-8")
+        elif path == "/bulk":
+            body = json.dumps(BULK_ARRAY_FIXTURE).encode("utf-8")
         elif path == "/tiny":
             body = json.dumps({"ok": True, "n": 1}).encode("utf-8")
         elif path == "/items":
@@ -193,6 +199,20 @@ class JsonGetDistillTests(unittest.TestCase):
     def _oversize_array_url(self) -> str:
         return f"{self.base}/list?a=1&b=2"
 
+    def _bulk_array_url(self) -> str:
+        return f"{self.base}/bulk?a=1&b=2"
+
+    def _stated_cap(self, fix: str) -> int:
+        argv = shlex.split(fix)
+        if "--max-bytes" in argv:
+            value = int(argv[argv.index("--max-bytes") + 1])
+            self.assertGreater(value, 0, fix)
+            return value
+        for token in argv:
+            if token.startswith("TK_MAX_OUTPUT_BYTES="):
+                return int(token.split("=", 1)[1])
+        return _MAX_DEFAULT_BYTES
+
     def _run_fix_through_shell(self, fix: str) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         for key in list(env):
@@ -240,11 +260,11 @@ class JsonGetDistillTests(unittest.TestCase):
         self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
         raw = healed.stdout.encode("utf-8")
         narrowed = json.loads(healed.stdout)
-        under_cap = len(raw.rstrip(b"\n")) <= _MAX_DEFAULT_BYTES
-        not_truncated = not (isinstance(narrowed, dict) and narrowed.get("truncated"))
-        self.assertTrue(
-            under_cap or not_truncated,
-            f"fix {payload['fix']!r} returned {len(raw)} B truncated={isinstance(narrowed, dict) and narrowed.get('truncated')}",
+        cap = self._stated_cap(payload["fix"])
+        self.assertLessEqual(
+            len(raw.rstrip(b"\n")),
+            cap,
+            f"fix {payload['fix']!r} returned {len(raw)} B above stated cap {cap}",
         )
         return {"payload": payload, "keys": keys, "narrowed": narrowed, "raw": raw}
 
@@ -260,6 +280,76 @@ class JsonGetDistillTests(unittest.TestCase):
         self.assertNotEqual(array_case["keys"], "all")
         if isinstance(array_case["narrowed"], dict):
             self.assertNotIn("truncated", array_case["narrowed"])
+
+    def test_two_thousand_item_fix_succeeds_within_stated_cap(self) -> None:
+        id_only = [{"id": item["id"]} for item in BULK_ARRAY_FIXTURE]
+        id_size = len(json.dumps(id_only, separators=(",", ":")).encode("utf-8"))
+        self.assertEqual(len(BULK_ARRAY_FIXTURE), 2000)
+        self.assertGreater(id_size, _MAX_DEFAULT_BYTES)
+        url = self._bulk_array_url()
+        proc = _run(JSON_GET, {"TK_ARG_URL": url})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertLessEqual(len(proc.stdout.encode("utf-8").rstrip(b"\n")), _MAX_DEFAULT_BYTES)
+        self.assertTrue(payload["truncated"])
+        self.assertIn(shlex.quote(url), payload["fix"])
+        cap = self._stated_cap(payload["fix"])
+        self.assertGreater(cap, _MAX_DEFAULT_BYTES, payload["fix"])
+        argv = shlex.split(payload["fix"])
+        self.assertTrue(
+            "--max-bytes" in argv or any(token.startswith("TK_MAX_OUTPUT_BYTES=") for token in argv),
+            payload["fix"],
+        )
+        healed = self._run_fix_through_shell(payload["fix"])
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+        raw = healed.stdout.encode("utf-8").rstrip(b"\n")
+        self.assertLessEqual(len(raw), cap, payload["fix"])
+        narrowed = json.loads(healed.stdout)
+        self.assertIsInstance(narrowed, list)
+        self.assertEqual(len(narrowed), 2000)
+        self.assertTrue(all(set(item) == {"id"} for item in narrowed))
+        self.assertEqual(narrowed[0]["id"], 0)
+        self.assertEqual(narrowed[-1]["id"], 1999)
+
+    def test_max_bytes_zero_returns_the_full_document(self) -> None:
+        header = "\n".join(
+            line
+            for line in JSON_GET.read_text(encoding="utf-8").splitlines()
+            if line.startswith("#")
+        )
+        self.assertIn("# @tk-arg: --max-bytes", header)
+        self.assertIn("0 returns the full document", header)
+        example = next(
+            line for line in header.splitlines() if line.startswith("# @tk-example:")
+        )
+        self.assertIn("--max-bytes 0", example)
+
+        direct = _run(
+            JSON_GET,
+            {"TK_ARG_URL": f"{self.base}/repo", "TK_ARG_MAX_BYTES": "0"},
+        )
+        self.assertEqual(direct.returncode, 0, direct.stderr)
+        self.assertEqual(json.loads(direct.stdout), OVERSIZE_REPO_FIXTURE)
+
+        bulk = _run(
+            JSON_GET,
+            {"TK_ARG_URL": f"{self.base}/bulk", "TK_ARG_MAX_BYTES": "0"},
+        )
+        self.assertEqual(bulk.returncode, 0, bulk.stderr)
+        self.assertEqual(json.loads(bulk.stdout), BULK_ARRAY_FIXTURE)
+
+        capped = _run(JSON_GET, {"TK_ARG_URL": self._oversize_query_url()})
+        self.assertEqual(capped.returncode, 0, capped.stderr)
+        payload = json.loads(capped.stdout)
+        self.assertTrue(payload["truncated"])
+        self.assertIn("--max-bytes 0", payload["hint"])
+        hint_argv = shlex.split(payload["hint"])
+        self.assertEqual(hint_argv[hint_argv.index("--url") + 1], self._oversize_query_url())
+        self.assertEqual(hint_argv[hint_argv.index("--max-bytes") + 1], "0")
+        self.assertIn(shlex.quote(self._oversize_query_url()), payload["hint"])
+        healed = self._run_fix_through_shell(payload["hint"])
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+        self.assertEqual(json.loads(healed.stdout), OVERSIZE_REPO_FIXTURE)
 
 
 class CodeSearchBoundTests(unittest.TestCase):
@@ -305,6 +395,25 @@ class CodeSearchBoundTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["count"], 2)
         self.assertEqual(payload["truncated"], 38)
+
+    def test_explicit_limit_above_30_is_honored(self) -> None:
+        tmp = self._fixture()
+        self.addCleanup(tmp.cleanup)
+        proc = _run(
+            SEARCH,
+            {
+                "TK_ARG_PATH": tmp.name,
+                "TK_ARG_PATTERN": "needle",
+                "TK_ARG_LIMIT": "40",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "")
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["count"], 40)
+        self.assertEqual(len(payload["matches"]), 40)
+        self.assertEqual(payload["truncated"], 0)
+        self.assertNotIn("limit_clamped_to", payload)
 
 
 if __name__ == "__main__":
