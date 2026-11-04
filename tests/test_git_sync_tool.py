@@ -384,7 +384,7 @@ class GitSyncTests(unittest.TestCase):
             self.assertNotIn("tk run git.sync", fix)
             self.assertIn(shlex.quote(str(missing)), fix)
             commands = _split_and(fix)
-            self.assertEqual(commands[-1][:3], ["git", "-C", str(missing)])
+            self.assertEqual(commands[-1], ["git", "init", "-b", "fix/sync", "--", str(missing)])
             self.assertFalse((missing / ".git").exists())
             outside = root / "elsewhere"
             outside.mkdir()
@@ -393,6 +393,82 @@ class GitSyncTests(unittest.TestCase):
             self.assertEqual(last.returncode, 0, last.stderr + last.stdout)
             self.assertTrue((missing / ".git").is_dir())
             self.assertFalse((outside / ".git").exists())
+
+    def test_fresh_folder_fixes_advance_until_remote_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "space dir"
+            root.mkdir()
+            folder = root / "fresh repo"
+            folder.mkdir()
+            outside = root / "elsewhere"
+            outside.mkdir()
+            env = {"TK_ARG_REPO": str(folder), "TK_ARG_REMOTE": "origin", "TK_ARG_BRANCH": "main"}
+            seen: list[tuple[str, str, str]] = []
+            for _ in range(6):
+                dry = _run({**env, "TK_DRY_RUN": "1"})
+                real = _run(env)
+                self.assertEqual(real.returncode, 2, real.stdout + real.stderr)
+                self.assertEqual(dry.returncode, real.returncode)
+                self.assertEqual(dry.stdout, real.stdout)
+                self.assertEqual(dry.stderr, real.stderr)
+                payload = json.loads(real.stderr)
+                key = (str(payload["error"]), str(payload["why"]), str(payload["fix"]))
+                self.assertNotIn(key, seen, payload)
+                self.assertNotIn(key[0], [item[0] for item in seen])
+                seen.append(key)
+                self.assertNotIn("user.email", payload["fix"])
+                self.assertNotIn("user.name", payload["fix"])
+                self.assertNotIn("ada@example.com", payload["fix"])
+                if payload["error"] == "no_remote":
+                    break
+                results = _run_fix(str(payload["fix"]), outside)
+                self.assertEqual(results[0].returncode, 0, results[0].stderr + results[0].stdout)
+            else:
+                self.fail(f"refusals did not stop for a remote URL: {seen}")
+            self.assertEqual([item[0] for item in seen], ["not_a_repo", "no_commits", "no_remote"])
+            self.assertIn("fix/sync", seen[1][1])
+            self.assertIn("--allow-empty", seen[1][2])
+            self.assertEqual(
+                _split_and(seen[2][2])[0],
+                ["git", "-C", str(folder), "remote", "add", "origin", "URL"],
+            )
+            self.assertIn("origin", seen[2][1])
+            self.assertIn("retry", seen[2][1])
+            self.assertNotIn("https://", seen[2][2])
+            self.assertNotIn("git@", seen[2][2])
+            author = _git(folder, "log", "-1", "--format=%an %ae")
+            self.assertEqual(author.stdout.strip(), "Ada ada@example.com")
+            self.assertTrue((folder / ".git").is_dir())
+            self.assertFalse((outside / ".git").exists())
+
+    def test_not_a_repo_fix_creates_missing_parent_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "no pe" / "deep repo"
+            outside = root / "elsewhere"
+            outside.mkdir()
+            env = {"TK_ARG_REPO": str(missing)}
+            dry = _run({**env, "TK_DRY_RUN": "1"})
+            real = _run(env)
+            self.assertEqual(real.returncode, 2, real.stdout + real.stderr)
+            self.assertEqual(dry.returncode, real.returncode)
+            self.assertEqual(dry.stderr, real.stderr)
+            payload = json.loads(real.stderr)
+            self.assertEqual(payload["error"], "not_a_repo")
+            fix = str(payload["fix"])
+            self.assertEqual(
+                _split_and(fix)[0],
+                ["git", "init", "-b", "fix/sync", "--", str(missing)],
+            )
+            self.assertNotIn("git -C ", fix)
+            self.assertFalse(missing.parent.exists())
+            results = _run_fix(fix, outside)
+            self.assertEqual(results[-1].returncode, 0, results[-1].stderr + results[-1].stdout)
+            self.assertTrue((missing / ".git").is_dir())
+            self.assertFalse((outside / ".git").exists())
+            follow = _run(env)
+            self.assertEqual(follow.returncode, 2, follow.stdout + follow.stderr)
+            self.assertEqual(json.loads(follow.stderr)["error"], "no_commits")
 
     def test_dry_run_detached_head_matches_real_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -495,6 +571,56 @@ class GitSyncTests(unittest.TestCase):
                 path = clone_b / path
             self.assertFalse(path.exists())
             self.assertEqual((clone_b / "shared.txt").read_text(encoding="utf-8"), "from-b\n")
+
+    def test_conflict_fix_restarts_rebase_for_the_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _origin, clone_a, clone_b = _pair(Path(tmp))
+            (clone_a / "shared.txt").write_text("from-a\n", encoding="utf-8")
+            _ok(clone_a, "add", "shared.txt")
+            _ok(clone_a, "commit", "-m", "a edit")
+            _ok(clone_a, "push", "origin", "main")
+            _ok(clone_b, "checkout", "-b", "feature")
+            (clone_b / "shared.txt").write_text("from-b\n", encoding="utf-8")
+            _ok(clone_b, "add", "shared.txt")
+            _ok(clone_b, "commit", "-m", "b edit")
+            env = {"TK_ARG_REPO": str(clone_b)}
+            proc = _run(env)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            payload = json.loads(proc.stderr)
+            self.assertEqual(payload["error"], "rebase_conflict")
+            fix = str(payload["fix"])
+            self.assertEqual(_split_and(fix), [["git", "-C", str(clone_b), "rebase", "origin/main"]])
+            self.assertIn("rebase --continue", payload["why"])
+            self.assertIn(" add ", payload["why"])
+            ran = subprocess.run(
+                shlex.split(fix),
+                capture_output=True,
+                text=True,
+                env={**os.environ, **_identity()},
+                check=False,
+            )
+            self.assertNotEqual(ran.returncode, 0, ran.stdout)
+            rebase = _git(clone_b, "rev-parse", "--git-path", "rebase-merge")
+            path = Path(rebase.stdout.strip())
+            if not path.is_absolute():
+                path = clone_b / path
+            self.assertTrue(path.is_dir(), rebase.stdout)
+            dry = _run({**env, "TK_DRY_RUN": "1"})
+            real = _run(env)
+            self.assertEqual(real.returncode, 2, real.stdout + real.stderr)
+            self.assertEqual(dry.returncode, real.returncode)
+            self.assertEqual(dry.stdout, real.stdout)
+            self.assertEqual(dry.stderr, real.stderr)
+            again = json.loads(real.stderr)
+            self.assertEqual(again["error"], "rebase_in_progress")
+            self.assertNotIn("detached_head", real.stderr)
+            self.assertNotIn("rebase_conflict", real.stderr)
+            self.assertEqual(
+                _split_and(str(again["fix"]))[0],
+                ["git", "-C", str(clone_b), "rebase", "--continue"],
+            )
+            self.assertIn("tk run git.sync", again["fix"])
+            self.assertTrue(path.is_dir())
 
 
 if __name__ == "__main__":
