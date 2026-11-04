@@ -84,7 +84,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
      - Every `$step[k]` or `$step[k].<path>` reference satisfies `0 <= k < i`.
      - Dry-run smoke check: running `run_chain(root_dir, item, dummy_required_flags, dry_run=True)` exits `0` and produces valid JSON on `stdout`.
 - **`check_all(root_dir: Path) -> dict`**
-  Runs `check_item` across every item in `discover_catalog(root_dir)` and returns `{"ok": bool, "checked": int, "results": list[dict], "errors": list[str]}`.
+  Runs `check_item` concurrently across every item in `discover_catalog(root_dir)` (using `concurrent.futures.ThreadPoolExecutor` while preserving deterministic catalog key order) and returns `{"ok": bool, "checked": int, "results": list[dict], "errors": list[str]}`.
 
 ---
 
@@ -136,8 +136,9 @@ Supports:
 
 ---
 
-## 3. Token Budget & Wiki Integrity Gates
+## 3. Token Budget, Wiki Integrity & Multi-Agent Sync Gates
 
 1. **Idle Skill Ceiling**: `skills/toolkit/SKILL.md` must never exceed `45` lines or `1,800` bytes.
 2. **Discovery Line Ceiling**: Every item in `tk find` output must be exactly 2 lines (`<name> [<safety>] — <summary>` and `  run: <example>`), with each line `<= 140` characters.
 3. **Historical Wiki Integrity (`wiki.lint`)**: Every file under `wiki/` (except `wiki/index.md`) must be linked from `wiki/index.md`, every relative link in `wiki/**/*.md` must resolve on disk, and every wiki page must contain dated (`YYYY-MM-DD`) and commit-cited (`@<sha>`) historical claims.
+4. **Remote Multi-Agent Sync**: Because multiple agents push to `origin/main`, always run `git pull --rebase --autostash origin main` (or `tk run git.sync --repo .`) before launching a build wave and before pushing.

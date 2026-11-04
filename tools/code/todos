@@ -9,10 +9,12 @@
 # @tk-example: tk run code.todos --path . --tags TODO,FIXME --limit 20
 # @tk-verified: 2026-11-04
 
+import io
 import json
 import os
 import re
 import sys
+import tokenize
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
 _DEFAULT_LIMIT = 30
@@ -59,13 +61,92 @@ def _comment_region(line: str) -> str | None:
     return line[min(hits):]
 
 
+def _other_comment_region(line: str) -> str | None:
+    indexes = [line.find(marker) for marker in ("//", "/*", "--")]
+    hits = [index for index in indexes if index >= 0]
+    if not hits:
+        return None
+    return line[min(hits):]
+
+
+def _is_python(path: str, text: str) -> bool:
+    if path.endswith(".py"):
+        return True
+    lines = text.splitlines()
+    if not lines:
+        return False
+    first = lines[0]
+    return first.startswith("#!") and "python" in first.lower()
+
+
+def _python_comment_index(text: str):
+    comments: dict[int, list[str]] = {}
+    string_lines: set[int] = set()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                comments.setdefault(tok.start[0], []).append(tok.string)
+            elif tok.type == tokenize.STRING:
+                for lineno in range(tok.start[0], tok.end[0] + 1):
+                    string_lines.add(lineno)
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    return comments, string_lines
+
+
+def _tag_pattern(tags: list[str]) -> re.Pattern[str]:
+    return re.compile(
+        r"\b("
+        + "|".join(re.escape(tag) for tag in tags)
+        + r")(?:\([^)]*\))?\s*:\s*(\S.*)"
+    )
+
+
+def _append_match(items: list[dict], rel: str, lineno: int, region: str, pattern: re.Pattern[str]) -> None:
+    if region.strip().startswith("# @tk-"):
+        return
+    match = pattern.search(region)
+    if not match:
+        return
+    message = match.group(2).strip()
+    if not message:
+        return
+    items.append(
+        {
+            "file": rel,
+            "line": lineno,
+            "tag": match.group(1),
+            "text": message,
+        }
+    )
+
+
+def _scan_text(path: str, text: str, rel: str, pattern: re.Pattern[str], items: list[dict]) -> None:
+    parsed = _python_comment_index(text) if _is_python(path, text) else None
+    if parsed is None:
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            region = _comment_region(line)
+            if region is not None:
+                _append_match(items, rel, lineno, region, pattern)
+        return
+    comments, string_lines = parsed
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if lineno in comments:
+            for region in comments[lineno]:
+                _append_match(items, rel, lineno, region, pattern)
+            continue
+        if lineno in string_lines:
+            continue
+        region = _other_comment_region(line)
+        if region is not None:
+            _append_match(items, rel, lineno, region, pattern)
+
+
 def scan(root: str, tags: list[str], limit: int) -> dict:
     if not tags:
         items: list[dict] = []
     else:
-        pattern = re.compile(
-            r"\b(" + "|".join(re.escape(tag) for tag in tags) + r")\b(?:\([^)]*\))?\s*:?\s*(.+)"
-        )
+        pattern = _tag_pattern(tags)
         items = []
         for path in _iter_files(root):
             try:
@@ -78,25 +159,7 @@ def scan(root: str, tags: list[str], limit: int) -> dict:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-            rel = _rel(root, path)
-            for lineno, line in enumerate(text.splitlines(), start=1):
-                region = _comment_region(line)
-                if region is None:
-                    continue
-                match = pattern.search(region)
-                if not match:
-                    continue
-                message = match.group(2).strip()
-                if not message:
-                    continue
-                items.append(
-                    {
-                        "file": rel,
-                        "line": lineno,
-                        "tag": match.group(1),
-                        "text": message,
-                    }
-                )
+            _scan_text(path, text, _rel(root, path), pattern, items)
     kept = items[:limit]
     return {
         "path": root,

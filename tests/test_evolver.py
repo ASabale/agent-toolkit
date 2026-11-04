@@ -124,6 +124,38 @@ class EvolverTests(unittest.TestCase):
         ]
         self.assertTrue(any(event["event"] == "tool_saved" and event["name"] == "demo.echo" for event in events))
 
+    def test_save_tool_file_keeps_header_args_when_adding_arg(self) -> None:
+        source = self.root / "keep.sh"
+        source.write_text(
+            _tool_script(
+                name="demo.keep",
+                summary="Echo a token",
+                safety="read-only",
+                arg_line="--token | required | string | Token to echo",
+                body=(
+                    'if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then\n'
+                    "  printf '%s\\n' '{\"dry_run\":true}'\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "printf '%s\\n' \"{\\\"token\\\":\\\"$TK_ARG_TOKEN\\\"}\""
+                ),
+            ),
+            encoding="utf-8",
+        )
+        code, out, err = save_tool(
+            self.root,
+            "demo.keep",
+            "Echo a token",
+            "read-only",
+            file_path=str(source),
+            args_spec=["--limit | optional | int | Max rows"],
+        )
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(out)["ok"])
+        text = (self.root / "tools" / "demo" / "keep").read_text(encoding="utf-8")
+        self.assertIn("# @tk-arg: --token | required | string | Token to echo", text)
+        self.assertIn("# @tk-arg: --limit | optional | int | Max rows", text)
+
     def test_save_tool_rejects_bad_input_without_writing(self) -> None:
         code, out, err = save_tool(self.root, "demo.echo", "Missing source")
         self.assertEqual(code, 1)

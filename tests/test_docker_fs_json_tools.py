@@ -160,6 +160,24 @@ class JsonDiffTests(unittest.TestCase):
         self.assertEqual(payload["changed"], [{"path": "items[0].name", "left": "x", "right": "z"}])
         self.assertEqual(payload["count"], 6)
 
+    def test_bool_is_not_an_int(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            left = root / "left.json"
+            right = root / "right.json"
+            left.write_text('{"flag": true}', encoding="utf-8")
+            right.write_text('{"flag": 1}', encoding="utf-8")
+            proc = _run(
+                ROOT / "tools/json/diff",
+                {"TK_ARG_LEFT": str(left), "TK_ARG_RIGHT": str(right)},
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertFalse(payload["equal"])
+        self.assertEqual(payload["changed"], [{"path": "flag", "left": True, "right": 1}])
+        self.assertEqual(payload["added"], [])
+        self.assertEqual(payload["removed"], [])
+
     def test_equal_documents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "same.json"
@@ -248,6 +266,20 @@ class ReadSliceTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(proc.stdout, "")
         self.assertEqual(json.loads(proc.stderr)["error"], "invalid_range")
+
+    def test_rejects_binary_file_with_nul(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "blob.bin"
+            path.write_bytes(b"hello\x00world\n")
+            proc = _run(
+                ROOT / "tools/fs/read-slice",
+                {"TK_ARG_PATH": str(path), "TK_ARG_START": "1", "TK_ARG_END": "80"},
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, "")
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "binary_file")
+        self.assertIn(str(path), payload["why"])
 
     def test_dry_run(self) -> None:
         proc = _run(

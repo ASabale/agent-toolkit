@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+# @tk-name: http.health-probe
+# @tk-summary: Probe HTTP(S) URLs for status, latency, and content type
+# @tk-safety: read-only
+# @tk-arg: --urls | required | string | Comma-separated HTTP or HTTPS URLs to probe
+# @tk-arg: --timeout | optional | int | Per-request timeout in seconds (default: 5)
+# @tk-output: json | {all_ok, count, healthy, unhealthy, results:[{url, ok, status, latency_ms, content_type, error}]}
+# @tk-example: tk run http.health-probe --urls https://example.com --timeout 5
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+_FIX = "tk run http.health-probe --urls https://example.com --timeout 5"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def split_urls(raw: str) -> list[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def probe(url: str, timeout: int) -> dict:
+    parsed = urllib.parse.urlparse(url)
+    started = time.perf_counter()
+    status = None
+    content_type = ""
+    error = None
+    ok = False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        error = "url must be http or https"
+    else:
+        request = urllib.request.Request(url, method="GET", headers={"User-Agent": "tk-http-health-probe"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                response.read(256)
+                status = int(response.status)
+                content_type = response.headers.get("Content-Type") or ""
+                ok = 200 <= status < 300
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            content_type = exc.headers.get("Content-Type") or "" if exc.headers else ""
+            ok = 200 <= status < 300
+        except urllib.error.URLError as exc:
+            error = str(exc.reason)
+        except TimeoutError as exc:
+            error = str(exc) or "timed out"
+        except OSError as exc:
+            error = str(exc)
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    return {
+        "url": url,
+        "ok": ok,
+        "status": status,
+        "latency_ms": latency_ms,
+        "content_type": content_type,
+        "error": error,
+    }
+
+
+def main() -> int:
+    urls_raw = os.environ.get("TK_ARG_URLS", "")
+    timeout_raw = os.environ.get("TK_ARG_TIMEOUT") or "5"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        urls = split_urls(urls_raw) or ["example"]
+        timeout = int(timeout_raw) if str(timeout_raw).lstrip("-").isdigit() else 5
+        return emit({"dry_run": True, "urls": urls, "timeout": timeout})
+    urls = split_urls(urls_raw)
+    if not urls:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_URLS is required", "fix": _FIX},
+            2,
+        )
+    try:
+        timeout = int(timeout_raw)
+    except ValueError:
+        return emit(
+            {"error": "invalid_flag", "why": f"timeout is not an int: {timeout_raw}", "fix": _FIX},
+            2,
+        )
+    if timeout < 1:
+        return emit({"error": "invalid_flag", "why": "timeout must be >= 1", "fix": _FIX}, 2)
+    results = [probe(url, timeout) for url in urls]
+    healthy = sum(1 for row in results if row["ok"])
+    return emit(
+        {
+            "all_ok": healthy == len(results),
+            "count": len(results),
+            "healthy": healthy,
+            "unhealthy": len(results) - healthy,
+            "results": results,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

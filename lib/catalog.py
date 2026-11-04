@@ -6,6 +6,7 @@ return empty or error-shaped values instead of raising.
 
 from __future__ import annotations
 
+import concurrent.futures
 import difflib
 import json
 import os
@@ -273,7 +274,50 @@ def _in_namespace(item: dict, namespace: str) -> bool:
     return name == namespace or name.startswith(f"{namespace}.")
 
 
-_SCRIPT_ARG_RE = re.compile(r"\bTK_ARG_([A-Z][A-Z0-9_]*)\b")
+_SHELL_ARG_RE = re.compile(
+    r"(?:\$\{TK_ARG_([A-Z][A-Z0-9_]*)|\$TK_ARG_([A-Z][A-Z0-9_]*))\b"
+)
+_PY_ARG_RE = re.compile(
+    r"""(?:environ\.get|getenv|environ)\s*[\(\[]\s*['"]TK_ARG_([A-Z][A-Z0-9_]*)['"]"""
+)
+
+
+def _strip_unquoted_comment(line: str) -> str:
+    """Drop a trailing `# ...` comment that is outside quotes."""
+    out: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            out.append(char)
+            if char == "\\" and quote == '"' and index + 1 < len(line):
+                out.append(line[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "#":
+            break
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _referenced_arg_names(line: str) -> set[str]:
+    code = _strip_unquoted_comment(line)
+    found: set[str] = set()
+    for braced, bare in _SHELL_ARG_RE.findall(code):
+        found.add(braced or bare)
+    found.update(_PY_ARG_RE.findall(code))
+    return found
 
 
 def _undeclared_arg_env_errors(path: Path, item: dict) -> list[str]:
@@ -290,7 +334,7 @@ def _undeclared_arg_env_errors(path: Path, item: dict) -> list[str]:
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        found.update(_SCRIPT_ARG_RE.findall(line))
+        found.update(_referenced_arg_names(line))
     return [
         f"undeclared arg env var in script: TK_ARG_{name}"
         for name in sorted(found)
@@ -716,7 +760,10 @@ def check_all(root_dir: Path) -> dict:
     root_dir = Path(root_dir)
     try:
         catalog = discover_catalog(root_dir)
-        results = [check_item(root_dir, name) for name in catalog]
+        names = list(catalog)
+        workers = min(8, max(1, len(catalog)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(lambda name: check_item(root_dir, name), names))
         errors = [f"{result['name']}: {err}" for result in results for err in result["errors"]]
         return {
             "ok": all(result["ok"] for result in results) if results else True,

@@ -142,7 +142,11 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
     query = " ".join(query_parts).strip()
     items = catalog.find_items(ROOT, query, limit=limit, namespace=namespace)
     if not items:
-        evolver.log_event(ROOT, "search_miss", {"query": query})
+        evolver.log_event(
+            ROOT,
+            "search_miss",
+            {"query": query or (f"namespace:{namespace}" if namespace else "")},
+        )
     _write_text(catalog.format_find_output(items))
     return 0
 

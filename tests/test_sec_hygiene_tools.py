@@ -68,6 +68,27 @@ class SecretScanTests(unittest.TestCase):
         self.assertEqual(gh["file"], "app.py")
         self.assertEqual(gh["line"], 1)
 
+    def test_specific_rule_suppresses_overlapping_generic_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "cfg.py").write_text(
+                f'api_key = "{GITHUB}"\n',
+                encoding="utf-8",
+            )
+            hidden = root / ".secrets"
+            hidden.mkdir()
+            (hidden / "extra.txt").write_text(f"{GITHUB}\n", encoding="utf-8")
+            proc = _run(SECRET_SCAN, {"TK_ARG_PATH": tmp, "TK_ARG_LIMIT": "25"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn(GITHUB, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(
+            [(row["rule"], row["file"], row["line"]) for row in payload["findings"]],
+            [("github_token", "cfg.py", 1)],
+        )
+        self.assertIn("****", payload["findings"][0]["preview"])
+
     def test_dry_run(self) -> None:
         proc = _run(
             SECRET_SCAN,
@@ -98,6 +119,51 @@ class TodosTests(unittest.TestCase):
             [("TODO", "fix edge case", 1), ("FIXME", "token expiry", 2)],
         )
 
+    def test_ignores_tk_headers_prose_and_string_literals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sample.py").write_text(
+                "\n".join(
+                    [
+                        "# @tk-summary: List TODO, FIXME, and similar tags",
+                        "# See TODO, FIXME, and BUG tags",
+                        "# TODO: real work",
+                        "text = '''",
+                        "# TODO: inside a string",
+                        "'''",
+                        "# FIXME: also real",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            script = root / "tool"
+            script.write_text(
+                "#!/usr/bin/env python3\n"
+                'doc = """\n'
+                "# TODO: shebang string\n"
+                '"""\n'
+                "# BUG: shebang comment\n",
+                encoding="utf-8",
+            )
+            prose = root / "notes.txt"
+            prose.write_text(
+                "# See TODO, FIXME, and BUG tags\n# TODO: keep this\n",
+                encoding="utf-8",
+            )
+            proc = _run(TODOS, {"TK_ARG_PATH": tmp, "TK_ARG_LIMIT": "30"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(
+            [(row["file"], row["tag"], row["text"]) for row in payload["items"]],
+            [
+                ("notes.txt", "TODO", "keep this"),
+                ("sample.py", "TODO", "real work"),
+                ("sample.py", "FIXME", "also real"),
+                ("tool", "BUG", "shebang comment"),
+            ],
+        )
+
     def test_dry_run(self) -> None:
         proc = _run(
             TODOS,
@@ -123,13 +189,13 @@ class RepoHygieneTests(unittest.TestCase):
         self.assertEqual(raw["args"][0]["flag"], "--path")
         self.assertTrue(raw["args"][0]["required"])
         self.assertEqual(raw["args"][0]["type"], "string")
+        self.assertEqual(raw["args"][1]["flag"], "--limit")
+        self.assertFalse(raw["args"][1]["required"])
+        self.assertEqual(raw["args"][1]["type"], "int")
         self.assertEqual(raw["steps"][0]["tool"], "sec.secret-scan")
-        self.assertEqual(raw["steps"][0]["args"], {"path": "$input.path"})
+        self.assertEqual(raw["steps"][0]["args"], {"path": "$input.path", "limit": "$input.limit"})
         self.assertEqual(raw["steps"][1]["tool"], "json.pick")
-        self.assertEqual(
-            raw["steps"][1]["args"]["keys"],
-            "path,clean,count,truncated,findings",
-        )
+        self.assertEqual(raw["steps"][1]["args"]["keys"], "clean,count,findings")
         self.assertEqual(raw["example"], "tk run sec.repo-hygiene --path .")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,7 +213,7 @@ class RepoHygieneTests(unittest.TestCase):
         self.assertNotIn(GITHUB, proc.stdout)
         self.assertNotIn(GITHUB, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(set(payload), {"path", "clean", "count", "truncated", "findings"})
+        self.assertEqual(set(payload), {"clean", "count", "findings"})
         self.assertFalse(payload["clean"])
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["findings"][0]["rule"], "github_token")

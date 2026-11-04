@@ -405,8 +405,6 @@ def _specs_with_inferred(
     declared = {_spec_env(spec) for spec in specs}
     declared.update(_spec_env(spec) for spec in header_specs)
     inferred = _infer_arg_specs(scan_text, declared)
-    if not inferred:
-        return specs
     user_envs = {_spec_env(spec) for spec in specs}
     preserved = [spec for spec in header_specs if _spec_env(spec) not in user_envs]
     return preserved + list(specs) + inferred

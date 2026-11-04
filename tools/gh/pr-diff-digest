@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+# @tk-name: gh.pr-diff-digest
+# @tk-summary: Per-file hunk headers for a GitHub pull request diff
+# @tk-safety: read-only
+# @tk-arg: --repo | required | string | Repository in owner/name format
+# @tk-arg: --pr | required | int | Pull request number
+# @tk-arg: --limit | optional | int | Maximum changed files to return (default: 30)
+# @tk-output: json | {repo, pr, title, state, files_changed, additions, deletions, truncated, files:[{path, additions, deletions, hunks}]}
+# @tk-example: tk run gh.pr-diff-digest --repo cli/cli --pr 1 --limit 20
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import subprocess
+import sys
+
+_FIX = "tk run gh.pr-diff-digest --repo <owner/name> --pr <n> --limit 30"
+_HUNKS_PER_FILE = 5
+_VIEW_FIELDS = "number,title,state,additions,deletions,changedFiles,files"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def diff_path(line: str) -> str | None:
+    marker = " b/"
+    index = line.rfind(marker)
+    if index == -1:
+        return None
+    path = line[index + len(marker) :].strip()
+    if len(path) >= 2 and path[0] == path[-1] == '"':
+        path = path[1:-1]
+    return path or None
+
+
+def parse_hunks(diff: str) -> dict[str, list[str]]:
+    current: str | None = None
+    hunks: dict[str, list[str]] = {}
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            current = diff_path(line)
+            if current is not None:
+                hunks.setdefault(current, [])
+            continue
+        if current is None or not line.startswith("@@ "):
+            continue
+        bucket = hunks.setdefault(current, [])
+        if len(bucket) < _HUNKS_PER_FILE:
+            bucket.append(line)
+    return hunks
+
+
+def file_rows(meta_files, hunks: dict[str, list[str]]) -> list[dict]:
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for item in meta_files or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("filename") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        rows.append(
+            {
+                "path": path,
+                "additions": _as_int(item.get("additions")),
+                "deletions": _as_int(item.get("deletions")),
+                "hunks": list(hunks.get(path, []))[:_HUNKS_PER_FILE],
+            }
+        )
+    for path, headers in hunks.items():
+        if path in seen:
+            continue
+        seen.add(path)
+        rows.append({"path": path, "additions": 0, "deletions": 0, "hunks": list(headers)[:_HUNKS_PER_FILE]})
+    return rows
+
+
+def gh(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [binary, *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    pr_raw = os.environ.get("TK_ARG_PR", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "30"
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        pr = int(pr_raw) if str(pr_raw).lstrip("-").isdigit() else 1
+        limit = int(limit_raw) if str(limit_raw).lstrip("-").isdigit() else 30
+        return emit({"dry_run": True, "repo": repo or "example", "pr": pr, "limit": limit})
+    if not repo or not pr_raw:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_REPO and TK_ARG_PR are required", "fix": _FIX},
+            2,
+        )
+    owner, sep, name = repo.partition("/")
+    if not sep or not owner or not name or "/" in name or any(ch.isspace() for ch in repo):
+        return emit(
+            {"error": "invalid_flag", "why": f"repo must be owner/name: {repo}", "fix": _FIX},
+            2,
+        )
+    try:
+        pr = int(pr_raw)
+    except ValueError:
+        return emit({"error": "invalid_flag", "why": f"pr is not an int: {pr_raw}", "fix": _FIX}, 2)
+    if pr < 1:
+        return emit({"error": "invalid_flag", "why": "pr must be >= 1", "fix": _FIX}, 2)
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit({"error": "invalid_flag", "why": f"limit is not an int: {limit_raw}", "fix": _FIX}, 2)
+    if limit < 1:
+        return emit({"error": "invalid_flag", "why": "limit must be >= 1", "fix": _FIX}, 2)
+
+    binary = os.environ.get("TK_GH_BIN") or "gh"
+    view = gh(binary, "pr", "view", str(pr), "--repo", repo, "--json", _VIEW_FIELDS)
+    if view.returncode != 0:
+        why = (view.stderr or view.stdout or f"gh exited {view.returncode}").strip()
+        return emit({"error": "gh_failed", "why": why[:500], "fix": _FIX}, 1)
+    try:
+        meta = json.loads(view.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return emit({"error": "gh_failed", "why": f"unreadable pr view JSON: {exc}", "fix": _FIX}, 1)
+    if not isinstance(meta, dict):
+        return emit({"error": "gh_failed", "why": "pr view JSON is not an object", "fix": _FIX}, 1)
+
+    diff = gh(binary, "pr", "diff", str(pr), "--repo", repo)
+    if diff.returncode != 0:
+        why = (diff.stderr or diff.stdout or f"gh exited {diff.returncode}").strip()
+        return emit({"error": "gh_failed", "why": why[:500], "fix": _FIX}, 1)
+
+    rows = file_rows(meta.get("files") or [], parse_hunks(diff.stdout or ""))
+    changed = meta.get("changedFiles")
+    files_changed = _as_int(changed, len(rows)) if changed is not None else len(rows)
+    shown = rows[:limit]
+    return emit(
+        {
+            "repo": repo,
+            "pr": _as_int(meta.get("number"), pr),
+            "title": str(meta.get("title") or ""),
+            "state": str(meta.get("state") or ""),
+            "files_changed": files_changed,
+            "additions": _as_int(meta.get("additions")),
+            "deletions": _as_int(meta.get("deletions")),
+            "truncated": len(rows) > limit,
+            "files": shown,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "gh_failed", "why": "gh timed out after 30s", "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        name = exc.filename or "gh"
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "gh_unavailable",
+                    "why": f"{name} not found",
+                    "fix": "install gh or set TK_GH_BIN",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": _FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

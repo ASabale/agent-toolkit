@@ -351,6 +351,26 @@ printf '%s\\n' \"${TK_ARG_EXTRA}\"
             ],
         )
 
+    def test_check_item_ignores_tk_arg_in_inline_comment_and_string(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            body = """if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\\n' '{"dry_run":true}'
+  exit 0
+fi
+printf '%s\\n' '{"ok":true}' # TK_ARG_FOO is only a comment
+printf '%s\\n' 'error: TK_ARG_FOO was not set'
+printf '%s\\n' \"$TK_ARG_TARGET\"
+"""
+            _write(path, _bash_tool("demo.echo", "Echo a target id", body=body), executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertNotIn(
+            "undeclared arg env var in script: TK_ARG_FOO",
+            result["errors"],
+        )
+        self.assertTrue(result["ok"], result["errors"])
+
     def test_check_item_rejects_required_flag_without_value(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

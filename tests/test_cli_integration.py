@@ -104,6 +104,14 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 2)
         self.assertEqual(json.loads(missing.stderr)["error"], "missing_flag")
 
+    def test_find_unknown_namespace_logs_namespace_search_miss(self) -> None:
+        miss = self._run("find", "--namespace", "unknown")
+        self.assertEqual(miss.returncode, 0, miss.stderr)
+        self.assertEqual(miss.stdout.strip(), "")
+        misses = [event for event in self._events() if event["event"] == "search_miss"]
+        self.assertEqual(len(misses), 1)
+        self.assertEqual(misses[0]["query"], "namespace:unknown")
+
     def test_check_multiple_names_aggregates(self) -> None:
         checked = self._run("check", "json.pick", "json.query")
         self.assertEqual(checked.returncode, 0, checked.stderr)

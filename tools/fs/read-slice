@@ -72,9 +72,27 @@ def main() -> int:
             {"error": "not_found", "why": f"{path} not found", "fix": _FIX},
             2,
         )
+    with open(path, "rb") as handle:
+        if b"\x00" in handle.read(4096):
+            return emit(
+                {
+                    "error": "binary_file",
+                    "why": f"{path} appears to be a binary file",
+                    "fix": _FIX,
+                },
+                1,
+            )
+    selected = []
+    total = 0
     with open(path, encoding="utf-8", errors="replace") as handle:
-        lines = handle.read().splitlines()
-    total = len(lines)
+        for number, raw in enumerate(handle, start=1):
+            total = number
+            if number < start or number > end:
+                continue
+            text = raw.rstrip("\r\n")
+            if len(text) > _LINE_CAP:
+                text = text[:_LINE_CAP]
+            selected.append({"line": number, "text": text})
     if total == 0:
         return emit({"path": path, "start": start, "end": 0, "total_lines": 0, "lines": []})
     if start > total:
@@ -96,12 +114,6 @@ def main() -> int:
             },
             2,
         )
-    selected = []
-    for number in range(start, clamped + 1):
-        text = lines[number - 1]
-        if len(text) > _LINE_CAP:
-            text = text[:_LINE_CAP]
-        selected.append({"line": number, "text": text})
     return emit(
         {
             "path": path,

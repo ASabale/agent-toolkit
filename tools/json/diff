@@ -23,9 +23,20 @@ def emit(payload: dict, code: int = 0) -> int:
 
 
 def _same_container(left, right) -> bool:
+    """True when both values are the same JSON kind.
+
+    Bool is not a number: ``True`` and ``1`` are different kinds even though
+    Python treats them as equal. Two non-container scalars share a kind.
+    """
     if isinstance(left, bool) or isinstance(right, bool):
         return isinstance(left, bool) and isinstance(right, bool)
-    return isinstance(left, dict) and isinstance(right, dict) or isinstance(left, list) and isinstance(right, list)
+    left_container = isinstance(left, (dict, list))
+    right_container = isinstance(right, (dict, list))
+    if left_container or right_container:
+        return (isinstance(left, dict) and isinstance(right, dict)) or (
+            isinstance(left, list) and isinstance(right, list)
+        )
+    return True
 
 
 def _child(path: str, key: str) -> str:
@@ -57,7 +68,8 @@ def _walk(left, right, path: str, added: list, removed: list, changed: list) -> 
             else:
                 _walk(left[index], right[index], child, added, removed, changed)
         return
-    if not _same_container(left, right) and left != right:
+    if not _same_container(left, right):
+        # Do not consult ``!=`` here: True != 1 is False in Python.
         changed.append({"path": path or "$", "left": left, "right": right})
         return
     if left != right:

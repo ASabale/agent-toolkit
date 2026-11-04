@@ -11,23 +11,31 @@
       "type": "string",
       "description": "File or directory path to scan for leaked secrets",
       "default": null
+    },
+    {
+      "flag": "--limit",
+      "required": false,
+      "type": "int",
+      "description": "Maximum findings to return (default: 25)",
+      "default": "25"
     }
   ],
   "steps": [
     {
       "tool": "sec.secret-scan",
       "args": {
-        "path": "$input.path"
+        "path": "$input.path",
+        "limit": "$input.limit"
       }
     },
     {
       "tool": "json.pick",
       "args": {
-        "keys": "path,clean,count,truncated,findings"
+        "keys": "clean,count,findings"
       }
     }
   ],
-  "output": "json | {path, clean, count, truncated, findings}",
+  "output": "json | {clean, count, findings}",
   "example": "tk run sec.repo-hygiene --path .",
   "verified": "2026-11-04"
 }
