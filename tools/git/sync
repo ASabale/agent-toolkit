@@ -139,12 +139,12 @@ def _supplied(env_name: str) -> str | None:
     return value or None
 
 
-def sync_command(repo: str) -> str:
+def sync_command(repo: str, remote: str | None = None) -> str:
     """Rebuild the call with every flag the caller actually set, shell-quoted."""
     parts = ["tk", "run", "git.sync", "--repo", shlex.quote(repo)]
-    remote = _supplied("TK_ARG_REMOTE")
-    if remote is not None:
-        parts.extend(["--remote", shlex.quote(remote)])
+    chosen = remote if remote is not None else _supplied("TK_ARG_REMOTE")
+    if chosen:
+        parts.extend(["--remote", shlex.quote(chosen)])
     branch = _supplied("TK_ARG_BRANCH")
     if branch is not None:
         parts.extend(["--branch", shlex.quote(branch)])
@@ -220,29 +220,47 @@ def refuse_no_commits(repo: str, branch: str, retry: str) -> int:
     )
 
 
+def _remote_names(repo: str) -> list[str]:
+    probe = git(repo, "remote")
+    if probe.returncode != 0:
+        return []
+    return [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+
+
+def _no_remote_fix(repo: str, remote: str, retry: str) -> str:
+    """Ask for a URL, or retry against a remote that is already configured."""
+    others = [name for name in _remote_names(repo) if name != remote]
+    if others:
+        return sync_command(repo, remote=others[0])
+    safe = "".join(ch for ch in remote if ch not in '"$`\\}!')
+    url = '"${REMOTE_URL:?set REMOTE_URL to the URL for remote ' + safe + '}"'
+    add = _git_c(repo, "remote", "add", shlex.quote(remote), url)
+    return f"{add} && {retry}"
+
+
 def refuse_no_remote(repo: str, remote: str, retry: str) -> int:
-    add = _git_c(repo, "remote", "add", shlex.quote(remote), "URL")
-    return fail(
-        "no_remote",
-        f"remote {remote} is not configured; add it with {add} and then retry {retry}",
-        add,
-        2,
-    )
+    fix = _no_remote_fix(repo, remote, retry)
+    return fail("no_remote", f"remote {remote} is not configured; run {fix}", fix, 2)
+
+
+def _rebase_continue(repo: str, retry: str) -> str:
+    # core.editor=true keeps the existing message. Agents have no editor, and vi would hang.
+    cont = _git_c(repo, "-c", "core.editor=true", "rebase", "--continue")
+    return f"{cont} && {retry}"
 
 
 def refuse_rebase_in_progress(repo: str, retry: str) -> int:
     return fail(
         "rebase_in_progress",
         "a rebase is in progress; resolve the conflicts, git add the files, then continue",
-        f"{_git_c(repo, 'rebase', '--continue')} && {retry}",
+        _rebase_continue(repo, retry),
         2,
     )
 
 
 def _conflict_why(repo: str, detail: str, retry: str) -> str:
     add = _git_c(repo, "add")
-    cont = f"{_git_c(repo, 'rebase', '--continue')} && {retry}"
-    guide = f"resolve the conflicts, {add} the listed files, then run {cont}"
+    guide = f"resolve the conflicts, {add} the listed files, then run {_rebase_continue(repo, retry)}"
     if not detail:
         return guide
     return f"{detail}; {guide}"

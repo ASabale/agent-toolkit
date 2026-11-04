@@ -53,6 +53,59 @@ def _split_and(fix: str) -> list[list[str]]:
     return commands
 
 
+def _shell_env(
+    cwd: Path,
+    extra: dict[str, str] | None = None,
+    *,
+    identity: bool = True,
+) -> dict[str, str]:
+    """Minimal env. Nothing is inherited, so no editor variable can leak in."""
+    env = {
+        "PATH": str(ROOT) + os.pathsep + os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", str(cwd)),
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+        "TERM": "dumb",
+        "GIT_TERMINAL_PROMPT": "0",
+        "TK_NO_TELEMETRY": "1",
+        "TK_STATE_DIR": str(cwd / "tk-state"),
+    }
+    if identity:
+        env.update(_identity())
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _run_shell(
+    fix: str,
+    cwd: Path,
+    extra: dict[str, str] | None = None,
+    *,
+    identity: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sh", "-c", fix],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        env=_shell_env(cwd, extra, identity=identity),
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+
+
+def _error_name(proc: subprocess.CompletedProcess[str]) -> str:
+    if proc.returncode == 0:
+        return ""
+    return str(json.loads(proc.stderr)["error"])
+
+
+def _last_json(proc: subprocess.CompletedProcess[str]) -> dict:
+    line = proc.stdout.strip().splitlines()[-1]
+    return json.loads(line)
+
+
 def _run_fix(fix: str, cwd: Path) -> list[subprocess.CompletedProcess[str]]:
     env = os.environ.copy()
     env.update(_identity())
@@ -428,14 +481,16 @@ class GitSyncTests(unittest.TestCase):
             self.assertEqual([item[0] for item in seen], ["not_a_repo", "no_commits", "no_remote"])
             self.assertIn("fix/sync", seen[1][1])
             self.assertIn("--allow-empty", seen[1][2])
-            self.assertEqual(
-                _split_and(seen[2][2])[0],
-                ["git", "-C", str(folder), "remote", "add", "origin", "URL"],
+            url_fix = seen[2][2]
+            self.assertIn(
+                '"${REMOTE_URL:?set REMOTE_URL to the URL for remote origin}"',
+                url_fix,
             )
-            self.assertIn("origin", seen[2][1])
-            self.assertIn("retry", seen[2][1])
-            self.assertNotIn("https://", seen[2][2])
-            self.assertNotIn("git@", seen[2][2])
+            self.assertIn(url_fix, seen[2][1])
+            self.assertIn("&&", url_fix)
+            self.assertNotIn(" origin URL", url_fix)
+            self.assertNotIn("https://", url_fix)
+            self.assertNotIn("git@", url_fix)
             author = _git(folder, "log", "-1", "--format=%an %ae")
             self.assertEqual(author.stdout.strip(), "Ada ada@example.com")
             self.assertTrue((folder / ".git").is_dir())
@@ -590,6 +645,7 @@ class GitSyncTests(unittest.TestCase):
             self.assertEqual(payload["error"], "rebase_conflict")
             fix = str(payload["fix"])
             self.assertEqual(_split_and(fix), [["git", "-C", str(clone_b), "rebase", "origin/main"]])
+            self.assertIn("core.editor=true", payload["why"])
             self.assertIn("rebase --continue", payload["why"])
             self.assertIn(" add ", payload["why"])
             ran = subprocess.run(
@@ -617,10 +673,157 @@ class GitSyncTests(unittest.TestCase):
             self.assertNotIn("rebase_conflict", real.stderr)
             self.assertEqual(
                 _split_and(str(again["fix"]))[0],
-                ["git", "-C", str(clone_b), "rebase", "--continue"],
+                ["git", "-C", str(clone_b), "-c", "core.editor=true", "rebase", "--continue"],
             )
             self.assertIn("tk run git.sync", again["fix"])
+            self.assertIn("core.editor=true", again["fix"])
             self.assertTrue(path.is_dir())
+
+    def test_no_remote_fix_rejects_an_unset_url_then_syncs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            origin, _clone_a, clone = _pair(root)
+            _ok(clone, "checkout", "-b", "feature")
+            _ok(clone, "remote", "remove", "origin")
+            outside = root / "outside"
+            outside.mkdir()
+            env = {"TK_ARG_REPO": str(clone), "TK_ARG_REMOTE": "origin", "TK_ARG_BRANCH": "main"}
+            proc = _run(env)
+            payload = json.loads(proc.stderr)
+            self.assertEqual(payload["error"], "no_remote")
+            fix = str(payload["fix"])
+            marker = '"${REMOTE_URL:?set REMOTE_URL to the URL for remote origin}"'
+            self.assertIn(marker, fix)
+            self.assertIn(marker, payload["why"])
+            blocked = _run_shell(fix, outside)
+            self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+            self.assertIn("REMOTE_URL", blocked.stderr)
+            self.assertEqual(_git(clone, "remote").stdout.strip(), "")
+            self.assertEqual(_error_name(_run(env)), "no_remote")
+            ran = _run_shell(fix, outside, {"REMOTE_URL": str(origin)})
+            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+            synced = _last_json(ran)
+            self.assertIs(synced["pushed"], True)
+            self.assertEqual(synced["branch"], "feature")
+            self.assertEqual(_git(clone, "remote", "get-url", "origin").stdout.strip(), str(origin))
+            self.assertEqual(_error_name(_run(env)), "")
+
+    def test_no_remote_fix_retries_with_an_existing_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _origin, _clone_a, clone = _pair(root)
+            _ok(clone, "checkout", "-b", "feature")
+            _ok(clone, "remote", "rename", "origin", "upstream")
+            outside = root / "outside"
+            outside.mkdir()
+            env = {"TK_ARG_REPO": str(clone), "TK_ARG_REMOTE": "origin", "TK_ARG_BRANCH": "main"}
+            proc = _run(env)
+            payload = json.loads(proc.stderr)
+            self.assertEqual(payload["error"], "no_remote")
+            fix = str(payload["fix"])
+            self.assertNotIn("REMOTE_URL", fix)
+            self.assertIn("--remote upstream", fix)
+            self.assertIn("--branch main", fix)
+            self.assertIn(fix, str(payload["why"]))
+            ran = _run_shell(fix, outside)
+            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+            synced = _last_json(ran)
+            self.assertEqual(synced["remote"], "upstream")
+            self.assertIs(synced["pushed"], True)
+            self.assertNotIn("origin", _git(clone, "remote").stdout.split())
+            again = _run_shell(fix, outside)
+            self.assertEqual(again.returncode, 0, again.stderr + again.stdout)
+            self.assertNotEqual(_last_json(again).get("error"), "no_remote")
+
+    def test_each_fix_advances_one_step_without_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            for key in ("EDITOR", "VISUAL", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR"):
+                self.assertNotIn(key, _shell_env(outside, identity=False))
+
+            folder = root / "space dir" / "fresh"
+            folder.parent.mkdir()
+            folder.mkdir()
+            fresh = {"TK_ARG_REPO": str(folder)}
+            first = _run(fresh)
+            self.assertEqual(_error_name(first), "not_a_repo")
+            self.assertEqual(_run_shell(json.loads(first.stderr)["fix"], outside).returncode, 0)
+            self.assertEqual(_error_name(_run(fresh)), "no_commits")
+            commits = _run(fresh)
+            self.assertEqual(_error_name(commits), "no_commits")
+            _run_shell(json.loads(commits.stderr)["fix"], outside)
+            self.assertEqual(_error_name(_run(fresh)), "no_remote")
+
+            origin, clone_a, clone_b = _pair(root)
+            self._assert_branch_fix_advances(clone_b, outside, "on_main", {})
+            _ok(clone_a, "checkout", "-b", "develop")
+            _ok(clone_a, "push", "-u", "origin", "develop")
+            self._assert_branch_fix_advances(
+                clone_a,
+                outside,
+                "on_base",
+                {"TK_ARG_BRANCH": "develop"},
+            )
+            third = root / "detached"
+            subprocess.run(
+                ["git", "clone", str(origin), str(third)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            _ok(third, "config", "user.name", "Ada")
+            _ok(third, "config", "user.email", "ada@example.com")
+            _ok(third, "checkout", "--detach")
+            self._assert_branch_fix_advances(third, outside, "detached_head", {})
+
+            rebase_root = root / "rebase"
+            rebase_root.mkdir()
+            _origin, left, right = _pair(rebase_root)
+            (left / "shared.txt").write_text("from-a\n", encoding="utf-8")
+            _ok(left, "add", "shared.txt")
+            _ok(left, "commit", "-m", "a edit")
+            _ok(left, "push", "origin", "main")
+            _ok(right, "checkout", "-b", "feature")
+            (right / "shared.txt").write_text("from-b\n", encoding="utf-8")
+            _ok(right, "add", "shared.txt")
+            _ok(right, "commit", "-m", "b edit")
+            conflict_env = {"TK_ARG_REPO": str(right)}
+            conflict = _run(conflict_env)
+            self.assertEqual(_error_name(conflict), "rebase_conflict")
+            conflict_fix = str(json.loads(conflict.stderr)["fix"])
+            self.assertIn("core.editor=true", json.loads(conflict.stderr)["why"])
+            self.assertNotEqual(_run_shell(conflict_fix, outside).returncode, 0)
+            self.assertEqual(_error_name(_run(conflict_env)), "rebase_in_progress")
+            (right / "shared.txt").write_text("merged\n", encoding="utf-8")
+            _ok(right, "add", "shared.txt")
+            again = _run(conflict_env)
+            self.assertEqual(_error_name(again), "rebase_in_progress")
+            continue_fix = str(json.loads(again.stderr)["fix"])
+            self.assertIn("-c core.editor=true rebase --continue", continue_fix)
+            continued = _run_shell(continue_fix, outside, identity=False)
+            self.assertEqual(continued.returncode, 0, continued.stderr + continued.stdout)
+            self.assertIs(_last_json(continued)["pushed"], True)
+            self.assertNotEqual(_error_name(_run(conflict_env)), "rebase_in_progress")
+
+    def _assert_branch_fix_advances(
+        self,
+        clone: Path,
+        outside: Path,
+        error: str,
+        extra_env: dict[str, str],
+    ) -> None:
+        env = {"TK_ARG_REPO": str(clone), **extra_env}
+        proc = _run(env)
+        self.assertEqual(_error_name(proc), error, proc.stderr)
+        fix = str(json.loads(proc.stderr)["fix"])
+        if "rebase --continue" in fix:
+            self.assertIn("core.editor=true", fix)
+        ran = _run_shell(fix, outside)
+        self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+        self.assertNotEqual(_last_json(ran).get("error"), error)
+        self.assertNotEqual(_error_name(_run(env)), error)
 
 
 if __name__ == "__main__":
