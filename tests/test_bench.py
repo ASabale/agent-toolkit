@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,48 @@ def _run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedP
         text=True,
         cwd=ROOT,
         env=merged,
+        check=False,
+    )
+
+
+def _tk_by_task(stdout: str) -> dict[str, dict]:
+    reports = json.loads(stdout)
+    return {row["task"]: row["tk"] for row in reports}
+
+
+def _ignore_checkout(directory: str, names: list[str]) -> set[str]:
+    skipped = {name for name in names if name in {".git", "__pycache__", ".DS_Store", "state"}}
+    if Path(directory).name == "bench":
+        skipped.add("work")
+    return skipped
+
+
+def _pinned_path(bin_dir: Path) -> str:
+    """PATH with this interpreter and no node.
+
+    mcp-server-fetch's live example.com result is 271 bytes, or 246 when
+    node is on PATH. The bench reads the fixture, and this pin keeps a
+    checkout run from depending on whichever node the machine has.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / "python3"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(Path(sys.executable).resolve())
+    return os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"])
+
+
+def _run_checkout(root: Path, tmp: Path, path: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["TK_NO_TELEMETRY"] = "1"
+    env["TMPDIR"] = str(tmp)
+    env["PATH"] = path
+    return subprocess.run(
+        [sys.executable, str(root / "bench" / "mcp_vs_tk.py"), "--json"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        env=env,
         check=False,
     )
 
@@ -82,6 +125,32 @@ class BenchTests(unittest.TestCase):
                 )
                 // 4,
             )
+
+    def test_tk_results_match_across_tmpdir_and_checkout(self) -> None:
+        # Different lengths: equal-length absolute paths can hide the leak.
+        with tempfile.TemporaryDirectory() as base:
+            base_path = Path(base)
+            short_tmp = base_path / "t"
+            long_tmp = base_path / ("u" * 48)
+            short_tmp.mkdir()
+            long_tmp.mkdir()
+            pinned = _pinned_path(base_path / "py")
+            first = _run("--json", env={"TMPDIR": str(short_tmp), "PATH": pinned})
+            second = _run("--json", env={"TMPDIR": str(long_tmp), "PATH": pinned})
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(_tk_by_task(first.stdout), _tk_by_task(second.stdout))
+            self.assertFalse((ROOT / "bench" / "work").exists())
+
+            short_root = base_path / "a"
+            long_root = base_path / ("b" * 48) / "checkout"
+            shutil.copytree(ROOT, short_root, ignore=_ignore_checkout, symlinks=True)
+            shutil.copytree(ROOT, long_root, ignore=_ignore_checkout, symlinks=True)
+            left = _run_checkout(short_root, short_tmp, pinned)
+            right = _run_checkout(long_root, long_tmp, pinned)
+        self.assertEqual(left.returncode, 0, left.stderr)
+        self.assertEqual(right.returncode, 0, right.stderr)
+        self.assertEqual(_tk_by_task(left.stdout), _tk_by_task(right.stdout))
 
     def test_refuses_fixture_missing_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

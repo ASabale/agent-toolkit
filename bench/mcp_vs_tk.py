@@ -20,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 REQUIRED = ("source", "server_version", "captured_on")
 ESTIMATE_NOTE = "bytes/4 estimate"
+# sql.* and web.read-text echo the path they are given. An absolute checkout
+# or $TMPDIR path would make output_bytes depend on where the tree lives.
+_WORK_DIR = Path("bench") / "work"
+_DB_FILENAME = "fixture.sqlite"
 _GH_STUB = """#!/usr/bin/env python3
 import json
 import sys
@@ -115,8 +119,42 @@ def _write_gh_stub(directory: Path, rollup: dict) -> Path:
     return path
 
 
+def _relative_to_root(root: Path, path: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _prepare_work(root: Path) -> Path:
+    directory = root / _WORK_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _cleanup_work(root: Path, created: list[Path]) -> None:
+    for path in created:
+        path.unlink(missing_ok=True)
+    directory = root / _WORK_DIR
+    if directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+
+
+def _sqlite_token(root: Path, spec: dict) -> tuple[str, Path]:
+    path = _write_sqlite(_prepare_work(root), spec)
+    return _relative_to_root(root, path), path
+
+
+def _html_token(root: Path, fixtures_dir: Path, html_name: str) -> tuple[str, Path | None]:
+    source = (fixtures_dir / html_name).resolve()
+    try:
+        return _relative_to_root(root, source), None
+    except ValueError:
+        dest = _prepare_work(root) / Path(html_name).name
+        dest.write_bytes(source.read_bytes())
+        return _relative_to_root(root, dest), dest
+
+
 def _write_sqlite(directory: Path, spec: dict) -> Path:
-    path = directory / "fixture.sqlite"
+    path = directory / _DB_FILENAME
+    path.unlink(missing_ok=True)
     table = spec["table"]
     columns = spec["columns"]
     quoted = []
@@ -156,30 +194,39 @@ def measure_tk(root: Path, fixture: dict, work: Path, fixtures_dir: Path) -> dic
     tk = fixture.get("tk") or {}
     tokens: dict[str, str] = {}
     env: dict[str, str] = {}
-    if "gh_status_check_rollup" in tk:
-        stub = _write_gh_stub(work, tk["gh_status_check_rollup"])
-        env["PATH"] = str(stub.parent) + os.pathsep + os.environ.get("PATH", "")
-    if "sqlite" in tk:
-        tokens["$DB"] = str(_write_sqlite(work, tk["sqlite"]))
-    html_name = tk.get("html_file")
-    if html_name:
-        tokens["$HTML"] = str((fixtures_dir / html_name).resolve())
-    query = tk.get("find") or ""
-    found = _run_tk(root, ["find", query], env)
-    if found.returncode != 0:
-        raise RuntimeError(found.stderr.strip() or f"tk find exited {found.returncode}")
-    discovery = len(found.stdout.encode("utf-8"))
-    output = 0
-    runs = tk.get("runs") or []
-    for run in runs:
-        flags = _replace_tokens(list(run.get("flags") or []), tokens)
-        proc = _run_tk(root, ["run", run["name"], *flags], env)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                proc.stderr.strip() or f"tk run {run['name']} exited {proc.returncode}"
-            )
-        output += len(proc.stdout.encode("utf-8"))
-    return _side(idle, discovery, output, len(runs))
+    created: list[Path] = []
+    try:
+        if "gh_status_check_rollup" in tk:
+            stub = _write_gh_stub(work, tk["gh_status_check_rollup"])
+            env["PATH"] = str(stub.parent) + os.pathsep + os.environ.get("PATH", "")
+        if "sqlite" in tk:
+            token, db_path = _sqlite_token(root, tk["sqlite"])
+            tokens["$DB"] = token
+            created.append(db_path)
+        html_name = tk.get("html_file")
+        if html_name:
+            token, copied = _html_token(root, fixtures_dir, str(html_name))
+            tokens["$HTML"] = token
+            if copied is not None:
+                created.append(copied)
+        query = tk.get("find") or ""
+        found = _run_tk(root, ["find", query], env)
+        if found.returncode != 0:
+            raise RuntimeError(found.stderr.strip() or f"tk find exited {found.returncode}")
+        discovery = len(found.stdout.encode("utf-8"))
+        output = 0
+        runs = tk.get("runs") or []
+        for run in runs:
+            flags = _replace_tokens(list(run.get("flags") or []), tokens)
+            proc = _run_tk(root, ["run", run["name"], *flags], env)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    proc.stderr.strip() or f"tk run {run['name']} exited {proc.returncode}"
+                )
+            output += len(proc.stdout.encode("utf-8"))
+        return _side(idle, discovery, output, len(runs))
+    finally:
+        _cleanup_work(root, created)
 
 
 def run_bench(root: Path, fixtures_dir: Path) -> list[dict]:
