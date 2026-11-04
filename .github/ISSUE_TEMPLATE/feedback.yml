@@ -21,7 +21,7 @@ body:
     id: command
     attributes:
       label: What you ran
-      description: The tk command, the MCP call, or the cli-harness command. Paste the error if there was one.
+      description: The tk command or the MCP call. Paste the error if there was one.
 
   - type: textarea
     id: happened

@@ -39,7 +39,7 @@ If a 7B–30B model cannot use a tool on the first try without wasting turns or 
   ```bash
   tk run <tool> [--flag <value> ...]
   ```
-  No positional arguments, no order-dependent global flags (never repeat the `--instance`-before-plane trap of earlier harnesses), and no implicit environment magic.
+  No positional arguments, no order-dependent global flags, and no implicit environment magic.
 - **Two-Step Execution (`Find → Run`)**:
   1. `tk find "<intent>"` returns ranked matches **with their required flags and copy-pasteable example inline** (no mandatory `tk info` round-trip before running).
   2. `tk run <tool> ...` executes deterministically and emits distilled, low-token JSON. (`tk info <tool>` exists only when deep contract inspection is needed.)
@@ -71,25 +71,11 @@ A toolkit that rots or accumulates unverified junk becomes worse than no toolkit
   - **Tiered Promotion**:
     - `read-only` tools auto-promote to the catalog once `tk check <tool>` passes syntax, header schema, and a live or dry-run smoke check.
     - `mutating` and `destructive` tools require `--dry-run` support and explicit verification before promotion.
-- **Harness-Agnostic Portability**: Zero lock-in to any single IDE, LLM provider, or company infrastructure. Tool packs are plain folders of single-file tools shared via git across any agent harness that supports shell execution and `SKILL.md`.
+- **Harness-Agnostic Portability**: Zero lock-in to any single IDE or LLM provider. Tool packs are plain folders of single-file tools shared via git across any agent harness that supports shell execution and `SKILL.md`.
 
 ---
 
-## 4. Lessons Applied from Earlier Attempts (`cli-harness`)
-
-We start from scratch specifically to leave behind the structural debt of the earlier `cli-harness`:
-
-| Earlier `cli-harness` Friction | New `agent-toolkit` Rule |
-|---|---|
-| Sidecar `.yaml` + `.sh` files drifted constantly | **One file per tool**: header comments inside the executable script are the manifest |
-| `--instance <vm> <plane> <cmd>` ordering broke small models | **Flat, uniform `--flag value` grammar**: order never matters |
-| Hardcoded 9 company-specific planes & 3-tier folders | **Flat `tools/<namespace>/<verb-noun>` layout**: domain-agnostic, shareable anywhere |
-| Heavy manual scaffolding to add a capability | **`tk save` & single-file drop-in**: agents create or promote tools in one step |
-| Unbounded accumulation of one-off scripts | **Continuous pruning (`tk evolve` / `tk prune`)**: unused or duplicate tools are retired |
-
----
-
-## 5. Law of Evolution: Immutable Vision, Infinite Iteration
+## 4. Law of Evolution: Immutable Vision, Infinite Iteration
 
 There is no static "end goal" or finished feature checklist—only **continuous iterations** governed by three permanent rules:
 

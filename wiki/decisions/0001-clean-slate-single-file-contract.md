@@ -2,16 +2,14 @@
 
 On 2026-11-03, `ASabale/agent-toolkit@4b0e69c` bootstrapped the repository with `VISION.md`, `ARCHITECTURE.md`, `AGENTS.md`, `README.md`, `skills/toolkit/SKILL.md`, `tools/.template`, and empty `chains/`, `state/`, and `tests/` placeholders. That commit contained no `tk` dispatcher and no `lib/` modules.
 
-## What the bootstrap rejected
+## What the bootstrap set
 
-On 2026-11-03, `VISION.md` at `ASabale/agent-toolkit@4b0e69c` said the repository started from scratch to leave behind structural debt of an earlier `cli-harness`. The same section recorded four replacements:
+On 2026-11-03, `VISION.md` at `ASabale/agent-toolkit@4b0e69c` set the tool contract:
 
-| Earlier friction recorded on 2026-11-03 | Rule written in `ASabale/agent-toolkit@4b0e69c` |
-|---|---|
-| Sidecar `.yaml` plus `.sh` files drifted | One file per tool; header comments inside the executable were the manifest |
-| `--instance <vm> <plane> <cmd>` ordering | Flat `--flag value` grammar; order does not change behavior |
-| Hardcoded company-specific planes and 3-tier folders | Flat `tools/<namespace>/<verb-noun>` layout |
-| Heavy scaffolding to add a capability | `tk save` and a single-file drop-in |
+- One file per tool. Header comments inside the executable are the manifest.
+- Flat `--flag value` grammar. Order does not change behavior.
+- Flat `tools/<namespace>/<verb-noun>` layout.
+- `tk save` and a single-file drop-in add a tool.
 
 On 2026-11-03, `ARCHITECTURE.md` at `ASabale/agent-toolkit@4b0e69c` stated that the executable file was the manifest. The indexer was specified to parse `# @tk-*` directives from the top comment block of files under `tools/<namespace>/<tool-name>`. The header example in that file named `@tk-name`, `@tk-summary`, `@tk-safety`, `@tk-arg`, `@tk-output`, `@tk-example`, and `@tk-verified`.
 
