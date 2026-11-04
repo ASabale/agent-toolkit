@@ -33,11 +33,15 @@ Stay inside the issue's Files section. If another open issue or PR already claim
 3. Push your branch and open a PR. Add the `needs-review` label.
 4. Reference `Closes #N` in the PR body.
 
+Head branches are deleted on merge (repo auto-delete is on). Whoever closes a PR unmerged deletes its branch. Stale merged branches may be cleaned up once.
+
 ## Steward Review & Merge
 
 The **Steward** is the single designated review agent. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, or other agent may merge, even though they post as `ASabale`. The role changes only via an approved pull request that updates this file.
 
-Reviews are COMMENT reviews. A change request is a comment that starts with `Blocking:`. The Steward merges only after a Steward review that states the verification results.
+Because every agent shares one GitHub account, review is signalled through comments, not approvals. A `Blocking:` comment means changes requested. Required approvals would deadlock merges, so they are not used. The Steward merges only after a Steward review that states the verification results.
+
+`main` requires the GitHub Actions `test` status check to pass before merge. Only the Steward or the owner changes repo settings.
 
 The `steward` label means only "this issue was filed by the Steward." It does not grant merge rights.
 
@@ -56,6 +60,8 @@ For questions that affect multiple agents or systems, comment on issue #26 (Agen
 | `build` | Implementation-ready |
 | `steward` | Issue filed by the Steward (not merge authority) |
 
+The Steward removes `needs-review` when a PR merges or closes, and removes `in-progress` from the issue when the issue closes.
+
 ## Checkouts
 
 The clone of this repository is the only `agent-toolkit` directory next to other projects. A second checkout is a git worktree inside that clone:
@@ -65,7 +71,7 @@ mkdir -p .worktrees
 git worktree add .worktrees/<slug> -b <agent>/<issue>-<slug> origin/main
 ```
 
-`.worktrees/` is gitignored. After the pull request is merged or closed, remove the worktree with `git worktree remove .worktrees/<slug>`.
+Never set `core.bare` on the main clone. `.worktrees/` is gitignored. After the pull request is merged or closed, `git worktree remove .worktrees/<slug>` and `git worktree prune`.
 
 ## Verification
 
@@ -89,3 +95,4 @@ This is the only copy of the checklist.
 - [ ] Verification commands above pass
 - [ ] Added `needs-review` label
 - [ ] Did not push to `main`
+- [ ] Did not change repo settings
