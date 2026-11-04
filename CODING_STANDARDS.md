@@ -82,6 +82,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
      - Every `$input.<flag>` reference in step `args` refers to a flag declared in the chain's own `args`.
      - Every `$prev` or `$prev.<path>` reference appears only in step index `>= 1` (never step `0`).
      - Every `$step[k]` or `$step[k].<path>` reference satisfies `0 <= k < i`.
+     - For a step at index `>= 1` whose tool is `json.pick` or `json.query`, every key requested by `--keys` (or by a simple `{a,b}` / `a.b` `--expr` projection) must be a top-level field of the previous step's `@tk-output` `{...}` shape, with the error format `step <i> (<tool>) key '<key>' not in upstream <tool> output`; the check is skipped when the upstream `@tk-output` is not in `{...}` form.
      - Dry-run smoke check: running `run_chain(root_dir, item, dummy_required_flags, dry_run=True)` exits `0` and produces valid JSON on `stdout`.
   8. Catalog names are unique: if more than one file claims the same `name`, report `duplicate name: <name> (<path1>, <path2>)` listing every claimant path relative to `root_dir` in first-seen order. `check_all` surfaces this through `check_item` on the affected names.
   9. Name/path layout: a tool's `@tk-name` must equal `<namespace>.<file>` derived from `tools/<namespace>/<file>`; a chain's `name` must equal the `chains/<name>.json` stem. Error: `name/path mismatch: @tk-name <x> but path implies <y>`.
