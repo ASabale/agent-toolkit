@@ -1,0 +1,25 @@
+#!/bin/sh
+# Tracked pre-commit gate: runs tk check, wiki lint, and unit tests.
+# VISION Pillar III: self-validating; harness-agnostic portability via plain git.
+set -e
+
+REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+
+printf '%s\n' "pre-commit: tk check..."
+check_out=$(TK_NO_TELEMETRY=1 "${REPO_ROOT}/tk" check --json)
+ok=$(printf '%s' "$check_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok',False))")
+if [ "$ok" != "True" ]; then
+    printf '%s\n' "$check_out" >&2
+    exit 1
+fi
+
+printf '%s\n' "pre-commit: wiki.lint..."
+lint_out=$(TK_NO_TELEMETRY=1 "${REPO_ROOT}/tk" run wiki.lint --path "${REPO_ROOT}/wiki")
+lint_ok=$(printf '%s' "$lint_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok',False))")
+if [ "$lint_ok" != "True" ]; then
+    printf '%s\n' "$lint_out" >&2
+    exit 1
+fi
+
+printf '%s\n' "pre-commit: unit tests..."
+python3 -m pytest "${REPO_ROOT}/tests" -q --tb=short
