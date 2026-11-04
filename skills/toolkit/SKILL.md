@@ -19,6 +19,7 @@ description: Low-token CLI toolkit that replaces MCP servers. Find, run, chain, 
    ```
    - Flag details: `tk info <tool>`.
    - On failure, run the `fix` command from `stderr`.
+   - If output has `next`, run it for more.
    - Multi-step: pipe JSON (`tk run <a> | tk run <b>`) or `tk run <chain>`.
 
 ## 2. Evolve (`Save → Check`)

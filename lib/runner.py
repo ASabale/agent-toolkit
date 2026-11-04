@@ -334,6 +334,64 @@ def _positive_int(raw: str, default: int) -> int:
     return value
 
 
+def _declares_flag(item: dict, flag: str) -> bool:
+    return any(
+        isinstance(arg, dict) and arg.get("flag") == flag
+        for arg in (item.get("args") or [])
+    )
+
+
+def _arg_default_int(item: dict, flag: str, fallback: int) -> int:
+    for arg in item.get("args") or []:
+        if not isinstance(arg, dict) or arg.get("flag") != flag:
+            continue
+        raw = arg.get("default")
+        if raw is None:
+            return fallback
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return fallback
+        return value if value > 0 else fallback
+    return fallback
+
+
+def _effective_limit(item: dict, flags: dict[str, str]) -> int:
+    raw = flags.get("--limit")
+    if raw is None:
+        return _arg_default_int(item, "--limit", 1)
+    try:
+        value = int(raw)
+    except ValueError:
+        return _arg_default_int(item, "--limit", 1)
+    return value if value > 0 else 1
+
+
+def _command_with_limit(item: dict, flags: dict[str, str], limit: int) -> str:
+    return _fix_command(item, {**flags, "--limit": str(limit)})
+
+
+def _maybe_next_payload(item: dict, flags: dict[str, str], parsed: object) -> object:
+    if not isinstance(parsed, dict) or not _declares_flag(item, "--limit"):
+        return parsed
+    truncated = parsed.get("truncated")
+    if type(truncated) is not int or truncated <= 0:
+        return parsed
+    next_limit = max(_effective_limit(item, flags) * 2, 1)
+    return {**parsed, "next": _command_with_limit(item, flags, next_limit)}
+
+
+def _output_too_large_fix(item: dict, flags: dict[str, str], parsed: object) -> str:
+    if _declares_flag(item, "--limit"):
+        halved = max(_effective_limit(item, flags) // 2, 1)
+        return _command_with_limit(item, flags, halved)
+    command = _fix_command(item, flags)
+    if not isinstance(parsed, dict) or not parsed:
+        return command
+    keys = ",".join(str(key) for key in parsed)
+    return f"{command} | tk run json.pick --keys {keys}"
+
+
 def run_tool(
     root_dir: Path,
     item: dict,
@@ -407,11 +465,12 @@ def run_tool(
                     {
                         "error": "output_too_large",
                         "why": f"output {size} bytes exceeds TK_MAX_OUTPUT_BYTES ({max_bytes})",
-                        "fix": "narrow with --limit or pipe stdout to json.pick",
+                        "fix": _output_too_large_fix(item, flags, parsed),
                     },
                 ),
             )
-        return _record_and_return(root_dir, item, dry_run, (0, compact_out, ""))
+        hinted = _maybe_next_payload(item, flags, parsed)
+        return _record_and_return(root_dir, item, dry_run, (0, _compact(hinted), ""))
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         return _record_and_return(
             root_dir, item, dry_run,

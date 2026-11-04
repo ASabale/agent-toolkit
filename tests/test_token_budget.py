@@ -33,7 +33,7 @@ def _run_lint(path: Path) -> subprocess.CompletedProcess[str]:
 class TokenBudgetTests(unittest.TestCase):
     def test_skill_stays_within_line_and_byte_ceiling(self):
         raw = SKILL.read_bytes()
-        self.assertLessEqual(len(raw.splitlines()), 45)
+        self.assertLessEqual(len(raw.splitlines()), 46)
         self.assertLessEqual(len(raw), 1800)
 
     def test_find_output_is_two_short_lines_per_item(self):
