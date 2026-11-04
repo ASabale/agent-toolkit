@@ -12,10 +12,26 @@ Model Context Protocol (MCP) servers fight how language models actually work:
 **Agent Toolkit** flips the model around three core principles:
 - **Minimum Cognitive Load**: One flat grammar (`tk run <tool> --flag <value>`), zero flag-ordering traps, and self-healing errors that print the exact `fix` command. Even small or local models succeed on the first try.
 - **Minimum Token Spend**:
-  - *Zero idle bloat*: Only a 35-line skill (`skills/toolkit/SKILL.md`) sits in context.
+  - *Zero idle bloat*: Only a compact skill (`skills/toolkit/SKILL.md`) sits in context.
   - *Single-hop discovery*: `tk find "<intent>"` prints the matching tool and its copy-pasteable `tk run` command immediately—no extra inspection turns.
   - *Distilled outputs*: Tools strip API/log noise and emit only compact, decision-ready JSON.
 - **Usage-Driven Evolution (Zero Bloat)**: Agents save repeatable multi-step commands (`tk save`), chain tools (`tk chain`), and continuously prune unused or overlapping tools (`tk evolve`) so the toolkit stays small and sharp.
+
+## Install
+
+```sh
+git clone https://github.com/ASabale/agent-toolkit.git
+cd agent-toolkit
+./install.sh
+```
+
+The install script:
+1. Creates `~/.local/bin/` and `~/.agents/skills/` if they don't exist.
+2. Symlinks the `tk` CLI to `~/.local/bin/tk`.
+3. Symlinks the toolkit skill to `~/.agents/skills/toolkit`.
+4. Runs `tk check` to verify the installation.
+
+Ensure `~/.local/bin` is in your `PATH`. To use the skill, point your agent harness at `~/.agents/skills/toolkit/SKILL.md`.
 
 ## Repository Layout
 
