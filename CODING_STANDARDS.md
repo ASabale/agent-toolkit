@@ -128,7 +128,34 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 
 ---
 
-### 2.4 `./tk` — CLI Entrypoint
+### 2.4 `lib/tool_sdk.py` — Opt-in helpers for Python tools
+
+Stdlib only, with a 110-line budget (`len(source.splitlines()) <= 110`). Python tools may import it; the tool stays a single file. The Python example in `tools/.template` does `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` before `from lib.tool_sdk import ...`, which assumes the tool lives at `tools/<ns>/<file>.py`. Allowed imports are `json`, `os`, `signal`, `subprocess`, `sys`, `pathlib`, and `__future__`.
+
+- **`emit(payload, code=0) -> int`**
+  Writes one compact JSON line (`json.dumps(payload, separators=(",", ":"))` plus `\n`) to stdout when `code` is 0 and to stderr otherwise. Returns `code`.
+- **`fail(error, why, fix, code=1) -> int`**
+  `emit({"error": error, "why": why, "fix": fix}, code)`.
+- **`is_dry_run() -> bool`**
+  True only when `os.environ.get("TK_DRY_RUN", "0") == "1"`.
+- **`dry_run_ok(**fields) -> int`**
+  `emit({"dry_run": True, **fields})` (stdout, code 0).
+- **`dry_run_plan(plan, **fields) -> int`**
+  `emit({"dry_run": True, "plan": plan, **fields})` (stdout, code 0).
+- **`arg_str(name, default="") -> str`**
+  Reads `TK_ARG_<NAME>`. A `name` that starts with `TK_ARG_` is the env key; otherwise the key is `TK_ARG_` plus `name` with leading `-` stripped, `-` replaced by `_`, and the remainder uppercased. An unset or empty value returns `default`.
+- **`arg_int(name, default, *, min_val=1, fix) -> int`**
+  Uses the same env key as `arg_str`. An unset or empty value uses `str(default)`. A non-int, or a value `< min_val`, raises `SystemExit` with code 2 after `fail("invalid_flag", why, fix, 2)`. `why` is `<label> is not an int: <raw>` or `<label> must be >= <min_val>`. `label` is `name` with leading `-` stripped, a `TK_ARG_` prefix removed, `_` replaced by `-`, then lowercased. `fix` is required.
+- **`paginate(items, limit, key="items", **extra) -> dict`**
+  Copies `items` with `list(items)`, keeps `seq[:max(0, int(limit))]`, and always sets integer `count` (length of the kept slice) and integer `truncated` (`max(0, len(seq) - int(limit))`). The return is `{**extra, key: kept, "count": count, "truncated": truncated}`, so `count` and `truncated` overwrite extra fields of the same name.
+- **`run_cmd(cmd, *, timeout=30, fix, error_code="cmd_failed", cwd=None)`**
+  Runs `cmd` with `subprocess.Popen(..., stdout=PIPE, stderr=PIPE, text=True, cwd=cwd, start_new_session=True)`. `FileNotFoundError` exits 1 with `error` `not_found` and `why` naming `exc.filename` or `cmd[0]`. On `subprocess.TimeoutExpired`, kills that process group with `SIGKILL` (`os.killpg(proc.pid, signal.SIGKILL)`) and exits 1 with `error` `timeout` and `why` `command timed out after <timeout>s`. A non-zero status exits 1 with `error` set to the `error_code` argument (default `"cmd_failed"`) and `why` from stripped stderr, else stdout, else `exited <code>`. When `cmd` is non-empty, `Path(cmd[0]).name == "gh"`, and that `why` contains `auth login`, `not logged`, `not authenticated`, `http 401`, or `bad credentials` (case-insensitive), `fix` is `gh auth login` instead of the caller's `fix`. Success returns `subprocess.CompletedProcess`.
+- **`run_main(fn, *, default_fix)`**
+  Exits with the int `fn()` returns. A `SystemExit` raised by `fn` propagates unchanged, so `arg_int`'s code 2 is kept. `FileNotFoundError` exits 1 as `not_found`, `subprocess.TimeoutExpired` exits 1 as `timeout` (`why` includes `exc.timeout`), and any other `Exception` exits 1 as `internal_error` with `why` `str(exc)`. Those three mapped failures use `default_fix`.
+
+---
+
+### 2.5 `./tk` — CLI Entrypoint
 
 Supports:
 - `tk find [query] [--namespace <ns>] [--limit <n>]` — non-empty query defaults to 5 items (explicit `--limit N` overrides; empty query is uncapped); zero matches for a non-empty query log `search_miss` and write one stderr JSON line `{"error":"no_match","why":"no tool or chain matches '<query>'","fix":"tk find"}` (`fix` is `tk find --namespace <ns>` when the first query token is an existing namespace)
