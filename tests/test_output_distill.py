@@ -79,6 +79,24 @@ BULK_ARRAY_FIXTURE = [
     {"id": index, "name": f"n{index}", "desc": "y" * 8}
     for index in range(2000)
 ]
+BULK10_ARRAY_FIXTURE = [
+    {"id": index, "name": f"n{index}", "desc": "y" * 8}
+    for index in range(10000)
+]
+SELECTION_KEYS = "owner.stuff,name"
+SELECTION_FIXTURE = {
+    "owner": {
+        "login": "x",
+        "stuff": [{"k": index, "v": "z" * 40} for index in range(60)],
+    },
+    "name": "n",
+    "blob": "b" * 3000,
+}
+SELECTION_EXPECTED = {
+    "owner": {"stuff": SELECTION_FIXTURE["owner"]["stuff"]},
+    "name": "n",
+}
+_RUNNER_CAP_DEFAULT = 65536
 
 
 class _RepoHandler(BaseHTTPRequestHandler):
@@ -92,6 +110,10 @@ class _RepoHandler(BaseHTTPRequestHandler):
             body = json.dumps(OVERSIZE_ARRAY_FIXTURE).encode("utf-8")
         elif path == "/bulk":
             body = json.dumps(BULK_ARRAY_FIXTURE).encode("utf-8")
+        elif path == "/bulk10":
+            body = json.dumps(BULK10_ARRAY_FIXTURE).encode("utf-8")
+        elif path == "/selection":
+            body = json.dumps(SELECTION_FIXTURE).encode("utf-8")
         elif path == "/tiny":
             body = json.dumps({"ok": True, "n": 1}).encode("utf-8")
         elif path == "/items":
@@ -117,7 +139,7 @@ class _RepoHandler(BaseHTTPRequestHandler):
 def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     for key in list(merged):
-        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+        if key.startswith("TK_ARG_") or key in {"TK_DRY_RUN", "TK_MAX_OUTPUT_BYTES"}:
             merged.pop(key, None)
     merged.update(env)
     merged.setdefault("TK_DRY_RUN", "0")
@@ -216,7 +238,7 @@ class JsonGetDistillTests(unittest.TestCase):
     def _run_fix_through_shell(self, fix: str) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         for key in list(env):
-            if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+            if key.startswith("TK_ARG_") or key in {"TK_DRY_RUN", "TK_MAX_OUTPUT_BYTES"}:
                 env.pop(key, None)
         env["TK_NO_TELEMETRY"] = "1"
         env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
@@ -350,6 +372,73 @@ class JsonGetDistillTests(unittest.TestCase):
         healed = self._run_fix_through_shell(payload["hint"])
         self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
         self.assertEqual(json.loads(healed.stdout), OVERSIZE_REPO_FIXTURE)
+
+    def _assert_keeps_keys(self, command: str, keys: str, url: str) -> list[str]:
+        argv = shlex.split(command)
+        self.assertIn("--keys", argv, command)
+        self.assertEqual(argv[argv.index("--keys") + 1], keys)
+        self.assertIn(shlex.quote(keys), command)
+        self.assertIn(shlex.quote(url), command)
+        return argv
+
+    def test_explicit_keys_over_cap_fix_keeps_those_keys(self) -> None:
+        selected = len(json.dumps(SELECTION_EXPECTED, separators=(",", ":")).encode("utf-8"))
+        self.assertGreater(selected, _MAX_DEFAULT_BYTES)
+        url = f"{self.base}/selection?a=1&b=2"
+        proc = _run(JSON_GET, {"TK_ARG_URL": url, "TK_ARG_KEYS": SELECTION_KEYS})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["truncated"])
+        self.assertLessEqual(len(proc.stdout.encode("utf-8").rstrip(b"\n")), _MAX_DEFAULT_BYTES)
+        self._assert_keeps_keys(payload["fix"], SELECTION_KEYS, url)
+        self._assert_keeps_keys(payload["hint"], SELECTION_KEYS, url)
+        cap = self._stated_cap(payload["fix"])
+        hint_argv = shlex.split(payload["hint"])
+        self.assertEqual(hint_argv[hint_argv.index("--max-bytes") + 1], "0")
+        healed = self._run_fix_through_shell(payload["fix"])
+        self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+        raw = healed.stdout.encode("utf-8").rstrip(b"\n")
+        self.assertLessEqual(len(raw), cap, payload["fix"])
+        self.assertEqual(json.loads(healed.stdout), SELECTION_EXPECTED)
+        hinted = self._run_fix_through_shell(payload["hint"])
+        self.assertEqual(hinted.returncode, 0, hinted.stderr + hinted.stdout)
+        self.assertEqual(json.loads(hinted.stdout), SELECTION_EXPECTED)
+
+    def test_ten_thousand_item_fix_and_hint_clear_runner_cap(self) -> None:
+        id_only = [{"id": item["id"]} for item in BULK10_ARRAY_FIXTURE]
+        id_size = len(json.dumps(id_only, separators=(",", ":")).encode("utf-8"))
+        full_size = len(json.dumps(BULK10_ARRAY_FIXTURE, separators=(",", ":")).encode("utf-8"))
+        self.assertEqual(len(BULK10_ARRAY_FIXTURE), 10000)
+        self.assertGreater(id_size, _RUNNER_CAP_DEFAULT)
+        self.assertGreater(full_size, _RUNNER_CAP_DEFAULT)
+        url = f"{self.base}/bulk10"
+        proc = _run(JSON_GET, {"TK_ARG_URL": url})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["truncated"])
+        self.assertLessEqual(len(proc.stdout.encode("utf-8").rstrip(b"\n")), _MAX_DEFAULT_BYTES)
+
+        def run_large(command: str) -> tuple[bytes, object]:
+            argv = shlex.split(command)
+            prefix = next(token for token in argv if token.startswith("TK_MAX_OUTPUT_BYTES="))
+            self.assertGreater(int(prefix.split("=", 1)[1]), _RUNNER_CAP_DEFAULT)
+            self.assertIn(shlex.quote(url), command)
+            healed = self._run_fix_through_shell(command)
+            self.assertEqual(healed.returncode, 0, healed.stderr + healed.stdout)
+            raw = healed.stdout.encode("utf-8").rstrip(b"\n")
+            self.assertGreater(len(raw), _RUNNER_CAP_DEFAULT)
+            self.assertLessEqual(len(raw), int(prefix.split("=", 1)[1]))
+            return raw, json.loads(healed.stdout)
+
+        _fix_raw, narrowed = run_large(payload["fix"])
+        self.assertIsInstance(narrowed, list)
+        self.assertEqual(narrowed, id_only)
+        cap = self._stated_cap(payload["fix"])
+        self.assertLessEqual(len(_fix_raw), cap)
+        _hint_raw, hinted = run_large(payload["hint"])
+        self.assertEqual(hinted, BULK10_ARRAY_FIXTURE)
+        hint_argv = shlex.split(payload["hint"])
+        self.assertEqual(hint_argv[hint_argv.index("--max-bytes") + 1], "0")
 
 
 class CodeSearchBoundTests(unittest.TestCase):

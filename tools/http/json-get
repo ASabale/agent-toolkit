@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 
 _MAX_DEFAULT_BYTES = 2048
+_RUNNER_CAP_DEFAULT = 65536
 _HINT_NESTED = ("login", "name", "id", "full_name")
 
 
@@ -101,13 +102,33 @@ def _dict_key_hints(data: dict) -> list[str]:
     return hints
 
 
-def _command(url: str, keys: str | None = None, max_bytes: int | None = None) -> str:
+def _runner_cap() -> int:
+    raw = os.environ.get("TK_MAX_OUTPUT_BYTES", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return _RUNNER_CAP_DEFAULT
+    if value <= 0:
+        return _RUNNER_CAP_DEFAULT
+    return value
+
+
+def _command(
+    url: str,
+    keys: str | None = None,
+    max_bytes: int | None = None,
+    *,
+    emit_size: int | None = None,
+) -> str:
     parts = ["tk run http.json-get", f"--url {shlex.quote(url)}"]
     if keys and keys != "all":
         parts.append(f"--keys {shlex.quote(keys)}")
     if max_bytes is not None:
         parts.append(f"--max-bytes {shlex.quote(str(max_bytes))}")
-    return " ".join(parts)
+    command = " ".join(parts)
+    if emit_size is not None and emit_size > _runner_cap():
+        return f"TK_MAX_OUTPUT_BYTES={emit_size} {command}"
+    return command
 
 
 def _suggest_list_keys(items: list, cap: int) -> str:
@@ -145,14 +166,14 @@ def _narrow_fix(url: str, basis, cap: int, original) -> str:
     narrowed = basis if keys == "all" else filter_keys(basis, keys)
     size = _encoded_size(narrowed)
     if keys != "all" and size <= cap:
-        return _command(url, keys)
+        return _command(url, keys, emit_size=size)
     if keys != "all":
-        return _command(url, keys, size)
+        return _command(url, keys, size, emit_size=size)
     full = original if original is not None else basis
     full_size = _encoded_size(full)
     if full_size > cap:
-        return _command(url, None, full_size)
-    return _command(url)
+        return _command(url, None, full_size, emit_size=full_size)
+    return _command(url, emit_size=full_size)
 
 
 def _capped_payload(kept, fix: str, hint: str) -> dict:
@@ -163,9 +184,14 @@ def _capped_payload(kept, fix: str, hint: str) -> dict:
     return payload
 
 
+def _full_hint(url: str, source) -> str:
+    return _command(url, None, 0, emit_size=_encoded_size(source))
+
+
 def _with_truncation(kept, url: str, original, cap: int) -> dict:
     basis = original if isinstance(original, list) else kept
-    return _capped_payload(kept, _narrow_fix(url, basis, cap, original), _command(url, None, 0))
+    source = original if original is not None else kept
+    return _capped_payload(kept, _narrow_fix(url, basis, cap, original), _full_hint(url, source))
 
 
 def _compact_value(value):
@@ -205,7 +231,7 @@ def _cap_object(data: dict, url: str, cap: int) -> dict:
 def _cap_list(data: list, url: str, cap: int) -> dict:
     # The repair command depends on the source list, not on the kept prefix.
     fix = _narrow_fix(url, data, cap, data)
-    hint = _command(url, None, 0)
+    hint = _full_hint(url, data)
     kept: list = []
     for item in data:
         candidate = [*kept, item]
@@ -245,6 +271,36 @@ def _parse_max_bytes(raw: str | None) -> tuple[int, dict | None]:
     return value, None
 
 
+def _cap_explicit(filtered, cap: int, fix: str, hint: str) -> dict:
+    if isinstance(filtered, list):
+        kept: list = []
+        for item in filtered:
+            candidate = [*kept, item]
+            if _encoded_size(_capped_payload(candidate, fix, hint)) > cap:
+                break
+            kept = candidate
+        return _capped_payload(kept, fix, hint)
+    if isinstance(filtered, dict):
+        compacted = []
+        for key, value in filtered.items():
+            compact = _compact_value(value)
+            if compact is None:
+                continue
+            compacted.append((key, compact))
+        ranked = sorted(
+            compacted,
+            key=lambda item: (0 if _is_scalar(item[1]) else 1, _encoded_size(item[1]), str(item[0])),
+        )
+        kept_obj: dict = {}
+        for key, value in ranked:
+            candidate = dict(kept_obj)
+            candidate[key] = value
+            if _encoded_size(_capped_payload(candidate, fix, hint)) <= cap:
+                kept_obj = candidate
+        return _capped_payload(kept_obj, fix, hint)
+    return _capped_payload({}, fix, hint)
+
+
 def _deliver(data, url: str, keys_raw: str, max_bytes: int):
     if max_bytes == 0:
         if keys_raw.strip() == "all":
@@ -253,9 +309,16 @@ def _deliver(data, url: str, keys_raw: str, max_bytes: int):
     if keys_raw.strip() == "all":
         return distill_default(data, url, max_bytes)
     filtered = filter_keys(data, keys_raw)
-    if _encoded_size(filtered) <= max_bytes:
+    size = _encoded_size(filtered)
+    if size <= max_bytes:
         return filtered
-    return distill_default(filtered, url, max_bytes)
+    keys = keys_raw.strip()
+    return _cap_explicit(
+        filtered,
+        max_bytes,
+        _command(url, keys, size, emit_size=size),
+        _command(url, keys, 0, emit_size=size),
+    )
 
 
 def main() -> int:
