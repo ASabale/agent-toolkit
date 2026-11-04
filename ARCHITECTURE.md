@@ -33,7 +33,7 @@ flowchart LR
 | `tk save <name> ...` | Evolver | Turns a working command or script into a single-file tool in `tools/` and validates it with `tk check`. |
 | `tk evolve` | Evolver | Inspects `state/events.jsonl` to promote recurring patterns and consolidate unused or overlapping tools. |
 | `tk prune [<name> ...] [--unused] [--dry-run]` | Evolver | Archives named tools or chains to `state/archive/` (refusing if a kept chain still uses one); `--unused` adds the tools `tk evolve` reports as unused, skipping any a chain references. `--dry-run` previews. |
-| `tk check [name]` | Maintainer | Validates header completeness, flag parity, dry-run support, and output compactness. |
+| `tk check [name]` | Maintainer | Validates header completeness, flag parity, dry-run support, output compactness, name uniqueness (duplicate-name), and name/path layout parity. |
 
 ### Global Modifiers (Order-Independent)
 - `--dry-run`: Prints the resolved command/pipeline without mutating state.
