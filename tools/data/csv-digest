@@ -99,7 +99,7 @@ def digest(path: str, limit: int) -> dict:
         "delimiter": delimiter,
         "columns": columns,
         "rows": rows,
-        "truncated": rows > limit,
+        "truncated": max(0, rows - len(sample)),
         "null_counts": null_counts,
         "cells_truncated": cells_truncated,
         "sample": sample,

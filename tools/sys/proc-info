@@ -129,7 +129,7 @@ def main() -> int:
         {
             "query": query,
             "count": len(processes),
-            "truncated": len(found) > limit,
+            "truncated": max(0, len(found) - len(processes)),
             "processes": processes,
         }
     )

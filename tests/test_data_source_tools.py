@@ -111,7 +111,7 @@ class SqlQueryTests(unittest.TestCase):
         self.assertEqual(payload["db"], str(db))
         self.assertEqual(payload["columns"], ["id", "name"])
         self.assertEqual(payload["count"], 2)
-        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated"], 1)
         self.assertEqual(
             payload["rows"],
             [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}],
@@ -198,6 +198,39 @@ class SqlQueryTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(json.loads(proc.stderr)["error"], "mutating_sql")
         self.assertEqual(proc.stdout.strip(), "")
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "app.db"
+            _make_db(db)
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [
+                    str(ROOT / "tk"),
+                    "run",
+                    "sql.query",
+                    "--db",
+                    str(db),
+                    "--sql",
+                    "SELECT id, name FROM widgets ORDER BY id",
+                    "--limit",
+                    "1",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(
+            payload["next"],
+            f"tk run sql.query --db {db} --sql 'SELECT id, name FROM widgets ORDER BY id' --limit 2",
+        )
 
 
 class WebReadTextTests(unittest.TestCase):
@@ -291,7 +324,7 @@ class LogTailErrorsTests(unittest.TestCase):
         self.assertEqual(fatal["count"], 1)
         self.assertEqual(fatal["first_line"], 25)
         self.assertEqual(fatal["last_line"], 25)
-        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["truncated"], 0)
 
     def test_preserves_case_in_message_while_deduping(self) -> None:
         body = "ValueError: missing field\nvalueerror: missing field\n"
@@ -337,8 +370,42 @@ class LogTailErrorsTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual(len(payload["errors"]), 2)
-        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated"], 2)
         self.assertEqual([item["message"] for item in payload["errors"]], ["ERROR one", "ERROR two"])
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        body = "ERROR one\nERROR two\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "app.log"
+            path.write_text(body, encoding="utf-8")
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [
+                    str(ROOT / "tk"),
+                    "run",
+                    "log.tail-errors",
+                    "--path",
+                    str(path),
+                    "--tail",
+                    "50",
+                    "--limit",
+                    "1",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(
+            payload["next"],
+            f"tk run log.tail-errors --path {path} --tail 50 --limit 2",
+        )
 
 
 if __name__ == "__main__":

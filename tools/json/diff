@@ -115,15 +115,18 @@ def main() -> int:
         return fail("invalid_json", str(exc), _FIX, 2)
     added, removed, changed = diff_docs(left, right)
     total = len(added) + len(removed) + len(changed)
-    truncated = len(added) > limit or len(removed) > limit or len(changed) > limit
+    kept_added = added[:limit]
+    kept_removed = removed[:limit]
+    kept_changed = changed[:limit]
+    truncated = max(0, total - (len(kept_added) + len(kept_removed) + len(kept_changed)))
     return emit(
         {
             "equal": total == 0,
             "count": total,
             "truncated": truncated,
-            "added": added[:limit],
-            "removed": removed[:limit],
-            "changed": changed[:limit],
+            "added": kept_added,
+            "removed": kept_removed,
+            "changed": kept_changed,
         }
     )
 

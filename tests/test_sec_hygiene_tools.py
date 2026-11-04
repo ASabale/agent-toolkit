@@ -53,7 +53,7 @@ class SecretScanTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertFalse(payload["clean"])
         self.assertEqual(payload["count"], 2)
-        self.assertEqual(payload["truncated"], False)
+        self.assertEqual(payload["truncated"], 0)
         rules = {row["rule"] for row in payload["findings"]}
         self.assertEqual(rules, {"github_token", "aws_access_key"})
         for row in payload["findings"]:
@@ -112,7 +112,7 @@ class TodosTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["count"], 2)
-        self.assertEqual(payload["truncated"], False)
+        self.assertEqual(payload["truncated"], 0)
         self.assertEqual(
             [(row["tag"], row["text"], row["line"]) for row in payload["items"]],
             [("TODO", "fix edge case", 1), ("FIXME", "token expiry", 2)],
@@ -199,7 +199,7 @@ class SecretScanCliTests(unittest.TestCase):
         self.assertNotIn(GITHUB, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertIn("truncated", payload)
-        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["truncated"], 0)
         self.assertFalse(payload["clean"])
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["findings"][0]["rule"], "github_token")
@@ -213,6 +213,48 @@ class SecretScanCliTests(unittest.TestCase):
         )
         self.assertEqual(missing.returncode, 0, missing.stderr)
         self.assertNotIn("sec.repo-hygiene", missing.stdout)
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "a.txt").write_text(GITHUB + "\n", encoding="utf-8")
+            Path(tmp, "b.txt").write_text(AWS + "\n", encoding="utf-8")
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [str(ROOT / "tk"), "run", "sec.secret-scan", "--path", tmp, "--limit", "1"],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["next"], f"tk run sec.secret-scan --path {tmp} --limit 2")
+
+
+class TodosNextTests(unittest.TestCase):
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "notes.py").write_text("# TODO: one\n# TODO: two\n", encoding="utf-8")
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [str(ROOT / "tk"), "run", "code.todos", "--path", tmp, "--limit", "1"],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(payload["next"], f"tk run code.todos --path {tmp} --limit 2")
 
 
 if __name__ == "__main__":

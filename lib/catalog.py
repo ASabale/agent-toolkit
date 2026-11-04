@@ -742,6 +742,8 @@ def _dry_run_error(
         return 'dry-run payload must be a JSON object with "dry_run": true'
     if payload.get("dry_run") is not True:
         return 'dry-run payload is not marked "dry_run": true'
+    if isinstance(payload.get("truncated"), bool):
+        return 'dry-run "truncated" must be an int (omitted count), not bool'
     return None
 
 

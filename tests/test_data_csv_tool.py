@@ -81,7 +81,7 @@ class CsvDigestTests(unittest.TestCase):
         self.assertEqual(payload["delimiter"], ",")
         self.assertEqual(payload["columns"], ["name", "qty", "note"])
         self.assertEqual(payload["rows"], 3)
-        self.assertIs(payload["truncated"], True)
+        self.assertEqual(payload["truncated"], 1)
         self.assertEqual(payload["cells_truncated"], 0)
         self.assertEqual(
             payload["null_counts"],
@@ -105,7 +105,7 @@ class CsvDigestTests(unittest.TestCase):
         self.assertEqual(payload["delimiter"], "\t")
         self.assertEqual(payload["columns"], ["a", "b"])
         self.assertEqual(payload["rows"], 2)
-        self.assertIs(payload["truncated"], False)
+        self.assertEqual(payload["truncated"], 0)
         self.assertEqual(payload["cells_truncated"], 0)
         self.assertEqual(payload["null_counts"], {"a": 0, "b": 1})
         self.assertEqual(payload["sample"], [{"a": "1", "b": "2"}, {"a": "3", "b": ""}])
@@ -153,7 +153,7 @@ class CsvDigestTests(unittest.TestCase):
             proc = _run({"TK_ARG_PATH": str(path), "TK_ARG_LIMIT": "10"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertIs(payload["truncated"], False)
+        self.assertEqual(payload["truncated"], 0)
         self.assertEqual(payload["cells_truncated"], 1)
         self.assertEqual(payload["sample"][0]["keep"], "a" * _CELL_CAP)
         self.assertEqual(payload["sample"][0]["long"], "b" * _CELL_CAP)
@@ -175,7 +175,7 @@ class CsvDigestTests(unittest.TestCase):
         self.assertEqual(len(payload["sample"]), 10)
         self.assertEqual(payload["cells_truncated"], 10)
         self.assertTrue(all(len(row["note"]) == _CELL_CAP for row in payload["sample"]))
-        self.assertIs(payload["truncated"], True)
+        self.assertEqual(payload["truncated"], 10)
 
     def test_printed_fix_for_output_too_large_fits_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,7 +217,19 @@ class CsvDigestTests(unittest.TestCase):
         self.assertTrue(
             all(len(value) == _CELL_CAP for row in payload["sample"] for value in row.values())
         )
-        self.assertIs(payload["truncated"], True)
+        self.assertEqual(payload["truncated"], _WIDE_LIMIT // 2)
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.csv"
+            path.write_text("name\none\ntwo\n", encoding="utf-8")
+            proc = _run_tk(["tk", "run", "data.csv-digest", "--path", str(path), "--limit", "1"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(payload["next"], f"tk run data.csv-digest --path {path} --limit 2")
 
 
 if __name__ == "__main__":

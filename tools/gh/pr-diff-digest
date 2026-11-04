@@ -158,7 +158,7 @@ def main() -> int:
             "files_changed": files_changed,
             "additions": _as_int(meta.get("additions")),
             "deletions": _as_int(meta.get("deletions")),
-            "truncated": len(rows) > limit,
+            "truncated": max(0, len(rows) - len(shown)),
             "files": shown,
         }
     )

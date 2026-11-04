@@ -38,7 +38,7 @@ class ProcInfoTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["query"], pid)
-        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["truncated"], 0)
         self.assertGreaterEqual(payload["count"], 1)
         matched = [row for row in payload["processes"] if row["pid"] == int(pid)]
         self.assertEqual(len(matched), 1)
@@ -48,6 +48,43 @@ class ProcInfoTests(unittest.TestCase):
         self.assertIsInstance(row["rss_kb"], int)
         self.assertIsInstance(row["command"], str)
         self.assertTrue(row["command"])
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        marker = "tk-proc-info-next-marker-107"
+        script = Path("/tmp") / marker
+        script.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        self.addCleanup(script.unlink, missing_ok=True)
+        children = []
+        for _ in range(2):
+            child = subprocess.Popen([str(script)], start_new_session=True)
+            children.append(child)
+
+        def _stop() -> None:
+            for child in children:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                if child.poll() is None:
+                    child.wait(timeout=5)
+
+        self.addCleanup(_stop)
+        env = os.environ.copy()
+        env["TK_NO_TELEMETRY"] = "1"
+        proc = subprocess.run(
+            [str(ROOT / "tk"), "run", "sys.proc-info", "--query", marker, "--limit", "1"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(payload["next"], f"tk run sys.proc-info --query {marker} --limit 2")
 
     def test_matches_command_arguments(self) -> None:
         marker = "tk-proc-info-arg-marker-9f3a"
