@@ -24,7 +24,7 @@ On 2026-11-03, `evolve_report` read the catalog and `state/events.jsonl`. For ea
 
 On 2026-11-03, `_overlap_candidates` tokenized each name and summary into lowercase words of length at least 3, dropped the stopword set `a`, `an`, `and`, `for`, `from`, `into`, `json`, `only`, `per`, `that`, `the`, `this`, `tool`, `tools`, `via`, `with`, `when`, `your`, and emitted a pair when the intersection had at least two tokens. `score` was the Jaccard ratio rounded to three decimals. The function did not drop pairs below a score cutoff, and it did not delete either tool. *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@c37e045`, which excluded structural stopwords like `digest`, `file`, `tree`, `get`, `list`, `path`, `repo`, skipped chain-to-own-step pairs, and required Jaccard `score >= 0.35`.)*
 
-On 2026-11-03, `chains/git.repo-health.json` still had `"verified": "none"` in `ASabale/agent-toolkit@9d469d7`. `evolve_report` promoted only `kind == "tool"`, so that chain was outside auto-promotion.
+On 2026-11-03, `chains/git.repo-health.json` still had `"verified": "none"` in `ASabale/agent-toolkit@9d469d7`. `evolve_report` promoted only `kind == "tool"`, so that chain was outside auto-promotion. *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@46a6538`, which deleted the Wave-1 fallback parser duplication in `lib/evolver.py`, updated `evolve_report` to auto-promote passing `read-only` chains alongside `read-only` tools, and raised the cross-namespace overlap threshold to `0.50` while keeping same-namespace overlap at `0.35`.)*
 
 ## Prune and archive
 

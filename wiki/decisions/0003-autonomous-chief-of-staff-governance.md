@@ -24,6 +24,8 @@ On 2026-11-03, `AGENTS.md` at `ASabale/agent-toolkit@d4c16aa` already required a
 
 On 2026-11-03, history in this directory cites `ASabale/agent-toolkit@4b0e69c` for the clean-slate contract, `ASabale/agent-toolkit@d4c16aa` for the token and cognitive-load rewrite, and `ASabale/agent-toolkit@9d469d7` for the first executable toolkit. A later commit must be named before a page treats it as repository state. See [0001](0001-clean-slate-single-file-contract.md) and [0002](0002-minimum-cognitive-load-and-tokens.md).
 
+On 2026-11-04, `ASabale/agent-toolkit@46a6538` added `CODING_STANDARDS.md` §3 ("Token Budget & Wiki Integrity Gates"), `tools/wiki/lint` (`wiki.lint`), and `tests/test_token_budget.py`, enforcing that `skills/toolkit/SKILL.md` stayed at or below 45 lines / 1,800 bytes, `tk find` stayed at 2 lines per item (`<= 140` chars per line), and `wiki/` had zero orphan pages, zero broken relative links, and zero pages without a `YYYY-MM-DD` date and `@<sha>` commit citation.
+
 ## Related
 
 - [0001 — Clean-slate single-file contract](0001-clean-slate-single-file-contract.md)
