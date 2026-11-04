@@ -596,6 +596,52 @@ class EvolverTests(unittest.TestCase):
         self.assertLess(same[0]["score"], 0.50)
         self.assertEqual(cross, [])
 
+    def test_evolve_no_promote_reports_pick_all_keys_chain(self) -> None:
+        script = _tool_script(
+            name="lab.status",
+            summary="Branch ahead dirty",
+            safety="read-only",
+            body="printf '%s\\n' '{\"ok\":true}'",
+        ).replace(
+            "# @tk-output: json | Compact JSON result\n",
+            "# @tk-output: json | {branch, ahead, dirty}\n",
+        )
+        tool = self.root / "tools" / "lab" / "status"
+        tool.parent.mkdir(parents=True)
+        tool.write_text(script, encoding="utf-8")
+        tool.chmod(0o755)
+        chains = self.root / "chains"
+        chains.mkdir()
+
+        def write_chain(name: str, step: dict) -> None:
+            document = {
+                "kind": "chain",
+                "name": name,
+                "summary": name,
+                "safety": "read-only",
+                "args": [],
+                "steps": [{"tool": "lab.status", "args": {}}, step],
+                "output": "json | {branch, ahead, dirty}",
+                "example": f"tk run {name}",
+                "verified": "none",
+            }
+            (chains / f"{name}.json").write_text(json.dumps(document), encoding="utf-8")
+
+        write_chain("lab.full", {"tool": "json.pick", "args": {"keys": "branch,ahead,dirty"}})
+        write_chain("lab.thin", {"tool": "json.pick", "args": {"keys": "branch,ahead"}})
+        write_chain("lab.shaped", {"tool": "json.query", "args": {"expr": "rows[*].{branch}"}})
+        write_chain("lab.mirror", {"tool": "json.query", "args": {"expr": "{branch,ahead,dirty}"}})
+
+        report = evolve_report(self.root, auto_promote=False)
+        no_ops = [row for row in report["overlap_candidates"] if row.get("reason") == "no_op_chain"]
+        self.assertEqual(
+            no_ops,
+            [
+                {"tools": ["lab.full", "lab.status"], "reason": "no_op_chain"},
+                {"tools": ["lab.mirror", "lab.status"], "reason": "no_op_chain"},
+            ],
+        )
+
     def test_prune_tools_archives_and_refuses_live_chain_deps(self) -> None:
         ok, _, err = save_tool(
             self.root,

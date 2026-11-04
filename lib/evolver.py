@@ -17,7 +17,7 @@ import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from lib.catalog import _referenced_arg_names
+from lib.catalog import _parse_output_keys, _referenced_arg_names
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -1053,7 +1053,85 @@ def _overlap_candidates(catalog: dict[str, dict]) -> list[dict]:
                     "score": round(score, 3),
                 }
             )
+    pairs.extend(_no_op_chain_candidates(catalog))
     return pairs
+
+
+def _no_op_chain_candidates(catalog: dict[str, dict]) -> list[dict]:
+    """Chains that only project every key the upstream tool already declares."""
+    rows: list[dict] = []
+    for name in sorted(catalog):
+        item = catalog[name]
+        if not isinstance(item, dict) or item.get("kind") != "chain":
+            continue
+        upstream_name, upstream_keys = _no_op_upstream(catalog, item.get("steps"))
+        if not upstream_name or upstream_keys is None:
+            continue
+        rows.append({"tools": [name, upstream_name], "reason": "no_op_chain"})
+    return rows
+
+
+def _no_op_upstream(catalog: dict[str, dict], steps: object) -> tuple[str, set[str] | None]:
+    if not isinstance(steps, list) or len(steps) < 2:
+        return "", None
+    upstream_name = _step_tool_name(steps[0])
+    upstream = catalog.get(upstream_name)
+    if not isinstance(upstream, dict) or upstream.get("kind") == "chain":
+        return "", None
+    declared = _parse_output_keys(str(upstream.get("output") or ""))
+    if not declared:
+        return "", None
+    if not all(_step_keeps_all_keys(step, declared) for step in steps[1:]):
+        return "", None
+    return upstream_name, declared
+
+
+def _step_keeps_all_keys(step: object, upstream_keys: set[str]) -> bool:
+    tool = _step_tool_name(step)
+    if tool == "json.pick":
+        requested = _csv_keys(_step_arg(step, "keys", "--keys"))
+        return bool(requested) and upstream_keys <= requested
+    if tool == "json.query":
+        requested = _whole_object_projection(_step_arg(step, "expr", "--expr"))
+        return requested is not None and upstream_keys <= requested
+    return False
+
+
+def _step_tool_name(step: object) -> str:
+    if isinstance(step, dict):
+        tool = step.get("tool")
+        return tool if isinstance(tool, str) else ""
+    if isinstance(step, str):
+        return step
+    return ""
+
+
+def _step_arg(step: object, *names: str) -> str:
+    if not isinstance(step, dict):
+        return ""
+    args = step.get("args")
+    if not isinstance(args, dict):
+        return ""
+    for name in names:
+        value = args.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _csv_keys(raw: str) -> set[str]:
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _whole_object_projection(expr: str) -> set[str] | None:
+    text = expr.strip()
+    if not text.startswith("{") or "}" not in text:
+        return None
+    end = text.index("}")
+    if text[end + 1 :].strip():
+        return None
+    keys = _csv_keys(text[1:end])
+    return keys or None
 
 
 def _chain_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict]:

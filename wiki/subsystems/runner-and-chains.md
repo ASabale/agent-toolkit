@@ -32,6 +32,8 @@ Catalog lookup for those step names went through `discover_catalog`. See [Catalo
 
 On 2026-11-04, `ASabale/agent-toolkit@7001f67` deleted `chains/sec.repo-hygiene.json`. That chain had run `sec.secret-scan` and then `json.pick` with keys `clean,count,findings`, which dropped `truncated`. `sec.secret-scan` remained and still reports `truncated`. This supersedes the chain's presence at `ASabale/agent-toolkit@5a57fcd` and `ASabale/agent-toolkit@5aece9a` without rewriting those claims.
 
+On 2026-11-04, `ASabale/agent-toolkit@e2de2ec` deleted `chains/git.repo-health.json`, `chains/sql.inspect-db.json`, `chains/code.module-surface.json`, and `chains/code.blast-radius.json`. Each chain was one tool (`git.branch-digest`, `sql.schema`, `code.symbols`, or `code.dependents`) followed by `json.pick` and did not collapse a multi-tool workflow. Those four tools remain. This supersedes the `git.repo-health` description at `ASabale/agent-toolkit@9d469d7` without rewriting that claim. The same commit reports a pick-all-keys chain from `tk evolve --no-promote` under `overlap_candidates` with reason `no_op_chain`; see [Evolver and quarantine](evolver-and-quarantine.md).
+
 ## Related
 
 - [0002 — Minimum cognitive load and tokens](../decisions/0002-minimum-cognitive-load-and-tokens.md)

@@ -1,4 +1,4 @@
-"""Seams for code.imports, code.dependents, and code.blast-radius."""
+"""Seams for code.imports and code.dependents."""
 
 import json
 import os
@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 IMPORTS = ROOT / "tools/code/imports"
 DEPENDENTS = ROOT / "tools/code/dependents"
-CHAIN = ROOT / "chains/code.blast-radius.json"
 
 APP_PY = """\
 import os
@@ -263,24 +262,19 @@ class DependentsTests(unittest.TestCase):
 
 
 class BlastRadiusTests(unittest.TestCase):
-    def test_chain_contract_and_run(self) -> None:
-        raw = json.loads(CHAIN.read_text(encoding="utf-8"))
-        self.assertEqual(raw["name"], "code.blast-radius")
-        self.assertEqual(raw["safety"], "read-only")
-        self.assertEqual(raw["verified"], "2026-11-04")
-        flags = {arg["flag"]: arg for arg in raw["args"]}
-        self.assertTrue(flags["--path"]["required"])
-        self.assertTrue(flags["--target"]["required"])
-        self.assertEqual(raw["steps"][0]["tool"], "code.dependents")
-        self.assertEqual(raw["steps"][0]["args"]["path"], "$input.path")
-        self.assertEqual(raw["steps"][0]["args"]["target"], "$input.target")
-        self.assertEqual(raw["steps"][1]["tool"], "json.pick")
-        self.assertEqual(raw["steps"][1]["args"]["keys"], "target,count,truncated,dependents")
-
+    def test_dependents_run_keeps_path(self) -> None:
         env = os.environ.copy()
         env["TK_NO_TELEMETRY"] = "1"
         proc = subprocess.run(
-            [str(ROOT / "tk"), "run", "code.blast-radius", "--path", str(ROOT), "--target", "catalog"],
+            [
+                str(ROOT / "tk"),
+                "run",
+                "code.dependents",
+                "--path",
+                str(ROOT),
+                "--target",
+                "catalog",
+            ],
             capture_output=True,
             text=True,
             env=env,
@@ -288,11 +282,12 @@ class BlastRadiusTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(set(payload), {"target", "count", "truncated", "dependents"})
+        self.assertEqual(set(payload), {"path", "target", "count", "truncated", "dependents"})
         files = {item["file"] for item in payload["dependents"]}
         self.assertIn("lib/runner.py", files)
         self.assertIn("lib/evolver.py", files)
         self.assertEqual(payload["target"], "catalog")
+        self.assertEqual(payload["path"], str(ROOT))
 
 
 if __name__ == "__main__":

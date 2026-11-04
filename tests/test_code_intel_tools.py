@@ -1,4 +1,4 @@
-"""Seams for code.symbols, code.search, and code.module-surface."""
+"""Seams for code.symbols and code.search."""
 
 import json
 import os
@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SYMBOLS = ROOT / "tools/code/symbols"
 SEARCH = ROOT / "tools/code/search"
-CHAIN = ROOT / "chains/code.module-surface.json"
 
 PY_SRC = """\
 class Alpha:
@@ -255,24 +254,13 @@ class SearchTests(unittest.TestCase):
 
 
 class ModuleSurfaceTests(unittest.TestCase):
-    def test_chain_contract_and_run(self) -> None:
-        raw = json.loads(CHAIN.read_text(encoding="utf-8"))
-        self.assertEqual(raw["name"], "code.module-surface")
-        self.assertEqual(raw["safety"], "read-only")
-        self.assertEqual(raw["verified"], "2026-11-04")
-        self.assertEqual(raw["args"][0]["flag"], "--path")
-        self.assertTrue(raw["args"][0]["required"])
-        self.assertEqual(raw["steps"][0]["tool"], "code.symbols")
-        self.assertEqual(raw["steps"][0]["args"]["path"], "$input.path")
-        self.assertEqual(raw["steps"][1]["tool"], "json.pick")
-        self.assertEqual(raw["steps"][1]["args"]["keys"], "path,count,truncated,symbols")
-
+    def test_symbols_run_keeps_kind(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "mod.py").write_text("class Surface:\n    pass\n", encoding="utf-8")
             env = os.environ.copy()
             env["TK_NO_TELEMETRY"] = "1"
             proc = subprocess.run(
-                [str(ROOT / "tk"), "run", "code.module-surface", "--path", tmp],
+                [str(ROOT / "tk"), "run", "code.symbols", "--path", tmp],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -280,9 +268,9 @@ class ModuleSurfaceTests(unittest.TestCase):
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(set(payload), {"path", "count", "truncated", "symbols"})
+        self.assertEqual(set(payload), {"path", "kind", "count", "truncated", "symbols"})
+        self.assertEqual(payload["kind"], "all")
         self.assertEqual(payload["symbols"][0]["name"], "Surface")
-        self.assertNotIn("kind", payload)
 
 
 if __name__ == "__main__":
