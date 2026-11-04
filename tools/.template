@@ -21,3 +21,36 @@ fi
 
 # Emit valid JSON to stdout; send any diagnostics to stderr.
 printf '{"target": "%s", "limit": %s}\n' "${TARGET}" "${LIMIT}"
+
+: <<'TK_PYTHON_EXAMPLE'
+#!/usr/bin/env python3
+# @tk-name: namespace.verb-noun
+# @tk-summary: One-line description of what this tool does and when to use it
+# @tk-safety: read-only
+# @tk-arg: --target | required | string | Target resource identifier (never hardcode)
+# @tk-arg: --limit  | optional | int    | Maximum items to return (default: 20)
+# @tk-output: json | Distilled, minimum-token JSON containing only decision-ready fields
+# @tk-example: tk run namespace.verb-noun --target example-id --limit 10
+# @tk-verified: none
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import arg_int, arg_str, dry_run_ok, emit, is_dry_run, paginate, run_main
+
+_FIX = "tk run namespace.verb-noun --target example-id --limit 10"
+
+
+def main() -> int:
+    target = arg_str("TARGET")
+    limit = arg_int("LIMIT", 20, fix=_FIX)
+    if is_dry_run():
+        return dry_run_ok(target=target or "example-id", limit=limit)
+    # Mutating tools: return dry_run_plan(["gh api ..."]); live path uses run_cmd(cmd, fix=_FIX)
+    return emit(paginate([{"id": target}], limit, key="items", target=target))
+
+
+if __name__ == "__main__":
+    run_main(main, default_fix=_FIX)
+TK_PYTHON_EXAMPLE
