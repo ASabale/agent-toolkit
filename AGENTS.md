@@ -37,7 +37,7 @@ Every agent touching this repository must uphold four non-negotiable laws:
 
 ## Workflow & Verification
 
-1. **Always Pull Latest First (Remote Multi-Agent Sync)**: Multiple agents work on `ASabale/agent-toolkit` concurrently. Always run `git pull --rebase --autostash origin main` (or `tk run git.sync --repo .`) **before** starting work and again **before** committing/pushing your branch so remote changes integrate cleanly without overwriting peer work. Never push to `main`; every change goes through a PR (see COORDINATION.md).
+1. **Always Pull Latest First (Remote Multi-Agent Sync)**: Multiple agents work on `ASabale/agent-toolkit` concurrently. On `main`, run `git pull --rebase --autostash origin main` before starting work. On a feature branch, run `tk run git.sync --repo .` to rebase onto `origin/main` and push the branch, both before starting work and again before committing. Never push to `main`; every change goes through a PR (see COORDINATION.md).
 2. **Before adding or changing core behavior**: Check [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CODING_STANDARDS.md`](CODING_STANDARDS.md) to ensure the change respects module seams and the single-file contract.
 3. **Smoke verify every change**: Run the actual `tk` CLI against a real tool in `tools/` and observe both `stdout` and exit code. Unit tests never substitute for a live CLI smoke run.
 4. **Done criteria for any feature or tool**:
