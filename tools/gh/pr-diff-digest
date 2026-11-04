@@ -86,9 +86,9 @@ def file_rows(meta_files, hunks: dict[str, list[str]]) -> list[dict]:
     return rows
 
 
-def gh(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
+def gh(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [binary, *args],
+        ["gh", *args],
         capture_output=True,
         text=True,
         timeout=30,
@@ -127,8 +127,7 @@ def main() -> int:
     if limit < 1:
         return emit({"error": "invalid_flag", "why": "limit must be >= 1", "fix": _FIX}, 2)
 
-    binary = os.environ.get("TK_GH_BIN") or "gh"
-    view = gh(binary, "pr", "view", str(pr), "--repo", repo, "--json", _VIEW_FIELDS)
+    view = gh("pr", "view", str(pr), "--repo", repo, "--json", _VIEW_FIELDS)
     if view.returncode != 0:
         why = (view.stderr or view.stdout or f"gh exited {view.returncode}").strip()
         return emit({"error": "gh_failed", "why": why[:500], "fix": _FIX}, 1)
@@ -139,7 +138,7 @@ def main() -> int:
     if not isinstance(meta, dict):
         return emit({"error": "gh_failed", "why": "pr view JSON is not an object", "fix": _FIX}, 1)
 
-    diff = gh(binary, "pr", "diff", str(pr), "--repo", repo)
+    diff = gh("pr", "diff", str(pr), "--repo", repo)
     if diff.returncode != 0:
         why = (diff.stderr or diff.stdout or f"gh exited {diff.returncode}").strip()
         return emit({"error": "gh_failed", "why": why[:500], "fix": _FIX}, 1)
@@ -182,7 +181,7 @@ if __name__ == "__main__":
                 {
                     "error": "gh_unavailable",
                     "why": f"{name} not found",
-                    "fix": "install gh or set TK_GH_BIN",
+                    "fix": "install gh: https://cli.github.com",
                 },
                 separators=(",", ":"),
             )

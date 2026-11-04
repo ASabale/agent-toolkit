@@ -70,7 +70,7 @@ else:
 def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     for key in list(merged):
-        if key.startswith("TK_ARG_") or key in {"TK_DRY_RUN", "TK_GH_BIN"}:
+        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
             merged.pop(key, None)
     merged.update(env)
     merged.setdefault("TK_DRY_RUN", "0")
@@ -176,9 +176,10 @@ class PrDiffDigestTests(unittest.TestCase):
         self.fake.chmod(self.fake.stat().st_mode | stat.S_IEXEC)
 
     def test_hunks_capped_and_files_truncated(self) -> None:
-        proc = _run(
+        proc = _run_with_gh(
             ROOT / "tools/gh/pr-diff-digest",
-            {"TK_GH_BIN": str(self.fake), "TK_ARG_REPO": "cli/cli", "TK_ARG_PR": "7", "TK_ARG_LIMIT": "1"},
+            self.fake,
+            {"TK_ARG_REPO": "cli/cli", "TK_ARG_PR": "7", "TK_ARG_LIMIT": "1"},
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
@@ -207,9 +208,10 @@ class PrDiffDigestTests(unittest.TestCase):
         )
 
     def test_all_files_when_under_limit(self) -> None:
-        proc = _run(
+        proc = _run_with_gh(
             ROOT / "tools/gh/pr-diff-digest",
-            {"TK_GH_BIN": str(self.fake), "TK_ARG_REPO": "cli/cli", "TK_ARG_PR": "7", "TK_ARG_LIMIT": "30"},
+            self.fake,
+            {"TK_ARG_REPO": "cli/cli", "TK_ARG_PR": "7", "TK_ARG_LIMIT": "30"},
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
@@ -228,6 +230,20 @@ class PrDiffDigestTests(unittest.TestCase):
             {"dry_run": True, "repo": "cli/cli", "pr": 1, "limit": 20},
         )
 
+    def test_missing_gh_fix_points_at_install_url(self) -> None:
+        empty = Path(self._td.name) / "empty"
+        empty.mkdir()
+        proc = _run(
+            ROOT / "tools/gh/pr-diff-digest",
+            {"PATH": str(empty), "TK_ARG_REPO": "cli/cli", "TK_ARG_PR": "7"},
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertEqual(proc.stdout, "")
+        error = json.loads(proc.stderr)
+        self.assertEqual(error["error"], "gh_unavailable")
+        self.assertIn("not found", error["why"])
+        self.assertEqual(error["fix"], "install gh: https://cli.github.com")
+
 
 class PrOverviewChainTests(unittest.TestCase):
     def test_chain_picks_overview_keys(self) -> None:
@@ -235,16 +251,13 @@ class PrOverviewChainTests(unittest.TestCase):
             fake = Path(tmp) / "gh"
             fake.write_text(_FAKE_GH, encoding="utf-8")
             fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-            previous = os.environ.get("TK_GH_BIN")
-            os.environ["TK_GH_BIN"] = str(fake)
+            previous = os.environ.get("PATH", "")
+            os.environ["PATH"] = str(fake.parent) + os.pathsep + previous
             try:
                 item = load_chain(ROOT / "chains/gh.pr-overview.json")
                 code, stdout, stderr = run_chain(ROOT, item, {"--repo": "cli/cli", "--pr": "7"})
             finally:
-                if previous is None:
-                    os.environ.pop("TK_GH_BIN", None)
-                else:
-                    os.environ["TK_GH_BIN"] = previous
+                os.environ["PATH"] = previous
         self.assertEqual(code, 0, stderr)
         payload = json.loads(stdout)
         self.assertEqual(
