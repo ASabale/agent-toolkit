@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # @tk-name: http.json-get
-# @tk-summary: Fetch a JSON document and optionally keep named top-level keys
+# @tk-summary: Fetch JSON; keep dotted --keys; cap default output with truncated+fix
 # @tk-safety: read-only
 # @tk-arg: --url     | required | string | http(s) URL that returns JSON
-# @tk-arg: --keys    | optional | string | Comma-separated top-level keys to keep, or all (default: all)
+# @tk-arg: --keys    | optional | string | Comma-separated dotted key paths, or all (default: all)
 # @tk-arg: --timeout | optional | int    | Socket timeout in seconds (default: 10)
-# @tk-output: json | Fetched JSON object or array, optionally reduced to --keys
-# @tk-example: tk run http.json-get --url https://example.com/data.json --keys all --timeout 10
-# @tk-verified: 2026-11-03
+# @tk-output: json | Reduced object/array, or capped object with truncated+fix
+# @tk-example: tk run http.json-get --url https://example.com/data.json --keys owner.login,name --timeout 10
+# @tk-verified: 2026-11-04
 
 import json
 import os
@@ -16,6 +16,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+_MAX_DEFAULT_BYTES = 2048
+_HINT_NESTED = ("login", "name", "id", "full_name")
+
 
 def emit(payload, code: int = 0) -> int:
     stream = sys.stdout if code == 0 else sys.stderr
@@ -23,18 +26,142 @@ def emit(payload, code: int = 0) -> int:
     return code
 
 
+def _encoded_size(payload) -> int:
+    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def _is_scalar(value) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _get_path(data, path: str):
+    current = data
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def _set_path(target: dict, path: str, value) -> dict:
+    parts = path.split(".")
+    updated = dict(target)
+    cursor = updated
+    for part in parts[:-1]:
+        existing = cursor.get(part)
+        child = dict(existing) if isinstance(existing, dict) else {}
+        cursor[part] = child
+        cursor = child
+    cursor[parts[-1]] = value
+    return updated
+
+
+def pick_paths(data: dict, keys: list[str]) -> dict:
+    picked: dict = {}
+    for key in keys:
+        if key in data:
+            picked = dict(picked)
+            picked[key] = data[key]
+            continue
+        found, value = _get_path(data, key)
+        if found:
+            picked = _set_path(picked, key, value)
+    return picked
+
+
 def filter_keys(data, keys_raw: str):
     if not keys_raw or keys_raw.strip() == "all":
         return data
     keys = [part.strip() for part in keys_raw.split(",") if part.strip()]
     if isinstance(data, dict):
-        return {key: data[key] for key in keys if key in data}
+        return pick_paths(data, keys)
     if isinstance(data, list):
-        return [
-            {key: item[key] for key in keys if isinstance(item, dict) and key in item}
-            for item in data
-        ]
+        return [pick_paths(item, keys) if isinstance(item, dict) else {} for item in data]
     return data
+
+
+def _suggest_keys(data) -> str:
+    if not isinstance(data, dict):
+        return "all"
+    hints: list[str] = []
+    for key, value in data.items():
+        if _is_scalar(value):
+            hints.append(key)
+        elif isinstance(value, dict):
+            nested = next(
+                (name for name in _HINT_NESTED if name in value and _is_scalar(value[name])),
+                None,
+            )
+            if nested:
+                hints.append(f"{key}.{nested}")
+        if len(hints) >= 6:
+            break
+    return ",".join(hints) if hints else "all"
+
+
+def _narrow_fix(url: str, data) -> str:
+    return f"tk run http.json-get --url {url} --keys {_suggest_keys(data)}"
+
+
+def _with_truncation(kept, url: str, source) -> dict:
+    payload = dict(kept) if isinstance(kept, dict) else {"items": list(kept)}
+    payload["truncated"] = True
+    payload["fix"] = _narrow_fix(url, source)
+    return payload
+
+
+def _compact_value(value):
+    if isinstance(value, str):
+        return value if len(value) <= 160 else None
+    if isinstance(value, dict):
+        nested = next(
+            (name for name in _HINT_NESTED if name in value and _is_scalar(value[name])),
+            None,
+        )
+        return {nested: value[nested]} if nested else None
+    if isinstance(value, list):
+        return None
+    return value
+
+
+def _cap_object(data: dict, url: str) -> dict:
+    compacted = []
+    for key, value in data.items():
+        compact = _compact_value(value)
+        if compact is None:
+            continue
+        compacted.append((key, compact))
+    ranked = sorted(
+        compacted,
+        key=lambda item: (0 if _is_scalar(item[1]) else 1, _encoded_size(item[1]), str(item[0])),
+    )
+    kept: dict = {}
+    for key, value in ranked:
+        candidate = dict(kept)
+        candidate[key] = value
+        if _encoded_size(_with_truncation(candidate, url, data)) <= _MAX_DEFAULT_BYTES:
+            kept = candidate
+    return _with_truncation(kept, url, data)
+
+
+def _cap_list(data: list, url: str) -> dict:
+    kept: list = []
+    for item in data:
+        candidate = [*kept, item]
+        if _encoded_size(_with_truncation(candidate, url, data)) > _MAX_DEFAULT_BYTES:
+            break
+        kept = candidate
+    return _with_truncation(kept, url, data)
+
+
+def distill_default(data, url: str):
+    if _encoded_size(data) <= _MAX_DEFAULT_BYTES:
+        return data
+    if isinstance(data, dict):
+        return _cap_object(data, url)
+    if isinstance(data, list):
+        return _cap_list(data, url)
+    return _with_truncation({}, url, data)
 
 
 def main() -> int:
@@ -127,6 +254,8 @@ def main() -> int:
             },
             1,
         )
+    if keys_raw.strip() == "all":
+        return emit(distill_default(data, url))
     return emit(filter_keys(data, keys_raw))
 
 
