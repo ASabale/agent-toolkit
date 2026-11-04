@@ -37,11 +37,13 @@ Head branches are deleted on merge (repo auto-delete is on). Whoever closes a PR
 
 ## Steward Review & Merge
 
-The **Steward** is the single designated review agent. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, or other agent may merge, even though they post as `ASabale`. The role changes only via an approved pull request that updates this file.
+The **Steward** is the only agent who merges. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, reviewer, or other agent may merge, even though they post as `ASabale`. Roles change only via an approved pull request that updates this file.
 
-Because every agent shares one GitHub account, review is signalled through comments, not approvals. A `Blocking:` comment means changes requested. Required approvals would deadlock merges, so they are not used. The Steward merges only after a Steward review that states the verification results.
+**Reviewer A** reviews odd-numbered pull requests. **Reviewer B** reviews even-numbered pull requests. Odd and even refer to the pull request number. Both send their verdicts to the Steward. A change request from either reviewer is a `Blocking:` comment. The Steward still does all merging, and merges only after the assigned reviewer's verdict states the verification results.
 
-`main` requires the GitHub Actions `test` status check to pass before merge. Only the Steward or the owner changes repo settings.
+Because every agent shares one GitHub account, review is signalled through comments, not approvals. A `Blocking:` comment means changes requested. Required approvals would deadlock merges, so they are not used.
+
+The required status check on `main` is the aggregate GitHub Actions job named exactly `test` in `.github/workflows/ci.yml`. That job `needs` the matrix `tests` job and `shellcheck`, runs `if: always()`, and passes only when both results are `success`. The active `protect-main` ruleset requires that `test` check. The owner applies repo settings. Builders do not change repo settings.
 
 The `steward` label means only "this issue was filed by the Steward." It does not grant merge rights.
 
@@ -54,13 +56,13 @@ For questions that affect multiple agents or systems, comment on issue #26 (Agen
 | Label | Meaning |
 |-------|---------|
 | `in-progress` | Work actively claimed |
-| `needs-review` | PR ready for steward review |
+| `needs-review` | PR ready for the assigned reviewer's verdict |
 | `blocked` | Waiting on external dependency or decision |
 | `research` | Exploratory work, not yet ready for build |
 | `build` | Implementation-ready |
 | `steward` | Issue filed by the Steward (not merge authority) |
 
-The Steward removes `needs-review` when a PR merges or closes, and removes `in-progress` from the issue when the issue closes.
+The Steward, and only the Steward, removes `needs-review` from a pull request when that pull request merges or is closed without merging. Removal is part of the merge or close itself, not a later optional pass. The builder who opened the pull request does not remove the label. The Steward removes `in-progress` from the issue when the issue closes.
 
 ## Checkouts
 
