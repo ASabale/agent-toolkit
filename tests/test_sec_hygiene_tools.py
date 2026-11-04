@@ -1,4 +1,4 @@
-"""Seams for sec.secret-scan, code.todos, and sec.repo-hygiene."""
+"""Seams for sec.secret-scan and code.todos."""
 
 import json
 import os
@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SECRET_SCAN = ROOT / "tools/sec/secret-scan"
 TODOS = ROOT / "tools/code/todos"
-CHAIN = ROOT / "chains/sec.repo-hygiene.json"
 
 GITHUB = "ghp_" + ("A" * 30)
 AWS = "AKIA" + ("B" * 16)
@@ -181,29 +180,15 @@ class TodosTests(unittest.TestCase):
         )
 
 
-class RepoHygieneTests(unittest.TestCase):
-    def test_chain_contract_and_run(self) -> None:
-        raw = json.loads(CHAIN.read_text(encoding="utf-8"))
-        self.assertEqual(raw["name"], "sec.repo-hygiene")
-        self.assertEqual(raw["verified"], "2026-11-04")
-        self.assertEqual(raw["args"][0]["flag"], "--path")
-        self.assertTrue(raw["args"][0]["required"])
-        self.assertEqual(raw["args"][0]["type"], "string")
-        self.assertEqual(raw["args"][1]["flag"], "--limit")
-        self.assertFalse(raw["args"][1]["required"])
-        self.assertEqual(raw["args"][1]["type"], "int")
-        self.assertEqual(raw["steps"][0]["tool"], "sec.secret-scan")
-        self.assertEqual(raw["steps"][0]["args"], {"path": "$input.path", "limit": "$input.limit"})
-        self.assertEqual(raw["steps"][1]["tool"], "json.pick")
-        self.assertEqual(raw["steps"][1]["args"]["keys"], "clean,count,findings")
-        self.assertEqual(raw["example"], "tk run sec.repo-hygiene --path .")
-
+class SecretScanCliTests(unittest.TestCase):
+    def test_run_keeps_truncated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "leak.txt").write_text(GITHUB + "\n", encoding="utf-8")
             env = os.environ.copy()
             env["TK_NO_TELEMETRY"] = "1"
+            env.pop("TK_STATE_DIR", None)
             proc = subprocess.run(
-                [str(ROOT / "tk"), "run", "sec.repo-hygiene", "--path", tmp],
+                [str(ROOT / "tk"), "run", "sec.secret-scan", "--path", tmp, "--limit", "25"],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -213,11 +198,21 @@ class RepoHygieneTests(unittest.TestCase):
         self.assertNotIn(GITHUB, proc.stdout)
         self.assertNotIn(GITHUB, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(set(payload), {"clean", "count", "findings"})
+        self.assertIn("truncated", payload)
+        self.assertFalse(payload["truncated"])
         self.assertFalse(payload["clean"])
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["findings"][0]["rule"], "github_token")
         self.assertIn("****", payload["findings"][0]["preview"])
+        missing = subprocess.run(
+            [str(ROOT / "tk"), "find", "sec.repo-hygiene"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+        )
+        self.assertEqual(missing.returncode, 0, missing.stderr)
+        self.assertNotIn("sec.repo-hygiene", missing.stdout)
 
 
 if __name__ == "__main__":
