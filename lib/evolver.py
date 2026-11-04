@@ -137,6 +137,7 @@ def save_tool(
             saved_event="tool_saved",
             saved_payload={"name": name, "path": str(dest), "safety": safety, "kind": "tool"},
             catalog_root=root / "tools",
+            already_exists_fix=_save_tool_force_hint(name, summary, safety, from_cmd, file_path, args_spec),
         )
     except Exception as exc:
         return _failure("internal_error", str(exc), "tk check")
@@ -195,6 +196,7 @@ def save_chain(
             saved_event="chain_saved",
             saved_payload={"name": name, "path": str(dest), "safety": safety, "kind": "chain"},
             catalog_root=root / "chains",
+            already_exists_fix=_save_chain_force_hint(name, summary, safety, steps, chain_args),
         )
     except Exception as exc:
         return _failure("internal_error", str(exc), "tk check")
@@ -302,6 +304,74 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         }
     except Exception:
         return empty
+
+
+def _quoted_cli(parts: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _arg_cli_parts(specs: list[str] | None) -> list[str]:
+    parts: list[str] = []
+    for spec in specs or []:
+        parts.extend(["--arg", spec])
+    return parts
+
+
+def _chain_arg_specs(args: list[dict] | None) -> list[str]:
+    specs: list[str] = []
+    for arg in args or []:
+        if not isinstance(arg, dict):
+            continue
+        flag = arg.get("flag") or arg.get("name")
+        if not isinstance(flag, str) or not flag.startswith("--"):
+            continue
+        required = "optional" if arg.get("required") in {False, "optional"} else "required"
+        typ = str(arg.get("type") or "string")
+        description = str(arg.get("description") or flag.lstrip("-"))
+        specs.append(f"{flag} | {required} | {typ} | {description}")
+    return specs
+
+
+def _save_tool_force_hint(
+    name: str,
+    summary: str,
+    safety: str,
+    from_cmd: str | None,
+    file_path: str | None,
+    args_spec: list[str] | None,
+) -> str:
+    parts = ["tk", "save", name, "--summary", summary, "--safety", safety]
+    if file_path:
+        parts.extend(["--file", file_path])
+    elif from_cmd:
+        parts.extend(["--from-cmd", from_cmd])
+    parts.extend(_arg_cli_parts(args_spec))
+    parts.append("--force")
+    return _quoted_cli(parts)
+
+
+def _save_chain_force_hint(
+    name: str,
+    summary: str,
+    safety: str,
+    steps: list[dict],
+    args: list[dict] | None,
+) -> str:
+    parts = [
+        "tk",
+        "chain",
+        "save",
+        name,
+        "--summary",
+        summary,
+        "--safety",
+        safety,
+        "--steps",
+        json.dumps(steps, separators=(",", ":")),
+    ]
+    parts.extend(_arg_cli_parts(_chain_arg_specs(args)))
+    parts.append("--force")
+    return _quoted_cli(parts)
 
 
 def _failure(error: str, why: str, fix: str) -> tuple[int, str, str]:
@@ -609,9 +679,10 @@ def _commit_draft(
     saved_event: str,
     saved_payload: dict,
     catalog_root: Path,
+    already_exists_fix: str,
 ) -> tuple[int, str, str]:
     if dest.exists() and not force:
-        return _failure("already_exists", f"{dest.name} already exists", "pass force=True to replace it")
+        return _failure("already_exists", f"{dest.name} already exists", already_exists_fix)
     previous = dest.read_bytes() if dest.exists() and dest.is_file() else None
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
