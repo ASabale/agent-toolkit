@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # @tk-name: code.search
-# @tk-summary: Search UTF-8 source files for a regular expression
+# @tk-summary: Search UTF-8 sources for a regex; default --limit 30 and trimmed lines
 # @tk-safety: read-only
 # @tk-arg: --path | required | string | File or directory path to search
 # @tk-arg: --pattern | required | string | Regular expression pattern to match
@@ -19,6 +19,7 @@ import sys
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
 _DEFAULT_LIMIT = 30
 _TEXT_CAP = 160
+_MAX_DEFAULT_BYTES = 2048
 
 
 def emit(payload: dict, code: int = 0) -> int:
@@ -51,6 +52,36 @@ def _glob_ok(name: str, pattern: str) -> bool:
     if pattern in {"", "all", "*"}:
         return True
     return fnmatch.fnmatch(name, pattern)
+
+
+def _encoded_size(payload: dict) -> int:
+    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def _cap_default_payload(payload: dict) -> dict:
+    if _encoded_size(payload) <= _MAX_DEFAULT_BYTES:
+        return payload
+    matches = list(payload["matches"])
+    omitted = int(payload["truncated"])
+    while matches:
+        matches = matches[:-1]
+        omitted += 1
+        candidate = {
+            "path": payload["path"],
+            "pattern": payload["pattern"],
+            "count": len(matches),
+            "truncated": omitted,
+            "matches": matches,
+        }
+        if _encoded_size(candidate) <= _MAX_DEFAULT_BYTES:
+            return candidate
+    return {
+        "path": payload["path"],
+        "pattern": payload["pattern"],
+        "count": 0,
+        "truncated": omitted,
+        "matches": [],
+    }
 
 
 def search(root: str, pattern: str, glob: str, limit: int) -> dict:
@@ -162,7 +193,10 @@ def main() -> int:
             },
             1,
         )
-    return emit(search(path, pattern, glob, limit))
+    payload = search(path, pattern, glob, limit)
+    if limit == _DEFAULT_LIMIT:
+        payload = _cap_default_payload(payload)
+    return emit(payload)
 
 
 if __name__ == "__main__":
