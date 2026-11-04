@@ -113,6 +113,26 @@ class GitSyncTests(unittest.TestCase):
             porcelain = _git(clone_b, "status", "--porcelain")
             self.assertIn("local.txt", porcelain.stdout)
 
+    def test_dry_run_plan_is_fetch_and_pull_rebase_autostash(self) -> None:
+        proc = _run(
+            {
+                "TK_ARG_REPO": ".",
+                "TK_ARG_REMOTE": "origin",
+                "TK_ARG_BRANCH": "main",
+                "TK_DRY_RUN": "1",
+            }
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIs(payload["dry_run"], True)
+        self.assertEqual(
+            payload["plan"],
+            [
+                "git fetch origin main",
+                "git pull --rebase --autostash origin main",
+            ],
+        )
+
     def test_conflict_aborts_rebase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _origin, clone_a, clone_b = _pair(Path(tmp))

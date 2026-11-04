@@ -577,7 +577,44 @@ def _syntax_error(path: Path) -> str | None:
     return None
 
 
-def _dry_run_error(path: Path, args: list[dict]) -> str | None:
+def _script_mentions_tk_dry_run(path: Path) -> bool:
+    """True when a non-comment line references ``TK_DRY_RUN``."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        if "TK_DRY_RUN" in _strip_unquoted_comment(line):
+            return True
+    return False
+
+
+def _dry_run_guard_error(path: Path) -> str | None:
+    """Fail mutating/destructive tools that never branch on ``TK_DRY_RUN``."""
+    safety = str(parse_tool_header(path).get("safety") or "")
+    if safety not in {"mutating", "destructive"}:
+        return None
+    if _script_mentions_tk_dry_run(path):
+        return None
+    return f"{safety} tool must branch on TK_DRY_RUN"
+
+
+def _dry_run_plan_error(payload: object, safety: str) -> str | None:
+    if safety not in {"mutating", "destructive"}:
+        return None
+    if not isinstance(payload, dict):
+        return "dry-run stdout must be a JSON object with dry_run and plan"
+    if payload.get("dry_run") is not True:
+        return "dry-run stdout must set dry_run: true"
+    plan = payload.get("plan")
+    if not isinstance(plan, list) or not plan:
+        return "dry-run stdout missing non-empty plan"
+    return None
+
+
+def _dry_run_error(path: Path, args: list[dict], safety: str = "") -> str | None:
     env = os.environ.copy()
     for key in list(env):
         if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
@@ -588,16 +625,25 @@ def _dry_run_error(path: Path, args: list[dict]) -> str | None:
             env_var = str(arg.get("env_var") or "")
             if env_var:
                 env[env_var] = _dummy(str(arg.get("type") or "string"))
-    try:
-        proc = subprocess.run(
+
+    def invoke(cwd: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             [str(path)],
             capture_output=True,
             text=True,
             timeout=10,
             env=env,
-            cwd=str(path.parent),
+            cwd=cwd,
             check=False,
         )
+
+    try:
+        if safety in {"mutating", "destructive"}:
+            with tempfile.TemporaryDirectory() as scratch:
+                env["HOME"] = scratch
+                proc = invoke(scratch)
+        else:
+            proc = invoke(str(path.parent))
     except subprocess.TimeoutExpired:
         return "dry-run timed out"
     except OSError as exc:
@@ -610,10 +656,10 @@ def _dry_run_error(path: Path, args: list[dict]) -> str | None:
     if not stdout:
         return "dry-run produced empty stdout; expected JSON"
     try:
-        json.loads(stdout)
+        payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         return f"dry-run stdout is not valid JSON: {exc.msg}"
-    return None
+    return _dry_run_plan_error(payload, safety)
 
 
 def _default_matches(typ: str, default: str) -> bool:
@@ -902,9 +948,17 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
             if syntax:
                 errors.append(syntax)
             elif os.access(path, os.X_OK):
-                dry = _dry_run_error(path, item.get("args") or [])
-                if dry:
-                    errors.append(dry)
+                guard = _dry_run_guard_error(path)
+                if guard:
+                    errors.append(guard)
+                else:
+                    dry = _dry_run_error(
+                        path,
+                        item.get("args") or [],
+                        str(item.get("safety") or ""),
+                    )
+                    if dry:
+                        errors.append(dry)
         else:
             catalog = discover_catalog(root_dir)
             steps = item.get("steps") or []
