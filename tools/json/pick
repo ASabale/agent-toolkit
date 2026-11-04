@@ -10,12 +10,12 @@
 import json
 import os
 import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
-def emit(payload, code: int = 0) -> int:
-    stream = sys.stdout if code == 0 else sys.stderr
-    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    return code
+_FIX = "tk run json.pick --keys <k1,k2>"
 
 
 def keys_from_env() -> list[str]:
@@ -31,65 +31,30 @@ def pick(obj, keys: list[str]):
 
 def main() -> int:
     keys = keys_from_env()
-    if os.environ.get("TK_DRY_RUN", "0") == "1":
-        return emit({"dry_run": True, "keys": keys or ["example"]})
+    if is_dry_run():
+        return dry_run_ok(keys=keys or ["example"])
     if not keys:
-        return emit(
-            {
-                "error": "missing_flag",
-                "why": "TK_ARG_KEYS is required",
-                "fix": "tk run json.pick --keys <k1,k2>",
-            },
-            2,
-        )
+        return fail("missing_flag", "TK_ARG_KEYS is required", _FIX, 2)
     raw = sys.stdin.read()
     if not raw.strip():
-        return emit(
-            {
-                "error": "empty_stdin",
-                "why": "json.pick expects a JSON object or array on stdin",
-                "fix": "tk run <producer> | tk run json.pick --keys <k1,k2>",
-            },
-            1,
+        return fail(
+            "empty_stdin",
+            "json.pick expects a JSON object or array on stdin",
+            "tk run <producer> | tk run json.pick --keys <k1,k2>",
         )
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return emit(
-            {
-                "error": "invalid_json",
-                "why": str(exc),
-                "fix": "tk run json.pick --keys <k1,k2>",
-            },
-            1,
-        )
+        return fail("invalid_json", str(exc), _FIX)
     if isinstance(data, list):
         return emit([pick(item, keys) for item in data])
     if isinstance(data, dict):
         return emit(pick(data, keys))
-    return emit(
-        {
-            "error": "invalid_json",
-            "why": "stdin JSON must be an object or array",
-            "fix": "tk run json.pick --keys <k1,k2>",
-        },
-        1,
-    )
+    return fail("invalid_json", "stdin JSON must be an object or array", _FIX)
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        sys.stderr.write(
-            json.dumps(
-                {
-                    "error": "tool_error",
-                    "why": str(exc),
-                    "fix": "tk run json.pick --keys <k1,k2>",
-                },
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        raise SystemExit(1)
+        raise SystemExit(fail("tool_error", str(exc), _FIX))
