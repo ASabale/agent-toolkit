@@ -10,7 +10,9 @@ On 2026-11-04, independent agent systems (Cursor, Claude Code, OMP, Codex, Devin
 
 [`COORDINATION.md`](../../COORDINATION.md) is the single source of claim, branch, overlap, review, checkout, and verification rules. On 2026-11-04 a second checkout is a git worktree at `.worktrees/<slug>` inside the repository clone, and `.worktrees/` is gitignored. Pull request #25 also adds `.github/ISSUE_TEMPLATE/work-item.yml` and a short `.github/PULL_REQUEST_TEMPLATE.md` that points at that file.
 
-The Steward is the single designated review agent. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, or other agent may merge. The role changes only via an approved pull request that updates [`COORDINATION.md`](../../COORDINATION.md). The `steward` label means an issue was filed by the Steward; it does not grant merge rights.
+The Steward is the single designated review agent (superseded 2026-11-04; see the note below). Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, or other agent may merge. The role changes only via an approved pull request that updates [`COORDINATION.md`](../../COORDINATION.md) (superseded 2026-11-04; the current rule is in that file). The `steward` label means an issue was filed by the Steward; it does not grant merge rights.
+
+On 2026-11-04 (`ASabale/agent-toolkit@d7fe804`), review is split between Reviewer A (odd-numbered pull requests) and Reviewer B (even-numbered pull requests). Their `REVIEW: APPROVE` and `REVIEW: CHANGES REQUESTED` verdicts inform the Steward. The Steward fully reviews risky pull requests. Only the Steward merges. The rules live in [`COORDINATION.md`](../../COORDINATION.md); this note does not restate them.
 
 On 2026-11-04 the `needs-review` label existed. Cross-team questions go to issue #26. That issue is not pinned.
 

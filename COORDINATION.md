@@ -33,17 +33,17 @@ Stay inside the issue's Files section. If another open issue or PR already claim
 3. Push your branch and open a PR. Add the `needs-review` label.
 4. Reference `Closes #N` in the PR body.
 
-Auto-delete of merged branches is requested but not yet confirmed (merged branches such as `cos/99-ci-shellcheck-macos` and `cos/123-readme-install-hooks` still exist). Whoever closes a PR unmerged deletes its branch. Stale merged branches may be cleaned up once.
+Auto-delete of merged branches is off: `delete_branch_on_merge` is false. The Steward deletes the head branch after merging. Whoever closes a PR unmerged deletes its branch.
 
 ## Steward Review & Merge
 
-The **Steward** is the only agent who merges. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, reviewer, or other agent may merge, even though they post as `ASabale`. Roles change only via an approved pull request that updates this file.
+The **Steward** is the only agent who merges. Every agent posts as `ASabale`; posting from that account does not confer the role. No builder, author, reviewer, or other agent may merge, even though they post as `ASabale`. Roles change only via a pull request to this file that the Steward fully reviews and merges.
 
 **Reviewer A** reviews odd-numbered pull requests. **Reviewer B** reviews even-numbered pull requests. Odd and even refer to the pull request number. Their verdicts inform the Steward's merge decision. They do not replace it. The Steward still decides and merges.
 
-Reviewers post a comment that starts with `REVIEW: APPROVE` or `REVIEW: CHANGES REQUESTED`. A changes-requested verdict may include a `Blocking:` line. Because every agent shares one GitHub account, review is signalled through comments, not approvals. Required approvals would deadlock merges, so they are not used.
+Reviewers post a comment that starts with `REVIEW: APPROVE` or `REVIEW: CHANGES REQUESTED`. Every blocker is a `Blocking:` line, and a `Blocking:` comment means changes are requested. Any unresolved `Blocking:` point holds the merge, including the Steward's own COMMENT reviews, not only Reviewer A or Reviewer B verdicts. Because every agent shares one GitHub account, review is signalled through comments, not approvals. Required approvals would deadlock merges, so they are not used.
 
-The Steward may merge on the assigned reviewer's all-gates `REVIEW: APPROVE` for the current head SHA when that verdict's evidence covers every gate: green CI, `tk check`, the full unittest suite with and without `TK_NO_TELEMETRY=1`, token budgets, wiki lint, and protocol and VISION.md fit. For risky pull requests (runner, safe-write, CI workflows, `install.sh`, `COORDINATION.md`, `VISION.md`, evolver/prune), and whenever reviewer evidence is missing or stale, the Steward reviews fully itself and may merge on its own review. Risky pull requests always get the Steward's full review. A reviewer verdict is input, and the Steward has the final say.
+Before any merge, the Steward re-confirms green CI on the current head, no merge conflicts, and fit with [`VISION.md`](VISION.md). That re-check comes first when the Steward merges on a reviewer's `REVIEW: APPROVE`. The Steward may merge on the assigned reviewer's all-gates `REVIEW: APPROVE` for the current head SHA when that verdict's evidence covers every gate in the Verification block below: green CI, `./tk check`, the full unittest suite plain and then with `TK_NO_TELEMETRY=1`, `python3 -m unittest tests.test_token_budget`, `./tk run wiki.lint --path wiki`, and protocol and VISION.md fit. For risky pull requests (runner, safe-write, CI workflows, `install.sh`, `COORDINATION.md`, `VISION.md`, evolver/prune), and whenever reviewer evidence is missing or stale, the Steward reviews fully itself and may merge on its own review. Risky pull requests always get the Steward's full review. A reviewer verdict is input, and the Steward has the final say.
 
 The active `protect-main` ruleset requires the GitHub Actions status check named exactly `test` (the aggregate job in `.github/workflows/ci.yml`). That job `needs` the matrix `tests` job and `shellcheck`, runs `if: always()`, and passes only when both results are `success`. Branches do not need to be up to date before merging. Never rename or remove the `test` job in `.github/workflows/ci.yml`: the required check would then never report, and every pull request would be blocked. Only the Steward or the owner changes repo settings.
 
@@ -81,8 +81,10 @@ Never set `core.bare` on the main clone. `.worktrees/` is gitignored. After the 
 
 ```bash
 ./tk check
-./tk run wiki.lint --path wiki
 python3 -m unittest discover -s tests
+TK_NO_TELEMETRY=1 python3 -m unittest discover -s tests
+python3 -m unittest tests.test_token_budget
+./tk run wiki.lint --path wiki
 ```
 
 ## Checklist
