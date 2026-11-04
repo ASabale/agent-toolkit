@@ -95,6 +95,58 @@ class BlameSliceTests(unittest.TestCase):
         self.assertEqual(hunks[2]["sha"], hunks[0]["sha"])
         self.assertTrue(hunks[0]["date"])
 
+    def test_default_end_on_short_file_clamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _git(repo, "init", author="Alice")
+            notes = repo / "short.txt"
+            notes.write_text("one\ntwo\n", encoding="utf-8")
+            _git(repo, "add", "short.txt", author="Alice")
+            _git(repo, "commit", "-m", "short", author="Alice")
+            proc = _run(
+                BLAME,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_FILE": "short.txt",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["start"], 1)
+        self.assertEqual(payload["end"], 40)
+        self.assertEqual(
+            [(h["start_line"], h["end_line"]) for h in payload["hunks"]],
+            [(1, 2)],
+        )
+        self.assertEqual(payload["hunks"][0]["summary"], "short")
+
+    def test_start_past_eof_is_invalid_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _git(repo, "init", author="Alice")
+            (repo / "short.txt").write_text("one\ntwo\n", encoding="utf-8")
+            _git(repo, "add", "short.txt", author="Alice")
+            _git(repo, "commit", "-m", "short", author="Alice")
+            proc = _run(
+                BLAME,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_FILE": "short.txt",
+                    "TK_ARG_START": "99",
+                },
+            )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "invalid_range")
+        self.assertEqual(
+            payload["why"],
+            "--start 99 exceeds file length (2 lines)",
+        )
+        self.assertIn("--start 1 --end 2", payload["fix"])
+
     def test_missing_file_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _sample_repo(Path(tmp))
@@ -157,6 +209,24 @@ class HotspotTests(unittest.TestCase):
         self.assertEqual(top["file"], "alpha.txt")
         self.assertEqual(top["commits"], 2)
         self.assertEqual(top["authors"], 2)
+
+    def test_empty_repo_reports_no_hotspots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _git(repo, "init", author="Alice")
+            proc = _run(HOTSPOTS, {"TK_ARG_REPO": str(repo)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            json.loads(proc.stdout),
+            {
+                "repo": str(repo),
+                "commits_scanned": 0,
+                "count": 0,
+                "truncated": False,
+                "hotspots": [],
+            },
+        )
 
     def test_dry_run_skips_git(self) -> None:
         proc = _run(

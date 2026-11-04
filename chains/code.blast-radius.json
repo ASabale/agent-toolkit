@@ -1,0 +1,42 @@
+{
+  "kind": "chain",
+  "name": "code.blast-radius",
+  "summary": "Dependents of a module trimmed to blast-radius fields",
+  "safety": "read-only",
+  "args": [
+    {
+      "flag": "--path",
+      "env_var": "TK_ARG_PATH",
+      "required": true,
+      "type": "string",
+      "description": "Root directory to search for dependents",
+      "default": null
+    },
+    {
+      "flag": "--target",
+      "env_var": "TK_ARG_TARGET",
+      "required": true,
+      "type": "string",
+      "description": "Module name or file stem to measure",
+      "default": null
+    }
+  ],
+  "steps": [
+    {
+      "tool": "code.dependents",
+      "args": {
+        "path": "$input.path",
+        "target": "$input.target"
+      }
+    },
+    {
+      "tool": "json.pick",
+      "args": {
+        "keys": "target,count,truncated,dependents"
+      }
+    }
+  ],
+  "output": "json | {target, count, truncated, dependents}",
+  "example": "tk run code.blast-radius --path . --target catalog",
+  "verified": "2026-11-04"
+}

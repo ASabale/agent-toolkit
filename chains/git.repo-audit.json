@@ -33,7 +33,7 @@
       }
     }
   ],
-  "output": "json | [{sha, subject}]",
+  "output": "json | {count, truncated, results:[{sha, subject}]}",
   "example": "tk run git.repo-audit --repo . --limit 5",
   "verified": "2026-11-04"
 }

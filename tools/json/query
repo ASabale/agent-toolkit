@@ -13,7 +13,7 @@ import os
 import sys
 
 _DEFAULT_LIMIT = 50
-_OPS = ("!=", "==", ">", "<")
+_OPS = ("!=", "==", ">=", "<=", ">", "<")
 
 
 def emit(payload, code: int = 0) -> int:
@@ -70,14 +70,31 @@ def _tokenize(expr: str) -> list[tuple]:
             index = end + 1
             continue
         if char == "[":
-            end = text.find("]", index)
-            if end < 0:
+            end = index + 1
+            quote = None
+            while end < length:
+                mark = text[end]
+                if quote is not None:
+                    if mark == quote:
+                        quote = None
+                    end += 1
+                    continue
+                if mark in {"'", '"'}:
+                    quote = mark
+                    end += 1
+                    continue
+                if mark == "]":
+                    break
+                end += 1
+            else:
                 raise ValueError("unclosed bracket")
             inner = text[index + 1 : end].strip()
             if inner == "*":
                 tokens.append(("wild",))
             elif inner.startswith("?"):
-                tokens.append(("filter", inner[1:].strip()))
+                predicate = inner[1:].strip()
+                _require_predicate(predicate)
+                tokens.append(("filter", predicate))
             else:
                 tokens.append(("index", int(inner)))
             index = end + 1
@@ -112,15 +129,23 @@ def _literal(raw: str):
         return text
 
 
+def _require_predicate(predicate: str) -> tuple[str, str, str]:
+    op = next((candidate for candidate in _OPS if candidate in predicate), None)
+    if op is None:
+        raise ValueError(f"invalid filter predicate: {predicate}")
+    key, raw_value = predicate.split(op, 1)
+    key = key.strip()
+    raw_value = raw_value.strip()
+    if not key or not raw_value:
+        raise ValueError(f"invalid filter predicate: {predicate}")
+    return op, key, raw_value
+
+
 def _matches(item, predicate: str) -> bool:
     if not isinstance(item, dict):
         return False
-    op = next((candidate for candidate in _OPS if candidate in predicate), None)
-    if op is None:
-        return False
-    key, raw_value = predicate.split(op, 1)
-    key = key.strip()
-    if not key or key not in item:
+    op, key, raw_value = _require_predicate(predicate)
+    if key not in item:
         return False
     actual = item[key]
     expected = _literal(raw_value)
@@ -131,8 +156,16 @@ def _matches(item, predicate: str) -> bool:
     if isinstance(actual, bool) or isinstance(expected, bool):
         return False
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        if op == ">=":
+            return actual >= expected
+        if op == "<=":
+            return actual <= expected
         return actual > expected if op == ">" else actual < expected
     if isinstance(actual, str) and isinstance(expected, str):
+        if op == ">=":
+            return actual >= expected
+        if op == "<=":
+            return actual <= expected
         return actual > expected if op == ">" else actual < expected
     return False
 

@@ -88,20 +88,35 @@ def main() -> int:
     max_raw = os.environ.get("TK_ARG_MAX_COMMITS") or "100"
     limit_raw = os.environ.get("TK_ARG_LIMIT") or "15"
     max_commits, max_err = parse_int(max_raw, "max-commits")
-    if max_err:
-        return emit(max_err, 2)
     limit, limit_err = parse_int(limit_raw, "limit")
-    if limit_err:
-        return emit(limit_err, 2)
-    assert max_commits is not None and limit is not None
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
                 "dry_run": True,
                 "repo": repo or "example",
-                "max_commits": max_commits,
-                "limit": limit,
+                "max_commits": 100 if max_commits is None else max_commits,
+                "limit": 15 if limit is None else limit,
             }
+        )
+    if max_err or max_commits is None:
+        return emit(
+            max_err
+            or {
+                "error": "invalid_flag",
+                "why": "max-commits is not an int",
+                "fix": FIX,
+            },
+            2,
+        )
+    if limit_err or limit is None:
+        return emit(
+            limit_err
+            or {
+                "error": "invalid_flag",
+                "why": "limit is not an int",
+                "fix": FIX,
+            },
+            2,
         )
     if not repo:
         return emit(
@@ -117,6 +132,17 @@ def main() -> int:
                 "fix": FIX,
             },
             1,
+        )
+    head = git(repo, "rev-parse", "--verify", "HEAD")
+    if head.returncode != 0:
+        return emit(
+            {
+                "repo": repo,
+                "commits_scanned": 0,
+                "count": 0,
+                "truncated": False,
+                "hotspots": [],
+            }
         )
     log = git(
         repo,

@@ -587,7 +587,58 @@ class EvolverTests(unittest.TestCase):
                 "failing_tools": [],
                 "unused_tools": [],
                 "overlap_candidates": [],
+                "chain_candidates": [],
             },
+        )
+
+    def test_chain_candidates_mine_repeated_consecutive_tool_pairs(self) -> None:
+        for name, summary in (
+            ("alpha.list", "List records"),
+            ("alpha.show", "Show one record"),
+            ("beta.ship", "Ship a release"),
+        ):
+            ok, _, err = save_tool(
+                self.root,
+                name,
+                summary,
+                from_cmd="printf '%s\\n' '{\"ok\":true}'",
+            )
+            self.assertEqual(ok, 0, err)
+        chain_ok, _, err = save_chain(
+            self.root,
+            "alpha.pipe",
+            "List then show",
+            steps=[{"tool": "alpha.list"}, {"tool": "alpha.show"}],
+        )
+        self.assertEqual(chain_ok, 0, err)
+        for _ in range(2):
+            log_event(self.root, "run_ok", {"name": "alpha.list"})
+            log_event(self.root, "run_ok", {"name": "alpha.show"})
+            log_event(self.root, "search_miss", {"query": "noise"})
+            log_event(self.root, "run", {"name": "beta.ship"})
+            log_event(self.root, "run_ok", {"name": "alpha.pipe"})
+        # One extra list->ship so that pair stays below the threshold,
+        # and a repeated ship->list that should be suggested.
+        log_event(self.root, "tool_run", {"name": "beta.ship"})
+        log_event(self.root, "tool_run", {"name": "alpha.list"})
+        log_event(self.root, "run_ok", {"name": "beta.ship"})
+        log_event(self.root, "run_ok", {"name": "alpha.list"})
+
+        report = evolve_report(self.root, auto_promote=False)
+        self.assertEqual(
+            report["chain_candidates"],
+            [
+                {
+                    "steps": ["alpha.show", "beta.ship"],
+                    "count": 2,
+                    "suggested_chain": "tk chain save <name> --summary '...' --steps 'alpha.show beta.ship'",
+                },
+                {
+                    "steps": ["beta.ship", "alpha.list"],
+                    "count": 2,
+                    "suggested_chain": "tk chain save <name> --summary '...' --steps 'beta.ship alpha.list'",
+                },
+            ],
         )
 
 

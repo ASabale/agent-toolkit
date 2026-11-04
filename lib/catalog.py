@@ -234,20 +234,27 @@ def _score(item: dict, query: str) -> int:
     return score
 
 
-def find_items(root_dir: Path, query: str = "") -> list[dict]:
-    """Return catalog items matching ``query``, best score then name."""
+def find_items(root_dir: Path, query: str = "", limit: int | None = None) -> list[dict]:
+    """Return catalog items matching ``query``, best score then name.
+
+    A positive ``limit`` keeps only the first matches.
+    """
     try:
         catalog = discover_catalog(root_dir)
         items = list(catalog.values())
         if not str(query or "").strip():
-            return sorted(items, key=lambda item: str(item.get("name") or ""))
-        scored = []
-        for item in items:
-            score = _score(item, query)
-            if score > 0:
-                scored.append((score, str(item.get("name") or ""), item))
-        scored.sort(key=lambda row: (-row[0], row[1]))
-        return [row[2] for row in scored]
+            ranked = sorted(items, key=lambda item: str(item.get("name") or ""))
+        else:
+            scored = []
+            for item in items:
+                score = _score(item, query)
+                if score > 0:
+                    scored.append((score, str(item.get("name") or ""), item))
+            scored.sort(key=lambda row: (-row[0], row[1]))
+            ranked = [row[2] for row in scored]
+        if isinstance(limit, int) and limit > 0:
+            return ranked[:limit]
+        return ranked
     except Exception:
         return []
 
@@ -552,6 +559,9 @@ def _chain_wiring_errors(item: dict, catalog: dict) -> list[str]:
         tool = catalog.get(tool_name) if tool_name else None
         if not tool_name or tool is None:
             continue
+        if tool.get("kind") == "chain":
+            errors.append(f"step {index} ({tool_name}) cannot target a chain")
+            continue
         declared: dict[str, dict] = {}
         for arg in tool.get("args") or []:
             if isinstance(arg, dict) and arg.get("flag"):
@@ -592,9 +602,16 @@ def _chain_dry_run_error(root_dir: Path, item: dict) -> str | None:
     for arg in item.get("args") or []:
         if isinstance(arg, dict) and arg.get("required") and arg.get("flag"):
             flags[str(arg["flag"])] = _dummy(str(arg.get("type") or "string"))
-    rc, _stdout, err = run_chain(root_dir, item, flags, dry_run=True)
+    rc, stdout, err = run_chain(root_dir, item, flags, dry_run=True)
     if rc != 0:
         return f"chain dry-run failed: {err}"
+    text = stdout.strip()
+    if not text:
+        return "chain dry-run produced invalid JSON"
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        return "chain dry-run produced invalid JSON"
     return None
 
 

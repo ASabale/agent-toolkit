@@ -56,8 +56,8 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   Reads `chains/<name>.json` and returns a normalized dict with `"kind": "chain"`, `"name"`, `"summary"`, `"safety"`, `"args"`, `"steps"`, `"output"`, `"example"`, `"verified"`, `"path"`.
 - **`discover_catalog(root_dir: Path) -> dict[str, dict]`**
   Scans `root_dir / "tools"` recursively (skipping files/dirs starting with `.` or `__`) and `root_dir / "chains" / "*.json"`. Returns `dict[name, item]` sorted by key.
-- **`find_items(root_dir: Path, query: str = "") -> list[dict]`**
-  Empty query returns all items sorted by `name`. Non-empty query scores tokens against `name` (exact/substring/token weight 5/3), `summary` (weight 2), and `args` (weight 1), returning matches sorted by `(-score, name)`.
+- **`find_items(root_dir: Path, query: str = "", limit: int | None = None) -> list[dict]`**
+  Empty query returns all items sorted by `name`. Non-empty query scores tokens against `name` (exact/substring/token weight 5/3), `summary` (weight 2), and `args` (weight 1), returning matches sorted by `(-score, name)`. When `limit` is a positive `int`, slices the returned list to `[:limit]`.
 - **`format_find_output(items: list[dict]) -> str`**
   2-line format per item (minimum tokens, zero extra round-trip needed):
   ```text
@@ -114,7 +114,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 - **`save_chain(root_dir: Path, name: str, summary: str, steps: list[dict], args: list[dict] | None = None, safety: str = "read-only", example: str | None = None, force: bool = False) -> tuple[int, str, str]`**
   Writes `chains/<name>.json`, validates via `check_item`, rolls back on failure, logs `chain_saved`, and returns `(0, compact_json, "")`.
 - **`evolve_report(root_dir: Path, auto_promote: bool = True) -> dict`**
-  Analyzes `state/events.jsonl` + catalog (importing `discover_catalog` and `check_item` directly from `lib.catalog` without duplicated fallback parsers): auto-promotes unverified `read-only` tools and chains that pass `check_item` (updating `@tk-verified` / `"verified"` to today's YYYY-MM-DD), and reports `promoted`, `search_misses`, `failing_tools`, `unused_tools`, and `overlap_candidates` (excluding structural stopwords, skipping chain-to-step pairs, and requiring `>= 2` shared domain tokens with Jaccard `score >= 0.35` within the same namespace or `>= 0.50` across namespaces).
+  Analyzes `state/events.jsonl` + catalog (importing `discover_catalog` and `check_item` directly from `lib.catalog` without duplicated fallback parsers): auto-promotes unverified `read-only` tools and chains that pass `check_item` (updating `@tk-verified` / `"verified"` to today's YYYY-MM-DD), and reports `promoted`, `search_misses`, `failing_tools`, `unused_tools`, `overlap_candidates` (excluding structural stopwords, skipping chain-to-step pairs, and requiring `>= 2` shared domain tokens with Jaccard `score >= 0.35` within the same namespace or `>= 0.50` across namespaces), and `chain_candidates` (ordered `[tool_a, tool_b]` pairs that appear consecutively in successful `run_ok` events `>= 2` times where `tool_a != tool_b` and no existing chain already starts with `[tool_a, tool_b]`, returning `[{"steps": [tool_a, tool_b], "count": n, "suggested_chain": str}]` sorted by `(-count, tool_a, tool_b)`).
 - **`prune_tools(root_dir: Path, names: list[str], dry_run: bool = False) -> tuple[int, str, str]`**
   Retires named tools or chains from `tools/` or `chains/` by moving them into `state/archive/<timestamp>-<name>` (when `dry_run=False`), logging `tool_pruned`, and returning `(0, compact_json, "")` with `{"pruned": [...], "archived_to": [...], "dry_run": bool}`.
   **Safety Invariant**: If any target tool is referenced as a step inside an active chain (that is not itself in `names`), `prune_tools` must refuse to break the chain and return `(2, "", error_json)` with `error="tool_in_use_by_chain"`.
@@ -124,13 +124,13 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 ### 2.4 `./tk` — CLI Entrypoint
 
 Supports:
-- `tk find [query]`
+- `tk find [query] [--limit <n>]`
 - `tk info <name>`
 - `tk run <name> [--flag value ...] [--dry-run]`
 - `tk chain run <name> [--flag value ...] [--dry-run]` (also runnable directly via `tk run <chain-name>`)
 - `tk chain save <name> --summary "<text>" --steps '<json-or-space-list>' [--safety <tier>]`
 - `tk save <name> --summary "<text>" [--safety <tier>] [--from-cmd "<cmd>" | --file <path>] [--arg "<spec>" ...] [--force]`
-- `tk check [name] [--json]`
+- `tk check [<name> ...] [--json]`
 - `tk evolve [--no-promote]`
 - `tk prune [<name> ...] [--unused] [--dry-run]`
 

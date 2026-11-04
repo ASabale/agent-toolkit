@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+# @tk-name: md.section
+# @tk-summary: Outline ATX headings or extract one markdown section
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | Path to markdown file
+# @tk-arg: --heading | optional | string | Heading substring to extract, or outline for heading tree (default: outline)
+# @tk-arg: --max-lines | optional | int | Maximum section lines to return (default: 60)
+# @tk-output: json | {path, mode, count, headings} or {path, heading, level, start_line, end_line, truncated, content}
+# @tk-example: tk run md.section --path VISION.md --heading outline --max-lines 40
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import re
+import sys
+
+FIX = "tk run md.section --path VISION.md --heading outline --max-lines 40"
+_ATX = re.compile(r"^(#{1,6})[ \t]+(.*)$")
+_FENCE = re.compile(r"^[ \t]{0,3}(```+|~~~+)")
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def fail(error: str, why: str, code: int = 1) -> int:
+    return emit({"error": error, "why": why, "fix": FIX}, code)
+
+
+def headings_of(text: str) -> list[dict]:
+    found: list[dict] = []
+    fence: str | None = None
+    for index, line in enumerate(text.splitlines(), start=1):
+        marker = _FENCE.match(line)
+        if marker:
+            token = marker.group(1)[0]
+            if fence is None:
+                fence = token
+            elif fence == token:
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        match = _ATX.match(line)
+        if not match:
+            continue
+        title = match.group(2).strip()
+        title = re.sub(r"\s+#+\s*$", "", title).strip()
+        found.append({"level": len(match.group(1)), "line": index, "title": title})
+    return found
+
+
+def outline(path: str, heads: list[dict], max_lines: int) -> dict:
+    kept = heads[:max_lines]
+    return {
+        "path": path,
+        "mode": "outline",
+        "count": len(kept),
+        "headings": kept,
+    }
+
+
+def section(path: str, text: str, heads: list[dict], query: str, max_lines: int) -> dict | None:
+    needle = query.casefold()
+    match = next((item for item in heads if needle in item["title"].casefold()), None)
+    if match is None:
+        return None
+    lines = text.splitlines()
+    start = match["line"]
+    end = len(lines)
+    for item in heads:
+        if item["line"] > start and item["level"] <= match["level"]:
+            end = item["line"] - 1
+            break
+    body = lines[start - 1 : end]
+    omitted = max(0, len(body) - max_lines)
+    kept = body[:max_lines]
+    return {
+        "path": path,
+        "heading": match["title"],
+        "level": match["level"],
+        "start_line": start,
+        "end_line": start + len(kept) - 1 if kept else start - 1,
+        "truncated": omitted,
+        "content": "\n".join(kept),
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    heading = os.environ.get("TK_ARG_HEADING") or "outline"
+    raw_limit = os.environ.get("TK_ARG_MAX_LINES") or "60"
+    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
+    try:
+        max_lines = int(raw_limit)
+    except ValueError:
+        if dry:
+            max_lines = 60
+        else:
+            return fail("invalid_flag", f"max-lines is not an int: {raw_limit}", 2)
+    if dry:
+        return emit(
+            {
+                "dry_run": True,
+                "path": path,
+                "heading": heading,
+                "max_lines": max_lines,
+            }
+        )
+    if max_lines < 0:
+        return fail("invalid_flag", "max-lines must be >= 0", 2)
+    if not path or not os.path.isfile(path):
+        return fail("not_found", f"markdown file not found: {path}", 1)
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as exc:
+        return fail("not_found", str(exc), 1)
+    heads = headings_of(text)
+    if heading.casefold() == "outline":
+        return emit(outline(path, heads, max_lines))
+    payload = section(path, text, heads, heading, max_lines)
+    if payload is None:
+        return fail("heading_not_found", f"no heading contains: {heading}", 1)
+    return emit(payload)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

@@ -65,6 +65,42 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(len(misses), 1)
         self.assertEqual(misses[0]["query"], "no-such-widget")
 
+    def test_find_limit_slices_and_rejects_bad_flags(self) -> None:
+        limited = self._run("find", "--limit", "2")
+        self.assertEqual(limited.returncode, 0, limited.stderr)
+        names = [line.split(" ", 1)[0] for line in limited.stdout.splitlines() if line and not line.startswith(" ")]
+        self.assertEqual(len(names), 2)
+
+        equals = self._run("find", "json", "--limit=1")
+        self.assertEqual(equals.returncode, 0, equals.stderr)
+        equals_names = [line.split(" ", 1)[0] for line in equals.stdout.splitlines() if line and not line.startswith(" ")]
+        self.assertEqual(len(equals_names), 1)
+        self.assertIn("json", equals_names[0])
+
+        bad = self._run("find", "--limit", "0")
+        self.assertEqual(bad.returncode, 2)
+        self.assertEqual(json.loads(bad.stderr)["error"], "invalid_type")
+
+        unknown = self._run("find", "--json")
+        self.assertEqual(unknown.returncode, 2)
+        self.assertEqual(json.loads(unknown.stderr)["error"], "unknown_flag")
+
+    def test_check_multiple_names_aggregates(self) -> None:
+        checked = self._run("check", "json.pick", "json.query")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        payload = json.loads(checked.stdout)
+        self.assertEqual(payload["checked"], 2)
+        self.assertTrue(payload["ok"])
+        self.assertEqual([item["name"] for item in payload["results"]], ["json.pick", "json.query"])
+        self.assertEqual(payload["errors"], [])
+
+        missing = self._run("check", "json.pick", "no.such.tool")
+        self.assertEqual(missing.returncode, 1)
+        failed = json.loads(missing.stdout)
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["checked"], 2)
+        self.assertTrue(any(err.startswith("no.such.tool:") for err in failed["errors"]))
+
     def test_info_and_run_suggest_closest_item(self) -> None:
         info = self._run("info", "json.pik")
         self.assertEqual(info.returncode, 2)

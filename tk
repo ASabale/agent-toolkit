@@ -95,11 +95,38 @@ def _catalog_item(catalog, name: str):
 
 
 def _cmd_find(catalog, evolver, argv: list[str]) -> int:
-    if any(a.startswith("--") for a in argv):
-        _err("unknown_flag", "tk find takes an optional query", "tk find")
-        return 2
-    query = " ".join(argv).strip()
-    items = catalog.find_items(ROOT, query)
+    fix = "tk find [query] [--limit <n>]"
+    query_parts: list[str] = []
+    limit = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--limit" or token.startswith("--limit="):
+            if token.startswith("--limit="):
+                raw = token.split("=", 1)[1]
+            elif index + 1 >= len(argv):
+                _err("invalid_type", "--limit requires a positive integer", fix)
+                return 2
+            else:
+                index += 1
+                raw = argv[index]
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                _err("invalid_type", "--limit requires a positive integer", fix)
+                return 2
+            if parsed <= 0:
+                _err("invalid_type", "--limit requires a positive integer", fix)
+                return 2
+            limit = parsed
+        elif token.startswith("--"):
+            _err("unknown_flag", f"unknown flag {token}", fix)
+            return 2
+        else:
+            query_parts.append(token)
+        index += 1
+    query = " ".join(query_parts).strip()
+    items = catalog.find_items(ROOT, query, limit=limit)
     if not items:
         evolver.log_event(ROOT, "search_miss", {"query": query})
     _write_text(catalog.format_find_output(items))
@@ -348,7 +375,7 @@ def _cmd_save(evolver, argv: list[str]) -> int:
 
 
 def _cmd_check(catalog, argv: list[str]) -> int:
-    fix = "tk check [name] [--json]"
+    fix = "tk check [<name> ...] [--json]"
     names: list[str] = []
     for token in argv:
         if token == "--json":
@@ -358,10 +385,15 @@ def _cmd_check(catalog, argv: list[str]) -> int:
             return 2
         else:
             names.append(token)
-    if len(names) > 1:
-        _err("usage", "tk check accepts at most one name", fix)
-        return 2
-    if names:
+    if len(names) >= 2:
+        results = [catalog.check_item(ROOT, name) for name in names]
+        payload = {
+            "ok": all(bool(item.get("ok")) for item in results),
+            "checked": len(results),
+            "results": results,
+            "errors": [f"{item['name']}: {err}" for item in results for err in item["errors"]],
+        }
+    elif names:
         payload = catalog.check_item(ROOT, names[0])
     else:
         payload = catalog.check_all(ROOT)

@@ -253,6 +253,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         "failing_tools": [],
         "unused_tools": [],
         "overlap_candidates": [],
+        "chain_candidates": [],
     }
     try:
         root = Path(root_dir)
@@ -293,6 +294,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
             "failing_tools": failing,
             "unused_tools": unused,
             "overlap_candidates": _overlap_candidates(catalog),
+            "chain_candidates": _chain_candidates(catalog, events),
         }
     except Exception:
         return empty
@@ -722,6 +724,59 @@ def _overlap_candidates(catalog: dict[str, dict]) -> list[dict]:
                 }
             )
     return pairs
+
+
+def _chain_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict]:
+    """Repeated consecutive tool pairs that no chain already starts with."""
+    sequence: list[str] = []
+    for record in events:
+        if record.get("event") not in _USAGE_EVENTS:
+            continue
+        name = _event_name(record)
+        if name:
+            sequence.append(name)
+    counts: dict[tuple[str, str], int] = {}
+    for tool_a, tool_b in zip(sequence, sequence[1:]):
+        if tool_a == tool_b:
+            continue
+        left = catalog.get(tool_a)
+        right = catalog.get(tool_b)
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            continue
+        if left.get("kind") == "chain" or right.get("kind") == "chain":
+            continue
+        counts[(tool_a, tool_b)] = counts.get((tool_a, tool_b), 0) + 1
+    covered = _chain_prefixes(catalog)
+    candidates: list[dict] = []
+    for (tool_a, tool_b), count in counts.items():
+        if count < 2 or (tool_a, tool_b) in covered:
+            continue
+        candidates.append(
+            {
+                "steps": [tool_a, tool_b],
+                "count": count,
+                "suggested_chain": (
+                    f"tk chain save <name> --summary '...' --steps '{tool_a} {tool_b}'"
+                ),
+            }
+        )
+    candidates.sort(key=lambda row: (-row["count"], row["steps"][0], row["steps"][1]))
+    return candidates
+
+
+def _chain_prefixes(catalog: dict[str, dict]) -> set[tuple[str, str]]:
+    prefixes: set[tuple[str, str]] = set()
+    for item in catalog.values():
+        if item.get("kind") != "chain":
+            continue
+        tools: list[str] = []
+        for step in (item.get("steps") or [])[:2]:
+            tool = step.get("tool") if isinstance(step, dict) else step
+            if isinstance(tool, str) and tool:
+                tools.append(tool)
+        if len(tools) == 2:
+            prefixes.add((tools[0], tools[1]))
+    return prefixes
 
 
 def _chain_composes(catalog: dict[str, dict], left: str, right: str) -> bool:

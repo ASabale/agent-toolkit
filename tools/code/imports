@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+# @tk-name: code.imports
+# @tk-summary: List internal and external imports in a source tree
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | File or directory path to scan for imports
+# @tk-arg: --limit | optional | int | Maximum files to include in by_file breakdown (default: 30)
+# @tk-output: json | {path, files_scanned, internal, external, truncated, by_file}
+# @tk-example: tk run code.imports --path lib --limit 20
+# @tk-verified: 2026-11-04
+
+import ast
+import json
+import os
+import re
+import sys
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_SOURCE_EXT = {".py", ".js", ".ts", ".tsx", ".go", ".rs"}
+_CODE_EXT = {".py", ".js", ".ts", ".tsx", ".go", ".rs"}
+_DEFAULT_LIMIT = 30
+_JS_IMPORT = re.compile(
+    r"""(?:\bfrom\s+|require\(\s*|import\(\s*)['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]"""
+)
+_GO_IMPORT = re.compile(r"""['"]([^'"]+)['"]""")
+_RS_USE = re.compile(r"""\buse\s+([A-Za-z_][\w:]*)""")
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _iter_files(root: str):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _SKIP_DIRS and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if name.startswith(".") or name in _SKIP_DIRS:
+                continue
+            yield os.path.join(dirpath, name)
+
+
+def _rel(root: str, path: str) -> str:
+    if os.path.isfile(root):
+        return os.path.basename(path)
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _repo_root(start: str) -> str:
+    cur = os.path.abspath(start if os.path.isdir(start) else os.path.dirname(start))
+    while True:
+        if os.path.isdir(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.abspath(start if os.path.isdir(start) else os.path.dirname(start))
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        return None
+    if b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _strip_line_comment(line: str) -> str:
+    if "//" in line:
+        line = line.split("//", 1)[0]
+    return line
+
+
+def _py_imports(text: str) -> list[str]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name:
+                    found.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level and node.level > 0:
+                found.append("." * node.level + module)
+            elif module:
+                found.append(module)
+    return found
+
+
+def _other_imports(text: str, ext: str) -> list[str]:
+    found: list[str] = []
+    cleaned = "\n".join(_strip_line_comment(line) for line in text.splitlines())
+    if ext in {".js", ".ts", ".tsx"}:
+        for match in _JS_IMPORT.finditer(cleaned):
+            name = match.group(1) or match.group(2)
+            if name:
+                found.append(name)
+    elif ext == ".go":
+        for match in _GO_IMPORT.finditer(cleaned):
+            found.append(match.group(1))
+    elif ext == ".rs":
+        for match in _RS_USE.finditer(cleaned):
+            found.append(match.group(1).replace("::", "."))
+    return found
+
+
+def _top_level(module: str) -> str:
+    if module.startswith("."):
+        return module
+    return re.split(r"[./]", module, maxsplit=1)[0]
+
+
+def _is_internal(module: str, roots: list[str]) -> bool:
+    if module.startswith(".") or module.split(".", 1)[0] in {"crate", "self", "super"}:
+        return True
+    top = _top_level(module)
+    if not top or top.startswith("."):
+        return True
+    for root in roots:
+        if os.path.isdir(os.path.join(root, top)):
+            return True
+        for ext in _CODE_EXT:
+            if os.path.isfile(os.path.join(root, top + ext)):
+                return True
+    return False
+
+
+def scan(root: str, limit: int) -> dict:
+    scan_root = root if os.path.isdir(root) else os.path.dirname(os.path.abspath(root))
+    roots = []
+    for candidate in (os.path.abspath(scan_root), _repo_root(root)):
+        if candidate not in roots:
+            roots.append(candidate)
+    internal: set[str] = set()
+    external: set[str] = set()
+    by_file: list[dict] = []
+    files_scanned = 0
+    for path in _iter_files(root):
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in _SOURCE_EXT:
+            continue
+        text = _read_text(path)
+        if text is None:
+            continue
+        files_scanned += 1
+        modules = _py_imports(text) if ext == ".py" else _other_imports(text, ext)
+        unique = sorted(set(modules))
+        for module in unique:
+            bucket = internal if _is_internal(module, roots) else external
+            bucket.add(_top_level(module) if not module.startswith(".") else module)
+        if unique:
+            by_file.append({"file": _rel(root, path), "imports": unique})
+    by_file.sort(key=lambda item: item["file"])
+    omitted = max(0, len(by_file) - limit)
+    return {
+        "path": root,
+        "files_scanned": files_scanned,
+        "internal": sorted(internal),
+        "external": sorted(external),
+        "truncated": omitted,
+        "by_file": by_file[:limit],
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = _DEFAULT_LIMIT
+        return emit({"dry_run": True, "path": path, "limit": limit})
+    if not path:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_PATH is required",
+                "fix": "tk run code.imports --path <path>",
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run code.imports --path <path> --limit 30",
+            },
+            2,
+        )
+    if limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 0",
+                "fix": "tk run code.imports --path <path> --limit 30",
+            },
+            2,
+        )
+    if not os.path.exists(path):
+        return emit(
+            {
+                "error": "not_found",
+                "why": f"{path} does not exist",
+                "fix": "tk run code.imports --path <path>",
+            },
+            1,
+        )
+    return emit(scan(path, limit))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run code.imports --path <path>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

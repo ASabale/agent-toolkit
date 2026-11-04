@@ -60,6 +60,34 @@ class JsonQueryTests(unittest.TestCase):
         self.assertEqual(gt.returncode, 0, gt.stderr)
         self.assertEqual(json.loads(gt.stdout)["results"], ["beta", "gamma"])
 
+    def test_malformed_filter_predicate(self) -> None:
+        proc = _run({"TK_ARG_EXPR": "items[?ok]"}, json.dumps(DOC))
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stderr)["error"], "invalid_expr")
+
+        empty_key = _run({"TK_ARG_EXPR": "items[?==1]"}, json.dumps(DOC))
+        self.assertEqual(empty_key.returncode, 2)
+        self.assertEqual(json.loads(empty_key.stderr)["error"], "invalid_expr")
+
+    def test_inclusive_comparisons_and_quoted_bracket(self) -> None:
+        ge = _run({"TK_ARG_EXPR": "items[?count>=2].name"}, json.dumps(DOC))
+        self.assertEqual(ge.returncode, 0, ge.stderr)
+        self.assertEqual(json.loads(ge.stdout)["results"], ["beta", "gamma"])
+
+        le = _run({"TK_ARG_EXPR": "items[?count<=1].name"}, json.dumps(DOC))
+        self.assertEqual(le.returncode, 0, le.stderr)
+        self.assertEqual(json.loads(le.stdout)["results"], ["alpha"])
+
+        quoted = {
+            "items": [
+                {"id": 9, "note": "a]b"},
+                {"id": 1, "note": "plain"},
+            ]
+        }
+        proc = _run({"TK_ARG_EXPR": "items[?note=='a]b'].id"}, json.dumps(quoted))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["results"], [9])
+
     def test_object_projection(self) -> None:
         proc = _run({"TK_ARG_EXPR": "items[*].{id,name}"}, json.dumps(DOC))
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -99,7 +127,7 @@ class RepoAuditChainTests(unittest.TestCase):
         self.assertEqual(raw["safety"], "read-only")
         self.assertEqual(raw["summary"], "Recent commits distilled to sha and subject for a git repository")
         self.assertEqual(raw["verified"], "2026-11-04")
-        self.assertEqual(raw["output"], "json | [{sha, subject}]")
+        self.assertEqual(raw["output"], "json | {count, truncated, results:[{sha, subject}]}")
         self.assertEqual(raw["example"], "tk run git.repo-audit --repo . --limit 5")
         self.assertEqual(raw["steps"][0]["tool"], "git.log-recent")
         self.assertEqual(raw["steps"][0]["args"]["repo"], "$input.repo")

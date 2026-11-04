@@ -191,6 +191,17 @@ class DiscoverAndFindTests(unittest.TestCase):
             ranked = [item["name"] for item in find_items(root, "pr view")]
         self.assertEqual(ranked, ["pr.view", "gh.pr-checks"])
 
+    def test_find_items_positive_limit_slices_sorted_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._catalog(root)
+            limited = [item["name"] for item in find_items(root, "", limit=2)]
+            unbounded = [item["name"] for item in find_items(root, "", limit=None)]
+            ignored = [item["name"] for item in find_items(root, "", limit=0)]
+        self.assertEqual(limited, ["gh.pr-checks", "notes.list"])
+        self.assertEqual(unbounded, ["gh.pr-checks", "notes.list", "pr.view"])
+        self.assertEqual(ignored, unbounded)
+
     def test_summary_hit_beats_args_only_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -460,6 +471,36 @@ printf '%s\\n' '{"ok":true}'
         self.assertIn("step 0 cannot reference $prev: $prev.id", result["errors"])
         self.assertIn("step 1 invalid step reference: $step[1].id", result["errors"])
         self.assertFalse(any("step 2 cannot reference $prev" in err for err in result["errors"]))
+
+    def test_check_item_chain_step_cannot_target_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inner = root / "chains" / "demo.inner.json"
+            inner.parent.mkdir(parents=True)
+            inner.write_text(json.dumps({
+                "name": "demo.inner",
+                "summary": "Nested chain that must not be a step target",
+                "safety": "read-only",
+                "args": [],
+                "steps": [],
+                "output": "json | object",
+                "example": "tk run demo.inner",
+                "verified": "none",
+            }), encoding="utf-8")
+            outer = root / "chains" / "demo.outer.json"
+            outer.write_text(json.dumps({
+                "name": "demo.outer",
+                "summary": "Chain that illegally targets another chain",
+                "safety": "read-only",
+                "args": [],
+                "steps": [{"tool": "demo.inner", "args": {}}],
+                "output": "json | object",
+                "example": "tk run demo.outer",
+                "verified": "none",
+            }), encoding="utf-8")
+            result = check_item(root, "demo.outer")
+        self.assertFalse(result["ok"])
+        self.assertIn("step 0 (demo.inner) cannot target a chain", result["errors"])
 
     def test_check_item_chain_dry_run_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

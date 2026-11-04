@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+# @tk-name: code.dependents
+# @tk-summary: Find source files that import a module or file stem
+# @tk-safety: read-only
+# @tk-arg: --path | required | string | Root directory to search for dependents
+# @tk-arg: --target | required | string | Module name or file stem to find dependents of (e.g. lib.catalog or catalog)
+# @tk-arg: --limit | optional | int | Maximum dependent hits to return (default: 30)
+# @tk-output: json | {path, target, count, truncated, dependents}
+# @tk-example: tk run code.dependents --path . --target catalog --limit 20
+# @tk-verified: 2026-11-04
+
+import ast
+import json
+import os
+import re
+import sys
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".code-review-graph"}
+_DEFAULT_LIMIT = 30
+_TEXT_CAP = 160
+_JS_IMPORT = re.compile(
+    r"""(?:\bfrom\s+|require\(\s*|import\(\s*)['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]"""
+)
+_GO_IMPORT = re.compile(r"""['"]([^'"]+)['"]""")
+_RS_USE = re.compile(r"""\buse\s+([A-Za-z_][\w:]*)""")
+_SOURCE = re.compile(r"""(?:^|[;&|])\s*(?:source|\.)\s+(\S+)""")
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _iter_files(root: str):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _SKIP_DIRS and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if name.startswith(".") or name in _SKIP_DIRS:
+                continue
+            yield os.path.join(dirpath, name)
+
+
+def _rel(root: str, path: str) -> str:
+    if os.path.isfile(root):
+        return os.path.basename(path)
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        return None
+    if b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _norm_target(target: str) -> str:
+    text = target.strip().replace("\\", "/")
+    if text.endswith(".py"):
+        text = text[:-3]
+    return text.replace("/", ".")
+
+
+def _segments(module: str) -> list[str]:
+    return [part for part in re.split(r"[./]", module.strip(".")) if part and part != "*"]
+
+
+def _module_matches(module: str, target: str) -> bool:
+    if not module:
+        return False
+    dotted = ".".join(_segments(module))
+    if not dotted:
+        return False
+    if dotted == target or dotted.endswith("." + target):
+        return True
+    parts = _segments(module)
+    want = _segments(target)
+    if want and parts[-len(want) :] == want:
+        return True
+    return target in parts or (want[-1] in parts if want else False)
+
+
+def _is_self(rel: str, target: str) -> bool:
+    base = os.path.basename(rel)
+    stem, ext = os.path.splitext(base)
+    module = (rel[: -len(ext)] if ext else rel).replace("/", ".")
+    if module == target or module.endswith("." + target):
+        return True
+    if "." not in target and stem == target:
+        return True
+    return False
+
+
+def _line(text: str, lineno: int) -> str:
+    lines = text.splitlines()
+    if lineno < 1 or lineno > len(lines):
+        return ""
+    return lines[lineno - 1].strip()[:_TEXT_CAP]
+
+
+def _py_hits(text: str, target: str) -> list[tuple[int, str]]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names if alias.name]
+            if any(_module_matches(name, target) for name in names):
+                hits.append((node.lineno, _line(text, node.lineno)))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level and node.level > 0:
+                module = "." * node.level + module
+            imported = [alias.name for alias in node.names if alias.name]
+            if _module_matches(module, target) or any(name == target or name.endswith("." + target) for name in imported):
+                hits.append((node.lineno, _line(text, node.lineno)))
+    return hits
+
+
+def _regex_hits(text: str, ext: str, target: str) -> list[tuple[int, str]]:
+    hits: list[tuple[int, str]] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        code = line.split("//", 1)[0]
+        modules: list[str] = []
+        if ext in {".js", ".ts", ".tsx"}:
+            for match in _JS_IMPORT.finditer(code):
+                name = match.group(1) or match.group(2)
+                if name:
+                    modules.append(name)
+        elif ext == ".go":
+            modules.extend(_GO_IMPORT.findall(code))
+        elif ext == ".rs":
+            modules.extend(item.replace("::", ".") for item in _RS_USE.findall(code))
+        if any(_module_matches(module, target) for module in modules):
+            hits.append((lineno, line.strip()[:_TEXT_CAP]))
+    return hits
+
+
+def _shell_file(path: str, text: str) -> bool:
+    if os.path.splitext(path)[1].lower() in {".sh", ".bash"}:
+        return True
+    if text.startswith("#!"):
+        return True
+    try:
+        return os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def _shell_hits(text: str, target: str) -> list[tuple[int, str]]:
+    hits: list[tuple[int, str]] = []
+    stem_target = target.split(".")[-1]
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        code = line.split("#", 1)[0].strip()
+        if not code:
+            continue
+        matched = False
+        for match in _SOURCE.finditer(code):
+            token = match.group(1).strip("'\"")
+            stem = os.path.splitext(os.path.basename(token))[0]
+            if stem == stem_target or _module_matches(token, target):
+                matched = True
+        if not matched:
+            for part in re.split(r"[;&|]", code):
+                tokens = part.split()
+                while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+                    tokens.pop(0)
+                if not tokens:
+                    continue
+                if tokens[0] in {"source", "."}:
+                    continue
+                cmd = tokens[0].strip("'\"")
+                stem = os.path.splitext(os.path.basename(cmd))[0]
+                if stem == stem_target or cmd == target:
+                    matched = True
+                    break
+        if matched:
+            hits.append((lineno, line.strip()[:_TEXT_CAP]))
+    return hits
+
+
+def search(root: str, target: str, limit: int) -> dict:
+    norm = _norm_target(target)
+    found: list[dict] = []
+    for path in _iter_files(root):
+        rel = _rel(root, path)
+        if _is_self(rel, norm):
+            continue
+        text = _read_text(path)
+        if text is None:
+            continue
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".py":
+            hits = _py_hits(text, norm)
+        elif ext in {".js", ".ts", ".tsx", ".go", ".rs"}:
+            hits = _regex_hits(text, ext, norm)
+        elif _shell_file(path, text) and ext not in {".py"}:
+            hits = _shell_hits(text, norm)
+        else:
+            hits = []
+        for lineno, statement in hits:
+            found.append({"file": rel, "line": lineno, "statement": statement})
+    found.sort(key=lambda item: (item["file"], item["line"]))
+    omitted = max(0, len(found) - limit)
+    kept = found[:limit]
+    return {
+        "path": root,
+        "target": target,
+        "count": len(kept),
+        "truncated": omitted,
+        "dependents": kept,
+    }
+
+
+def main() -> int:
+    path = os.environ.get("TK_ARG_PATH", "")
+    target = os.environ.get("TK_ARG_TARGET", "")
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = _DEFAULT_LIMIT
+        return emit({"dry_run": True, "path": path, "target": target, "limit": limit})
+    if not path or not target:
+        missing = "--path" if not path else "--target"
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": f"{missing} is required",
+                "fix": "tk run code.dependents --path <path> --target <module>",
+            },
+            2,
+        )
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": f"limit is not an int: {limit_raw}",
+                "fix": "tk run code.dependents --path <path> --target <module> --limit 30",
+            },
+            2,
+        )
+    if limit < 0:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "limit must be >= 0",
+                "fix": "tk run code.dependents --path <path> --target <module> --limit 30",
+            },
+            2,
+        )
+    if not os.path.exists(path):
+        return emit(
+            {
+                "error": "not_found",
+                "why": f"{path} does not exist",
+                "fix": "tk run code.dependents --path <path> --target <module>",
+            },
+            1,
+        )
+    return emit(search(path, target, limit))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run code.dependents --path <path> --target <module>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

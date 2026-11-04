@@ -101,36 +101,50 @@ def parse_blame(text: str) -> list[dict]:
     return hunks
 
 
+def line_count(full_path: str) -> int | None:
+    try:
+        with open(full_path, "rb") as handle:
+            return sum(1 for _ in handle)
+    except OSError:
+        return None
+
+
 def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     path = os.environ.get("TK_ARG_FILE", "")
     start_raw = os.environ.get("TK_ARG_START") or "1"
     end_raw = os.environ.get("TK_ARG_END") or "40"
     start, start_err = parse_int(start_raw, "start")
-    if start_err:
-        return emit(start_err, 2)
     end, end_err = parse_int(end_raw, "end")
-    if end_err:
-        return emit(end_err, 2)
-    assert start is not None and end is not None
-    if end < start:
-        return emit(
-            {
-                "error": "invalid_flag",
-                "why": "end must be >= start",
-                "fix": FIX,
-            },
-            2,
-        )
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit(
             {
                 "dry_run": True,
                 "repo": repo or "example",
                 "file": path or "example",
-                "start": start,
-                "end": end,
+                "start": 1 if start is None else start,
+                "end": 40 if end is None else end,
             }
+        )
+    if start_err or start is None:
+        return emit(
+            start_err
+            or {
+                "error": "invalid_flag",
+                "why": "start is not an int",
+                "fix": FIX,
+            },
+            2,
+        )
+    if end_err or end is None:
+        return emit(
+            end_err
+            or {
+                "error": "invalid_flag",
+                "why": "end is not an int",
+                "fix": FIX,
+            },
+            2,
         )
     if not repo:
         return emit(
@@ -152,12 +166,45 @@ def main() -> int:
             },
             1,
         )
+    total_lines = line_count(os.path.join(repo, path))
+    if total_lines == 0:
+        return emit(
+            {
+                "repo": repo,
+                "file": path,
+                "start": start,
+                "end": end,
+                "hunks": [],
+            }
+        )
+    if total_lines is not None and start > total_lines:
+        return emit(
+            {
+                "error": "invalid_range",
+                "why": f"--start {start} exceeds file length ({total_lines} lines)",
+                "fix": (
+                    f"tk run git.blame-slice --repo {repo} --file {path}"
+                    f" --start 1 --end {total_lines}"
+                ),
+            },
+            2,
+        )
+    if end < start:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "end must be >= start",
+                "fix": FIX,
+            },
+            2,
+        )
+    clamped_end = end if total_lines is None else min(end, total_lines)
     blamed = git(
         repo,
         "blame",
         "--line-porcelain",
         "-L",
-        f"{start},{end}",
+        f"{start},{clamped_end}",
         "--",
         path,
     )
