@@ -62,7 +62,7 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 **Purpose**: minimum turns and tokens. Find → run. Evolve on friction. Stay lean.
 
 - Grammar: `tk run <name> [--flag <value> ...] [--dry-run]` — named flags only; order never matters.
-- Discover: `tk find "<intent>"` → two lines per match (`<name> [<safety>] — <summary>` then `  run: <example>`).
+- Discover: `tk find "<intent>"` → two lines per match (`<name> [<safety>] — <summary>` then `  run: <example>`). Non-empty query defaults to 5; empty query lists all.
 - Run: compact JSON on `stdout`. On failure, `stderr` is `{"error","why","fix"}` — execute `fix`.
 - Inspect: `tk info <name>` only when the example is not enough.
 - Compose: `tk run <a> | tk run <b>` or `tk run <chain>`.
