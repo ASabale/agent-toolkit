@@ -19,8 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _SNIPPET_CAP = 180
-_FIX = "tk run gh.search-code --query <text>"
-_FIX_LIMIT = "tk run gh.search-code --query <text> --limit 5"
+_FIX = 'tk run gh.search-code --query "def main"'
+_FIX_LIMIT = 'tk run gh.search-code --query "def main" --limit 5'
+_AUTH_TOKENS = ("auth login", "not logged", "not authenticated", "http 401", "bad credentials")
+
+
+def gh_fix(why: str, default: str) -> str:
+    folded = why.lower()
+    if any(token in folded for token in _AUTH_TOKENS):
+        return "gh auth login"
+    return default
 
 
 def clip(text: str) -> str:
@@ -59,11 +67,8 @@ def main() -> int:
         cmd.extend(["--repo", repo])
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
-        return fail(
-            "gh_failed",
-            (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
-            _FIX,
-        )
+        why = (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}"
+        return fail("gh_failed", why, gh_fix(why, _FIX))
     rows = json.loads(proc.stdout or "[]")
     matches = []
     for row in rows if isinstance(rows, list) else []:

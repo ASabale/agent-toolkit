@@ -188,16 +188,16 @@ class ValidateAndBuildEnvTests(unittest.TestCase):
         ok, env, err = validate_and_build_env(_item(), {"--zzzz": "ada", "--limit": "3"}, [], False)
         self.assertFalse(ok)
         self.assertEqual(env, {})
-        self.assertEqual(err["why"], "unknown flags: --zzzz (did you mean --name?)")
-        self.assertEqual(err["fix"], "tk run demo.echo --name ada --limit 3")
+        self.assertEqual(err["why"], "unknown flags: --zzzz")
+        self.assertEqual(err["fix"], "tk run demo.echo --name example --limit 10")
 
-    def test_missing_required_fix_keeps_supplied_flags_and_appends_placeholders(self):
+    def test_missing_required_fix_keeps_supplied_flags_and_adds_a_runnable_value(self):
         ok, env, err = validate_and_build_env(_item(), {"--limit": "5"}, [], False)
         self.assertFalse(ok)
         self.assertEqual(env, {})
         self.assertEqual(err["error"], "missing_required")
         self.assertEqual(err["why"], "missing required flags: --name")
-        self.assertEqual(err["fix"], "tk run demo.echo --limit 5 --name <value>")
+        self.assertEqual(err["fix"], "tk run demo.echo --limit 5 --name example")
 
     def test_rejects_invalid_types(self):
         ok, env, err = validate_and_build_env(
@@ -264,7 +264,7 @@ class ValidateAndBuildEnvTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(
             err["fix"],
-            "tk run demo.echo --name 'ada lovelace' --verbose false --count <value>",
+            "tk run demo.echo --name 'ada lovelace' --verbose false --count 1",
         )
         self.assertEqual(env, {})
 

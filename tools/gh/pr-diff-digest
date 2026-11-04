@@ -16,7 +16,15 @@ import os
 import subprocess
 import sys
 
-_FIX = "tk run gh.pr-diff-digest --repo <owner/name> --pr <n> --limit 30"
+_FIX = "tk run gh.pr-diff-digest --repo cli/cli --pr 1 --limit 30"
+_AUTH_TOKENS = ("auth login", "not logged", "not authenticated", "http 401", "bad credentials")
+
+
+def gh_fix(why: str) -> str:
+    folded = why.lower()
+    if any(token in folded for token in _AUTH_TOKENS):
+        return "gh auth login"
+    return _FIX
 _HUNKS_PER_FILE = 5
 _VIEW_FIELDS = "number,title,state,additions,deletions,changedFiles,files"
 
@@ -132,7 +140,7 @@ def main() -> int:
     view = gh("pr", "view", str(pr), "--repo", repo, "--json", _VIEW_FIELDS)
     if view.returncode != 0:
         why = (view.stderr or view.stdout or f"gh exited {view.returncode}").strip()
-        return emit({"error": "gh_failed", "why": why[:500], "fix": _FIX}, 1)
+        return emit({"error": "gh_failed", "why": why[:500], "fix": gh_fix(why)}, 1)
     try:
         meta = json.loads(view.stdout or "{}")
     except json.JSONDecodeError as exc:
@@ -143,7 +151,7 @@ def main() -> int:
     diff = gh("pr", "diff", str(pr), "--repo", repo)
     if diff.returncode != 0:
         why = (diff.stderr or diff.stdout or f"gh exited {diff.returncode}").strip()
-        return emit({"error": "gh_failed", "why": why[:500], "fix": _FIX}, 1)
+        return emit({"error": "gh_failed", "why": why[:500], "fix": gh_fix(why)}, 1)
 
     rows = file_rows(meta.get("files") or [], parse_hunks(diff.stdout or ""))
     changed = meta.get("changedFiles")

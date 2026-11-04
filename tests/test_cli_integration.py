@@ -195,9 +195,9 @@ class CliIntegrationTests(unittest.TestCase):
         payload = json.loads(missing.stderr)
         self.assertEqual(payload["error"], "missing_required")
         self.assertIn("--keys", payload["fix"])
-        self.assertIn("<value>", payload["fix"])
+        self.assertNotIn("<", payload["fix"])
 
-        fix = payload["fix"].replace("<value>", "branch")
+        fix = payload["fix"]
         self.assertTrue(fix.startswith("tk run "))
         ran = self._run(*fix.split()[1:], stdin='{"branch":"main","extra":1}\n')
         self.assertEqual(ran.returncode, 0, ran.stderr)

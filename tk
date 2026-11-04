@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import sys
 from pathlib import Path
@@ -158,14 +159,25 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
                 for name in catalog.discover_catalog(ROOT)
                 if str(name).strip()
             }
-            miss_fix = (
-                f"tk find --namespace {first}"
-                if first.lower() in namespaces
-                else "tk find"
-            )
+            miss_fix = _no_match_fix(catalog, first, namespaces)
             _err("no_match", f"no tool or chain matches '{query}'", miss_fix)
     _write_text(catalog.format_find_output(items))
     return 0
+
+
+def _no_match_fix(catalog, first: str, namespaces: set[str]) -> str:
+    """Runnable next search: exact or closest namespace, else the nearest tool."""
+    token = first.lower()
+    if token in namespaces:
+        return f"tk find --namespace {first}"
+    closest_ns = difflib.get_close_matches(token, sorted(namespaces), n=1, cutoff=0.6)
+    if closest_ns:
+        return f"tk find --namespace {closest_ns[0]}"
+    suggestion = catalog.suggest_closest_item(ROOT, first)
+    example = str((suggestion or {}).get("example") or "").strip()
+    if example.startswith("tk "):
+        return example
+    return "tk find"
 
 
 def _suggest_fix(catalog, name: str) -> tuple[str, str]:
@@ -208,13 +220,14 @@ def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chain
         return 2
     flags, dry_run, positional = runner.parse_cli_flags(flag_argv, item)
     confirmed = any(token == "--yes" or token.startswith("--yes=") for token in flag_argv)
+    raw = any(token == "--raw" or token.startswith("--raw=") for token in flag_argv)
     if item.get("kind") == "chain":
         code, out, err = runner.run_chain(
             ROOT, item, flags, positional, dry_run, confirmed=confirmed
         )
     else:
         code, out, err = runner.run_tool(
-            ROOT, item, flags, positional, dry_run, _stdin_data(), confirmed=confirmed
+            ROOT, item, flags, positional, dry_run, _stdin_data(), confirmed=confirmed, raw=raw
         )
     _emit_streams(out or "", err or "")
     return int(code)
@@ -540,7 +553,7 @@ def main(argv: list[str]) -> int:
             "subcommands: find, info, run, chain, save, check, evolve, prune",
             "tk find",
         )
-        return 2
+        return 0
     cmd, rest = argv[0], argv[1:]
     if cmd == "find":
         return _cmd_find(_load("lib.catalog"), _load("lib.evolver"), rest)

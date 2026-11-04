@@ -77,7 +77,9 @@ def _fix_command(item: dict, supplied: dict[str, str]) -> str:
         flag = arg["flag"]
         if arg.get("required") and flag not in supplied:
             parts.append(flag)
-            parts.append("<value>")
+            parts.append(
+                shlex.quote(_example_flag_value(item, flag, arg.get("type") or "string"))
+            )
     return " ".join(parts)
 
 
@@ -245,13 +247,6 @@ def validate_and_build_env(
             matches = difflib.get_close_matches("--" + bad, candidates, n=1, cutoff=0.55)
             if matches:
                 suggestions[flag] = matches[0]
-        missing_required = [
-            arg["flag"]
-            for arg in (item.get("args") or [])
-            if arg.get("required") and arg["flag"] not in flags
-        ]
-        if len(unknown) == 1 and unknown[0] not in suggestions and len(missing_required) == 1:
-            suggestions[unknown[0]] = missing_required[0]
         rendered = []
         for flag in unknown:
             hint = suggestions.get(flag)
@@ -504,10 +499,10 @@ def _output_too_large_fix(
     command = _fix_command(item, flags)
     raised = f"TK_MAX_OUTPUT_BYTES={size} {command}"
     if not isinstance(parsed, dict) or not parsed:
-        return raised
+        return f"{command} --raw | head"
     keys = _pick_fix_keys(item, parsed, max_bytes)
     if not keys:
-        return raised
+        return f"{command} --raw | head"
     return f"{raised} | tk run json.pick --keys {','.join(keys)}"
 
 
@@ -549,6 +544,7 @@ def run_tool(
     dry_run: bool = False,
     stdin_data: str | None = None,
     confirmed: bool = True,
+    raw: bool = False,
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
@@ -643,7 +639,7 @@ def run_tool(
         compact_out = _compact(parsed)
         max_bytes = _positive_int(os.environ.get("TK_MAX_OUTPUT_BYTES", ""), 65536)
         size = len(compact_out.encode("utf-8"))
-        if size > max_bytes:
+        if size > max_bytes and not raw:
             return _record_and_return(
                 root_dir, item, dry_run,
                 _failure(
