@@ -36,6 +36,8 @@ On 2026-11-04, `ASabale/agent-toolkit@e2de2ec` deleted `chains/git.repo-health.j
 
 On 2026-11-04, `ASabale/agent-toolkit@6e0160a` deleted `chains/gh.pr-overview.json`. That chain had run `gh.pr-diff-digest` and then `json.pick` with keys `repo,pr,title,state,files_changed,additions,deletions,files`, which dropped `truncated`, and it rejected `--limit`. `gh.pr-diff-digest` remains and still reports `truncated`. This supersedes the chain's presence at `ASabale/agent-toolkit@5aece9a` without rewriting that claim.
 
+On 2026-11-04, `ASabale/agent-toolkit@5a57fcd` added `tk find [query] [--namespace <ns>]`. `--namespace <ns>` and `--namespace=<ns>` set the filter. A missing or blank value exited 2 with `error` `missing_flag` and `why` `--namespace requires a value`. `find_items` stripped that value, lowercased it, and removed trailing dots. A non-empty namespace kept items whose lowercased name equaled the namespace or started with `<namespace>.`. Token scoring ran after the filter. With no `--limit`, the ranked list was not capped. A zero-match call logged `search_miss` and wrote empty stdout, and did not write a stderr `no_match` object. *(Superseded in part on 2026-11-04 by `ASabale/agent-toolkit@75361b1`: a non-empty query defaults to 5 items, and a zero-match non-empty query writes one stderr JSON line `{"error":"no_match",...}` with `fix` `tk find --namespace <ns>` when the first query token is an existing namespace. The namespace match rule is the `5a57fcd` rule.)*
+
 ## Related
 
 - [0002 — Minimum cognitive load and tokens](../decisions/0002-minimum-cognitive-load-and-tokens.md)
