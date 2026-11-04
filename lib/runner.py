@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 
@@ -454,6 +455,35 @@ def _pick_fix_keys(item: dict, parsed: dict, max_bytes: int) -> list[str]:
     return keys
 
 
+_TIMEOUT_KILL_GRACE_SECONDS = 0.2
+
+
+def _timeout_fix(item: dict, flags: dict[str, str], timeout: float) -> str:
+    return f"TK_TIMEOUT={timeout * 2:g} {_fix_command(item, flags)}"
+
+
+def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    pid = proc.pid
+    if pid is None:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=_TIMEOUT_KILL_GRACE_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _output_too_large_fix(
     item: dict,
     flags: dict[str, str],
@@ -517,18 +547,24 @@ def run_tool(
         env = os.environ.copy()
         env.update(built)
         timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)
+        proc = subprocess.Popen(
+            [str(item["path"])],
+            stdin=None if stdin_data is None else subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(root_dir),
+            start_new_session=True,
+        )
         try:
-            completed = subprocess.run(
-                [str(item["path"])],
-                input=stdin_data,
-                capture_output=True,
-                text=True,
-                env=env,
-                cwd=str(root_dir),
-                check=False,
-                timeout=timeout,
-            )
+            stdout, stderr = proc.communicate(input=stdin_data, timeout=timeout)
         except subprocess.TimeoutExpired:
+            _terminate_process_group(proc)
+            try:
+                proc.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
             return _record_and_return(
                 root_dir, item, dry_run,
                 _failure(
@@ -536,16 +572,16 @@ def run_tool(
                     {
                         "error": "tool_timeout",
                         "why": f"tool exceeded {timeout:g}s",
-                        "fix": _example(item),
+                        "fix": _timeout_fix(item, flags, timeout),
                     },
                 ),
             )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        if completed.returncode != 0:
+        stdout = stdout or ""
+        stderr = stderr or ""
+        if proc.returncode != 0:
             return _record_and_return(
                 root_dir, item, dry_run,
-                _failure(completed.returncode, _tool_failure(item, completed.returncode, stderr)),
+                _failure(proc.returncode, _tool_failure(item, proc.returncode, stderr)),
             )
         try:
             parsed = json.loads(stdout)
