@@ -4,12 +4,14 @@
 # @tk-safety: read-only
 # @tk-arg: --repo | required | string | Repository in owner/name form
 # @tk-arg: --pr | required | int | Pull request number
-# @tk-output: json | {repo, pr, fail:[{name, url}], pending, pass}
-# @tk-example: tk run gh.pr-failure-digest --repo cli/cli --pr 1
+# @tk-arg: --log-tail | optional | int | Failing-step log lines per Actions check (0=omit, cap 200) (default: 0)
+# @tk-output: json | {repo, pr, fail:[{name, url, log_tail, log_truncated}], pending, pass}
+# @tk-example: tk run gh.pr-failure-digest --repo cli/cli --pr 1 --log-tail 30
 # @tk-verified: 2026-11-03
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -23,6 +25,12 @@ _FAIL_CONCLUSIONS = {
 }
 _PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 _PENDING = {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED", "EXPECTED"}
+_LOG_TAIL_CAP = 200
+_FIX = "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>"
+_FIX_TAIL = "tk run gh.pr-failure-digest --repo <owner/name> --pr <n> --log-tail 30"
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s*")
+_JOB_ID_RE = re.compile(r"/jobs?/(\d+)")
 
 
 def emit(payload: dict, code: int = 0) -> int:
@@ -45,9 +53,140 @@ def classify(check: dict) -> str:
     return "pending"
 
 
+def parse_log_tail(raw: str) -> tuple[int | None, dict | None]:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"--log-tail must be an int >= 0, got {raw}",
+            "fix": _FIX_TAIL,
+        }
+    if value < 0:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"--log-tail must be >= 0, got {value}",
+            "fix": _FIX_TAIL,
+        }
+    return value, None
+
+
+def check_url(check: dict) -> str:
+    return str(check.get("detailsUrl") or check.get("targetUrl") or "")
+
+
+def is_actions_check(check: dict, url: str) -> bool:
+    typename = str(check.get("__typename") or "")
+    if typename == "StatusContext":
+        return False
+    if typename == "CheckRun":
+        return True
+    if check.get("workflowName"):
+        return True
+    return "/actions/" in url or "/job" in url
+
+
+def job_id_from_url(url: str) -> str | None:
+    match = _JOB_ID_RE.search(url)
+    if match:
+        return match.group(1)
+    return None
+
+
+def clean_log_line(line: str) -> str:
+    text = _ANSI_RE.sub("", line).rstrip("\r\n")
+    parts = text.split("\t")
+    if len(parts) >= 3:
+        text = "\t".join(parts[2:])
+    return _TS_RE.sub("", text).rstrip()
+
+
+def clean_log_lines(raw: str) -> list[str]:
+    return [clean_log_line(line) for line in raw.splitlines()]
+
+
+def fetch_failed_log(repo: str, job_id: str) -> str | None:
+    proc = subprocess.run(
+        ["gh", "run", "view", "--repo", repo, "--job", job_id, "--log-failed"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or ""
+
+
+def attach_log_fields(check: dict, url: str, repo: str, want: int) -> dict:
+    if not is_actions_check(check, url):
+        return {"log_tail": None, "log_truncated": False}
+    job_id = job_id_from_url(url)
+    if not job_id:
+        return {"log_tail": None, "log_truncated": False}
+    raw = fetch_failed_log(repo, job_id)
+    if raw is None:
+        return {"log_tail": None, "log_truncated": False}
+    cleaned = clean_log_lines(raw)
+    return {
+        "log_tail": cleaned[-want:] if want else [],
+        "log_truncated": len(cleaned) > want,
+    }
+
+
+def fail_item(check: dict, repo: str, log_tail: int) -> dict:
+    url = check_url(check)
+    item = {
+        "name": check.get("name") or check.get("context") or "",
+        "url": url,
+    }
+    if log_tail <= 0:
+        return item
+    extra = attach_log_fields(check, url, repo, min(log_tail, _LOG_TAIL_CAP))
+    return {**item, **extra}
+
+
+def load_rollup(repo: str, pr: int) -> tuple[dict | None, dict | None]:
+    proc = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "statusCheckRollup"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return None, {
+            "error": "gh_failed",
+            "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
+            "fix": _FIX,
+        }
+    return json.loads(proc.stdout or "{}"), None
+
+
+def digest(repo: str, pr: int, log_tail: int) -> tuple[int, dict]:
+    payload, error = load_rollup(repo, pr)
+    if error is not None:
+        return 1, error
+    fail: list[dict] = []
+    pending = 0
+    passed = 0
+    for check in (payload or {}).get("statusCheckRollup") or []:
+        if not isinstance(check, dict):
+            continue
+        kind = classify(check)
+        if kind == "fail":
+            if len(fail) < 20:
+                fail.append(fail_item(check, repo, log_tail))
+        elif kind == "pass":
+            passed += 1
+        else:
+            pending += 1
+    return 0, {"repo": repo, "pr": pr, "fail": fail, "pending": pending, "pass": passed}
+
+
 def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     pr_raw = os.environ.get("TK_ARG_PR", "")
+    log_raw = os.environ.get("TK_ARG_LOG_TAIL") or "0"
+    log_tail, log_error = parse_log_tail(log_raw)
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         pr = int(pr_raw) if pr_raw.isdigit() else 1
         return emit(
@@ -59,12 +198,14 @@ def main() -> int:
                 "pass": 0,
             }
         )
+    if log_error is not None:
+        return emit(log_error, 2)
     if not repo or not pr_raw:
         return emit(
             {
                 "error": "missing_flag",
                 "why": "TK_ARG_REPO and TK_ARG_PR are required",
-                "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                "fix": _FIX,
             },
             2,
         )
@@ -79,51 +220,8 @@ def main() -> int:
             },
             2,
         )
-    proc = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "view",
-            str(pr),
-            "--repo",
-            repo,
-            "--json",
-            "statusCheckRollup",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if proc.returncode != 0:
-        return emit(
-            {
-                "error": "gh_failed",
-                "why": (proc.stderr or proc.stdout).strip() or f"gh exited {proc.returncode}",
-                "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
-            },
-            1,
-        )
-    payload = json.loads(proc.stdout or "{}")
-    fail: list[dict] = []
-    pending = 0
-    passed = 0
-    for check in payload.get("statusCheckRollup") or []:
-        if not isinstance(check, dict):
-            continue
-        kind = classify(check)
-        if kind == "fail":
-            if len(fail) < 20:
-                fail.append(
-                    {
-                        "name": check.get("name") or check.get("context") or "",
-                        "url": check.get("detailsUrl") or check.get("targetUrl") or "",
-                    }
-                )
-        elif kind == "pass":
-            passed += 1
-        else:
-            pending += 1
-    return emit({"repo": repo, "pr": pr, "fail": fail, "pending": pending, "pass": passed})
+    code, payload = digest(repo, pr, log_tail or 0)
+    return emit(payload, code)
 
 
 if __name__ == "__main__":
@@ -135,7 +233,7 @@ if __name__ == "__main__":
                 {
                     "error": "timeout",
                     "why": "gh timed out after 30s",
-                    "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                    "fix": _FIX,
                 },
                 separators=(",", ":"),
             )
@@ -148,7 +246,7 @@ if __name__ == "__main__":
                 {
                     "error": "not_found",
                     "why": f"{exc.filename or 'gh'} not found",
-                    "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                    "fix": _FIX,
                 },
                 separators=(",", ":"),
             )
@@ -161,7 +259,7 @@ if __name__ == "__main__":
                 {
                     "error": "tool_error",
                     "why": str(exc),
-                    "fix": "tk run gh.pr-failure-digest --repo <owner/name> --pr <n>",
+                    "fix": _FIX,
                 },
                 separators=(",", ":"),
             )
