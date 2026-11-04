@@ -1,11 +1,25 @@
 #!/bin/sh
-# Idempotent install: symlink tk and the agent-toolkit skill into the user paths,
-# and configure git to use tracked hooks from .githooks/ when inside a git work tree.
+# Idempotent install: symlink tk and the agent-toolkit skill into the user paths.
+# Does not change git core.hooksPath; prints the command to opt in.
 set -eu
 REPO_ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 SKILL_SRC="${REPO_ROOT}/skills/agent-toolkit"
 skill_links=""
 skill_links_skipped=""
+
+install_hint() {
+    case $(uname -s) in
+        Darwin) printf '%s' "brew install $1" ;;
+        *) printf '%s' "sudo apt-get install -y $1" ;;
+    esac
+}
+
+emit_diag() {
+    err=$(json_escape "$1")
+    why=$(json_escape "$2")
+    fix=$(json_escape "$3")
+    printf '%s\n' "{\"error\":\"${err}\",\"why\":\"${why}\",\"fix\":\"${fix}\"}" >&2
+}
 
 json_escape() {
     out=
@@ -102,6 +116,14 @@ link_skill() {
     append_link "$dest"
 }
 
+if ! command -v python3 >/dev/null 2>&1; then
+    emit_diag "python3_missing" "python3 is required to run tk" "$(install_hint python3)"
+    exit 1
+fi
+if ! command -v gh >/dev/null 2>&1; then
+    emit_diag "gh_missing" "gh is not on PATH; GitHub tools will fail" "$(install_hint gh)"
+fi
+
 mkdir -p "${HOME}/.local/bin"
 ln -sfn "${REPO_ROOT}/tk" "${HOME}/.local/bin/tk"
 
@@ -133,17 +155,13 @@ while IFS= read -r encoded || [ -n "$encoded" ]; do
     link_skill "$dest_parent"
 done < "$skill_dirs_file"
 
-hooks_path=""
 if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "${REPO_ROOT}" config core.hooksPath .githooks
-    hooks_path=".githooks"
+    emit_diag \
+        "hooksPath_unchanged" \
+        "default install does not change core.hooksPath" \
+        "git -C \"${REPO_ROOT}\" config core.hooksPath .githooks"
 fi
 check_out=$("${REPO_ROOT}/tk" check --json)
 bin_json=$(json_escape "${HOME}/.local/bin/tk")
 skill_json=$(json_escape "${HOME}/.agents/skills/agent-toolkit")
-if [ -n "$hooks_path" ]; then
-    hooks_json=$(json_escape "$hooks_path")
-    printf '%s\n' "{\"installed\":true,\"bin\":\"${bin_json}\",\"skill\":\"${skill_json}\",\"skill_links\":[${skill_links}],\"skill_links_skipped\":[${skill_links_skipped}],\"hooksPath\":\"${hooks_json}\",\"check\":${check_out}}"
-else
-    printf '%s\n' "{\"installed\":true,\"bin\":\"${bin_json}\",\"skill\":\"${skill_json}\",\"skill_links\":[${skill_links}],\"skill_links_skipped\":[${skill_links_skipped}],\"check\":${check_out}}"
-fi
+printf '%s\n' "{\"installed\":true,\"bin\":\"${bin_json}\",\"skill\":\"${skill_json}\",\"skill_links\":[${skill_links}],\"skill_links_skipped\":[${skill_links_skipped}],\"check\":${check_out}}"
