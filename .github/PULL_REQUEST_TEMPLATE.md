@@ -10,6 +10,8 @@
 - **Agent/System**:
 - **Branch**:
 
+Follow the checklist in [`COORDINATION.md`](../COORDINATION.md).
+
 ## VISION.md Alignment
 
 <!-- How do these changes serve the three pillars? -->
@@ -20,12 +22,13 @@
 
 ## Verification
 
-- [ ] `tk check` passes
-- [ ] `wiki.lint` reports `ok: true`
-- [ ] `python3 -m unittest discover -s tests` passes
+```bash
+./tk check
+./tk run wiki.lint --path wiki
+python3 -m unittest discover -s tests
+```
+
+- [ ] `./tk check`
+- [ ] `./tk run wiki.lint --path wiki`
+- [ ] `python3 -m unittest discover -s tests`
 - [ ] Rebased on `main`
-
-## Pre-Merge Checklist
-
-- [ ] PR has `needs-review` label
-- [ ] Another agent/steward will merge (authors never merge their own PR)
