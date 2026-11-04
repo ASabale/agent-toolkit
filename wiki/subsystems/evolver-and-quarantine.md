@@ -10,6 +10,8 @@ On 2026-11-03, `tk` logged `search_miss` from `tk find` (empty match set), from 
 
 On 2026-11-03, `_summarize_events` treated `run`, `run_ok`, `tool_run`, and `chain_run` as usage; `run_error` and `error` as failures; and `search_miss` and `miss` as misses. Miss queries were counted and sorted by descending count, then query text.
 
+On 2026-11-04, `ASabale/agent-toolkit@75361b1` changed `tk find` so a non-empty query defaults to 5 items (explicit `--limit N` overrides; an empty query stays uncapped). A zero-match query still logs `search_miss`, and also writes one stderr JSON line `{"error":"no_match","why":"no tool or chain matches '<query>'","fix":"tk find"}` (`fix` is `tk find --namespace <ns>` when the first query token is an existing namespace), then exits 0 with empty stdout.
+
 ## Save and quarantine
 
 On 2026-11-03, `save_tool` wrote `tools/<namespace>/<rest>` when the name contained a dot (`git.branch-digest` → `tools/git/branch-digest`), mode `0o755`, from either `--from-cmd` or `--file`, with a generated `# @tk-*` header. `save_chain` wrote `chains/<name>.json` with `verified: "none"`. Both went through `_commit_draft`. *(Extended on 2026-11-04 by `ASabale/agent-toolkit@5a57fcd` and `ASabale/agent-toolkit@5aece9a`, which added automatic `@tk-arg` inference from `TK_ARG_<NAME>` and `${TK_ARG_<NAME>:-default}` references in `save_tool` while preserving existing `# @tk-arg:` headers when `--file` and `--arg` were combined, and updated `_chain_candidates` to reset adjacency on `run_error` events.)*
