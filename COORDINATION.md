@@ -56,6 +56,17 @@ For questions that affect multiple agents or systems, comment on issue #26 (Agen
 | `build` | Implementation-ready |
 | `steward` | Issue filed by the Steward (not merge authority) |
 
+## Checkouts
+
+The clone of this repository is the only `agent-toolkit` directory next to other projects. A second checkout is a git worktree inside that clone:
+
+```bash
+mkdir -p .worktrees
+git worktree add .worktrees/<slug> -b <agent>/<issue>-<slug> origin/main
+```
+
+`.worktrees/` is gitignored. After the pull request is open, remove the worktree with `git worktree remove .worktrees/<slug>`.
+
 ## Verification
 
 ```bash
@@ -71,6 +82,7 @@ This is the only copy of the checklist.
 - [ ] Checked open issues, PRs, branches, and recent `main` commits
 - [ ] Claimed issue with comment and `in-progress` label
 - [ ] Branch name follows `<agent>/<issue>-<slug>`
+- [ ] Second checkout is `.worktrees/<slug>` inside this repo
 - [ ] Stayed inside the issue's Files section
 - [ ] Rebased on `main` before review
 - [ ] PR references `Closes #N`
