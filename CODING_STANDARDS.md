@@ -86,6 +86,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
      - Dry-run smoke check: running `run_chain(root_dir, item, dummy_required_flags, dry_run=True)` exits `0` and produces valid JSON on `stdout`.
   8. Catalog names are unique: if more than one file claims the same `name`, report `duplicate name: <name> (<path1>, <path2>)` listing every claimant path relative to `root_dir` in first-seen order. `check_all` surfaces this through `check_item` on the affected names.
   9. Name/path layout: a tool's `@tk-name` must equal `<namespace>.<file>` derived from `tools/<namespace>/<file>`; a chain's `name` must equal the `chains/<name>.json` stem. Error: `name/path mismatch: @tk-name <x> but path implies <y>`.
+  10. Reserved global modifiers `--raw` and `--dry-run` must not appear in `@tk-arg` or chain `args` (`reserved flag: --raw` / `reserved flag: --dry-run`).
 - **`check_all(root_dir: Path) -> dict`**
   Runs `check_item` concurrently across every item in `discover_catalog(root_dir)` (using `concurrent.futures.ThreadPoolExecutor` while preserving deterministic catalog key order) and returns `{"ok": bool, "checked": int, "results": list[dict], "errors": list[str]}`.
 
@@ -94,7 +95,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 ### 2.2 `lib/runner.py` — Validation, Execution & Chaining
 
 - **`parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str, str], bool, list[str]]`**
-  Extracts `--dry-run` anywhere in `argv` (`dry_run: bool`), parses `--flag value`, `--flag=value`, and standalone boolean `--flag` (`"true"`), and collects any stray positional tokens in `positional: list[str]`. When `item` is supplied, uses `item["args"]` schema so boolean flags do not swallow subsequent positional tokens and non-boolean flags accept values starting with `-` or `--` (other than `--dry-run`).
+  Extracts `--dry-run` anywhere in `argv` (`dry_run: bool`), consumes `--raw` / `--raw=…` as a no-op compatibility modifier, parses `--flag value`, `--flag=value`, and standalone boolean `--flag` (`"true"`), and collects any stray positional tokens in `positional: list[str]`. When `item` is supplied, uses `item["args"]` schema so boolean flags do not swallow subsequent positional tokens and non-boolean flags accept values starting with `-` or `--` (other than `--dry-run` and `--raw`).
 - **`validate_and_build_env(item: dict, flags: dict[str, str], positional: list[str], dry_run: bool) -> tuple[bool, dict[str, str], dict | None]`**
   - Rejects non-empty `positional` with `{"error": "positional_arguments_forbidden", "why": "...", "fix": item["example"]}`.
   - Rejects unknown `--flag` names not declared in `item["args"]` with `{"error": "unknown_flag", "why": "...", "fix": "..."}`. When an unknown flag is close to a declared flag (`difflib.get_close_matches`) or there is a single missing required flag, `why` names the suggested flag (`did you mean --<flag>?`) and `fix` rewrites the supplied command with the suggested flag and the caller's value so a small model recovers in 1 step.
