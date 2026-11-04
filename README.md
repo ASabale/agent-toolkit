@@ -17,10 +17,10 @@ tk find wiki
 tk run wiki.lint --path wiki
 ```
 
-`./install.sh` creates `~/.local/bin` and `~/.agents/skills` if needed, symlinks `tk` and `skills/toolkit`, sets `core.hooksPath` to `.githooks` in this clone, and runs `tk check`. It prints one JSON object:
+`./install.sh` creates `~/.local/bin` and `~/.agents/skills` if needed, symlinks `tk` and `skills/toolkit` (and `~/.claude/skills/toolkit` when `~/.claude` exists), sets `core.hooksPath` to `.githooks` in this clone, and runs `tk check`. It prints one JSON object:
 
 ```text
-{"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/toolkit","hooksPath":".githooks","check":{"ok":true,"checked":...}}
+{"installed":true,"bin":"$HOME/.local/bin/tk","skill":"$HOME/.agents/skills/toolkit","skill_links":["$HOME/.agents/skills/toolkit"],"skill_links_skipped":[],"hooksPath":".githooks","check":{"ok":true,"checked":...}}
 ```
 
 `tk find wiki` prints two lines per match (the runnable command is on the second line):
@@ -36,7 +36,7 @@ wiki.lint [read-only] — Report wiki orphans, broken relative links, and pages 
 {"ok":true,"path":"wiki","pages":...,"orphans":[],"broken_links":[],"undated_pages":[]}
 ```
 
-Point the harness at `~/.agents/skills/toolkit/SKILL.md`.
+Point the harness at `~/.agents/skills/toolkit/SKILL.md` (or `~/.claude/skills/toolkit/SKILL.md`).
 
 Agents: skip to [For agents](#for-agents).
 
@@ -69,7 +69,7 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 - Create: `tk save` / `tk chain save`, then `tk check <name>`. Invalid drafts are quarantined.
 - Maintain: `tk evolve` (promote + friction report); `tk prune` (archive).
 - Commands: `find`, `info`, `run`, `chain`, `save`, `check`, `evolve`, `prune`.
-- Skill: [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md) (install also links `~/.agents/skills/toolkit`).
+- Skill: [`skills/toolkit/SKILL.md`](skills/toolkit/SKILL.md) (install links `~/.agents/skills/toolkit`, and `~/.claude/skills/toolkit` when `~/.claude` exists).
 - Building this repo: [`AGENTS.md`](AGENTS.md), [`COORDINATION.md`](COORDINATION.md).
 - Contracts: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - Authority: [`VISION.md`](VISION.md). History: [`wiki/index.md`](wiki/index.md).
