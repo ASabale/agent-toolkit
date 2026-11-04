@@ -570,6 +570,97 @@ _CHAIN_INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
 _CHAIN_STEP_REF = re.compile(r"^\$step\[(-?\d+)\](?:\..*)?$")
 
 
+def _parse_output_keys(output: str) -> set[str] | None:
+    """Extract top-level field names from an @tk-output like ``json | {a, b:[...], c}``.
+
+    Returns the set of key names if the output has a ``{...}`` shape, or None
+    if it doesn't (which means the check should be skipped, not failed).
+    """
+    text = output.strip()
+    if "|" in text:
+        text = text.split("|", 1)[1].strip()
+    if not text.startswith("{"):
+        return None
+    depth = 0
+    end = -1
+    for idx, char in enumerate(text):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+    if end < 0:
+        return None
+    inner = text[1:end]
+    keys: set[str] = set()
+    depth = 0
+    start = 0
+    for idx, char in enumerate(inner):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            segment = inner[start:idx].strip()
+            if segment:
+                key = segment.split(":")[0].split("[")[0].strip()
+                if key:
+                    keys.add(key)
+            start = idx + 1
+    segment = inner[start:].strip()
+    if segment:
+        key = segment.split(":")[0].split("[")[0].strip()
+        if key:
+            keys.add(key)
+    return keys if keys else None
+
+
+def _pick_query_key_errors(
+    index: int,
+    tool_name: str,
+    step_args: dict,
+    upstream_output: str,
+    upstream_name: str,
+) -> list[str]:
+    """Validate json.pick/json.query keys against upstream @tk-output."""
+    errors: list[str] = []
+    upstream_keys = _parse_output_keys(upstream_output)
+    if upstream_keys is None:
+        return errors
+
+    if tool_name == "json.pick":
+        raw_keys = str(step_args.get("keys") or step_args.get("--keys") or "")
+        requested = {key.strip() for key in raw_keys.split(",") if key.strip()}
+        for key in sorted(requested):
+            if key not in upstream_keys:
+                errors.append(
+                    f"step {index} (json.pick) key '{key}' not in upstream {upstream_name} output"
+                )
+
+    elif tool_name == "json.query":
+        raw_expr = str(step_args.get("expr") or step_args.get("--expr") or "")
+        expr = raw_expr.strip()
+        if expr.startswith("{") and "}" in expr:
+            end = expr.index("}")
+            inner = expr[1:end]
+            requested = {key.strip() for key in inner.split(",") if key.strip()}
+            for key in sorted(requested):
+                if key not in upstream_keys:
+                    errors.append(
+                        f"step {index} (json.query) key '{key}' not in upstream {upstream_name} output"
+                    )
+        elif expr and not expr.startswith("["):
+            first_key = expr.split(".")[0].split("[")[0].strip()
+            if first_key and first_key not in upstream_keys:
+                errors.append(
+                    f"step {index} (json.query) key '{first_key}' not in upstream {upstream_name} output"
+                )
+
+    return errors
+
+
 def _flag_name(key: object) -> str:
     text = str(key)
     return text if text.startswith("--") else f"--{text}"
@@ -631,6 +722,15 @@ def _chain_wiring_errors(item: dict, catalog: dict) -> list[str]:
         for flag, arg in declared.items():
             if arg.get("required") and arg.get("default") is None and flag not in present:
                 errors.append(f"step {index} ({tool_name}) missing required flag: {flag}")
+        if tool_name in {"json.pick", "json.query"} and index > 0:
+            prev_step = steps[index - 1]
+            prev_tool_name = prev_step.get("tool") if isinstance(prev_step, dict) else None
+            prev_tool = catalog.get(prev_tool_name) if prev_tool_name else None
+            if prev_tool:
+                upstream_output = str(prev_tool.get("output") or "")
+                errors.extend(
+                    _pick_query_key_errors(index, tool_name, raw, upstream_output, prev_tool_name)
+                )
     return errors
 
 

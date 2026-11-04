@@ -32,11 +32,11 @@
     {
       "tool": "json.pick",
       "args": {
-        "keys": "repo,pr,fail,pending,checks"
+        "keys": "repo,pr,fail,pending,pass"
       }
     }
   ],
-  "output": "json | {repo, pr, fail, pending, checks}",
+  "output": "json | {repo, pr, fail, pending, pass}",
   "example": "tk run gh.triage-pr --repo owner/name --pr 1",
   "verified": "2026-11-03"
 }

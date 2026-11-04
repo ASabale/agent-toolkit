@@ -110,7 +110,7 @@ class TriageChainTests(unittest.TestCase):
         chain_path = ROOT / "chains/gh.triage-pr.json"
         raw = json.loads(chain_path.read_text(encoding="utf-8"))
         keys = raw["steps"][1]["args"]["keys"]
-        self.assertEqual(keys, "repo,pr,fail,pending,checks")
+        self.assertEqual(keys, "repo,pr,fail,pending,pass")
 
         item = load_chain(chain_path)
         code, stdout, stderr = run_chain(
@@ -121,14 +121,13 @@ class TriageChainTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, stderr)
         dry = json.loads(stdout)
-        self.assertEqual(dry.get("keys"), ["repo", "pr", "fail", "pending", "checks"])
+        self.assertEqual(dry.get("keys"), ["repo", "pr", "fail", "pending", "pass"])
 
         mock = {
             "repo": "owner/name",
             "pr": 7,
             "fail": [{"name": "ci", "url": "https://example.test/ci"}],
             "pending": 2,
-            "checks": 4,
             "pass": 9,
             "noise": True,
         }
@@ -146,7 +145,7 @@ class TriageChainTests(unittest.TestCase):
                 "pr": 7,
                 "fail": [{"name": "ci", "url": "https://example.test/ci"}],
                 "pending": 2,
-                "checks": 4,
+                "pass": 9,
             },
         )
 
