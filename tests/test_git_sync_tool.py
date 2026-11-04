@@ -125,13 +125,16 @@ class GitSyncTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertIs(payload["dry_run"], True)
+        self.assertEqual(len(payload["plan"]), 3)
         self.assertEqual(
             payload["plan"],
             [
                 "git fetch origin main",
                 "git pull --rebase --autostash origin main",
+                "git push --force-with-lease --set-upstream origin <current-feature-branch>",
             ],
         )
+        self.assertIn("push", " ".join(payload["plan"]))
 
     def test_conflict_aborts_rebase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -59,6 +59,7 @@ def dry_run_payload(repo: str, remote: str, base: str) -> dict:
         "plan": [
             f"git fetch {remote} {base}",
             f"git pull --rebase --autostash {remote} {base}",
+            f"git push --force-with-lease --set-upstream {remote} <current-feature-branch>",
         ],
     }
 
