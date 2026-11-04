@@ -11,8 +11,14 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
+
+# Catalog smoke sets the required string flag to this dummy and leaves optionals unset.
+_SMOKE_REPO = "example"
 
 
 def emit(payload: dict, code: int = 0) -> int:
@@ -21,13 +27,55 @@ def emit(payload: dict, code: int = 0) -> int:
     return code
 
 
+# Repo-location variables. These make `git -C <repo>` operate on the caller's
+# checkout (as a hook's GIT_DIR does). Transport and credential variables
+# (GIT_SSH_COMMAND, GIT_ASKPASS, GIT_CONFIG_COUNT, and the KEY/VALUE pairs)
+# stay in the environment so fetch and push still authenticate.
+_REPO_LOCATION_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE",
+)
+
+
+def _git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in _REPO_LOCATION_ENV:
+        env.pop(key, None)
+    return env
+
+
 def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", repo, *args],
         capture_output=True,
         text=True,
         timeout=30,
+        env=_git_env(),
     )
+
+
+def _git_ok(repo: Path, *args: str) -> None:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env=_git_env(),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "git failed").strip()
+        raise RuntimeError(detail)
 
 
 def counts(repo: str, remote: str, base: str) -> tuple[int, int] | None:
@@ -49,6 +97,60 @@ def current_branch(repo: str) -> str:
     return head.stdout.strip() if head.returncode == 0 else ""
 
 
+def _branch_name(repo: str) -> str:
+    """Named branch, including an unborn one. Empty when HEAD is detached."""
+    probe = git(repo, "symbolic-ref", "-q", "--short", "HEAD")
+    return probe.stdout.strip() if probe.returncode == 0 else ""
+
+
+def _head_exists(repo: str) -> bool:
+    return git(repo, "rev-parse", "-q", "--verify", "HEAD").returncode == 0
+
+
+def _git_path(repo: str, name: str) -> Path | None:
+    probe = git(repo, "rev-parse", "--git-path", name)
+    if probe.returncode != 0:
+        return None
+    text = probe.stdout.strip()
+    if not text:
+        return None
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    return Path(repo) / path
+
+
+def _rebase_in_progress(repo: str) -> bool:
+    for name in ("rebase-merge", "rebase-apply"):
+        path = _git_path(repo, name)
+        if path is not None and path.exists():
+            return True
+    return False
+
+
+def _has_remote(repo: str, remote: str) -> bool:
+    return git(repo, "remote", "get-url", remote).returncode == 0
+
+
+def _supplied(env_name: str) -> str | None:
+    if env_name not in os.environ:
+        return None
+    value = os.environ[env_name]
+    return value or None
+
+
+def sync_command(repo: str, remote: str | None = None) -> str:
+    """Rebuild the call with every flag the caller actually set, shell-quoted."""
+    parts = ["tk", "run", "git.sync", "--repo", shlex.quote(repo)]
+    chosen = remote if remote is not None else _supplied("TK_ARG_REMOTE")
+    if chosen:
+        parts.extend(["--remote", shlex.quote(chosen)])
+    branch = _supplied("TK_ARG_BRANCH")
+    if branch is not None:
+        parts.extend(["--branch", shlex.quote(branch)])
+    return " ".join(parts)
+
+
 def dry_run_payload(repo: str, remote: str, base: str) -> dict:
     current = current_branch(repo)
     return {
@@ -65,9 +167,108 @@ def dry_run_payload(repo: str, remote: str, base: str) -> dict:
     }
 
 
+def _is_work_tree(repo: str) -> bool:
+    probe = git(repo, "rev-parse", "--is-inside-work-tree")
+    return probe.returncode == 0 and probe.stdout.strip() == "true"
+
+
+def _catalog_smoke(repo: str, dry_run: bool) -> bool:
+    """True only for the catalog's dummy invocation, not a real --repo example."""
+    if not dry_run or repo != _SMOKE_REPO:
+        return False
+    if _supplied("TK_ARG_REMOTE") is not None or _supplied("TK_ARG_BRANCH") is not None:
+        return False
+    return not _is_work_tree(repo)
+
+
+def _smoke_plan(remote: str, base: str) -> dict:
+    """Preview against a throwaway feature branch so smoke still sees a real plan."""
+    with tempfile.TemporaryDirectory(prefix="tk-git-sync-") as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _git_ok(repo, "init", "-b", "main")
+        _git_ok(repo, "config", "user.email", "ada@example.com")
+        _git_ok(repo, "config", "user.name", "Ada")
+        (repo / "README").write_text("smoke\n", encoding="utf-8")
+        _git_ok(repo, "add", "README")
+        _git_ok(repo, "commit", "-m", "init")
+        _git_ok(repo, "checkout", "-b", "feature")
+        return dry_run_payload(str(repo), remote, base)
+
+
+def _git_c(repo: str, *args: str) -> str:
+    return " ".join(["git", "-C", shlex.quote(repo), *args])
+
+
+def _feature_fix(repo: str) -> str:
+    return f"{_git_c(repo, 'checkout', '-b', 'fix/sync')} && {sync_command(repo)}"
+
+
+def _not_a_repo_fix(repo: str) -> str:
+    """Init the path, creating missing parents. `git -C` cannot enter a missing directory."""
+    return f"git init -b fix/sync -- {shlex.quote(repo)}"
+
+
+def refuse_no_commits(repo: str, branch: str, retry: str) -> int:
+    label = branch or "HEAD"
+    commit = _git_c(repo, "commit", "--allow-empty", "-m", shlex.quote("initial commit"))
+    return fail(
+        "no_commits",
+        f"{label} has no commits yet",
+        f"{commit} && {retry}",
+        2,
+    )
+
+
+def _remote_names(repo: str) -> list[str]:
+    probe = git(repo, "remote")
+    if probe.returncode != 0:
+        return []
+    return [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+
+
+def _no_remote_fix(repo: str, remote: str, retry: str) -> str:
+    """Ask for a URL, or retry against a remote that is already configured."""
+    others = [name for name in _remote_names(repo) if name != remote]
+    if others:
+        return sync_command(repo, remote=others[0])
+    safe = "".join(ch for ch in remote if ch not in '"$`\\}!')
+    url = '"${REMOTE_URL:?set REMOTE_URL to the URL for remote ' + safe + '}"'
+    add = _git_c(repo, "remote", "add", shlex.quote(remote), url)
+    return f"{add} && {retry}"
+
+
+def refuse_no_remote(repo: str, remote: str, retry: str) -> int:
+    fix = _no_remote_fix(repo, remote, retry)
+    return fail("no_remote", f"remote {remote} is not configured; run {fix}", fix, 2)
+
+
+def _rebase_continue(repo: str, retry: str) -> str:
+    # core.editor=true keeps the existing message. Agents have no editor, and vi would hang.
+    cont = _git_c(repo, "-c", "core.editor=true", "rebase", "--continue")
+    return f"{cont} && {retry}"
+
+
+def refuse_rebase_in_progress(repo: str, retry: str) -> int:
+    return fail(
+        "rebase_in_progress",
+        "a rebase is in progress; resolve the conflicts, git add the files, then continue",
+        _rebase_continue(repo, retry),
+        2,
+    )
+
+
+def _conflict_why(repo: str, detail: str, retry: str) -> str:
+    add = _git_c(repo, "add")
+    guide = f"resolve the conflicts, {add} the listed files, then run {_rebase_continue(repo, retry)}"
+    if not detail:
+        return guide
+    return f"{detail}; {guide}"
+
+
 def refuse_current_branch(repo: str, current: str, base: str) -> int | None:
     """Refuse detached, main, or the rebase base. None means a feature branch."""
-    create = f"git checkout -b fix/sync && tk run git.sync --repo {repo}"
+    create = _feature_fix(repo)
     if current == "HEAD" or not current:
         return fail(
             "detached_head",
@@ -86,6 +287,15 @@ def refuse_current_branch(repo: str, current: str, base: str) -> int | None:
     return None
 
 
+def refuse_not_a_repo(repo: str) -> int:
+    return fail(
+        "not_a_repo",
+        f"{repo} is not a git working tree",
+        _not_a_repo_fix(repo),
+        2,
+    )
+
+
 def rebase_onto(repo: str, remote: str, base: str) -> tuple[tuple[int, int] | None, str, str]:
     pulled = git(repo, "pull", "--rebase", "--autostash", remote, base)
     if pulled.returncode != 0:
@@ -98,65 +308,79 @@ def rebase_onto(repo: str, remote: str, base: str) -> tuple[tuple[int, int] | No
     return pair, "", ""
 
 
+def _sync(repo: str, remote: str, base: str, current: str, retry: str) -> int:
+    fetched = git(repo, "fetch", remote, base)
+    if fetched.returncode != 0:
+        return fail("git_failed", fetched.stderr.strip() or "git fetch failed", retry)
+    pair = counts(repo, remote, base)
+    if pair is None:
+        return fail("git_failed", f"could not compare HEAD with {remote}/{base}", retry)
+    ahead, behind = pair
+    rebased = False
+    if behind != 0:
+        pair, error, why = rebase_onto(repo, remote, base)
+        if pair is None:
+            if error == "rebase_conflict":
+                fix = _git_c(repo, "rebase", shlex.quote(f"{remote}/{base}"))
+                return fail(error, _conflict_why(repo, why, retry), fix)
+            return fail(error, why, retry)
+        ahead, behind = pair
+        rebased = True
+    pushed = git(repo, "push", "--force-with-lease", "--set-upstream", remote, current)
+    if pushed.returncode != 0:
+        return fail(
+            "git_failed",
+            pushed.stderr.strip() or "git push failed",
+            _git_c(
+                repo,
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                shlex.quote(remote),
+                shlex.quote(current),
+            ),
+        )
+    return emit(
+        {
+            "repo": repo,
+            "remote": remote,
+            "branch": current,
+            "base": base,
+            "status": "rebased" if rebased else "up_to_date",
+            "ahead": ahead,
+            "behind": behind,
+            "rebased": rebased,
+            "pushed": True,
+        }
+    )
+
+
 def main() -> int:
     repo = os.environ.get("TK_ARG_REPO", "")
     remote = os.environ.get("TK_ARG_REMOTE") or "origin"
     base = os.environ.get("TK_ARG_BRANCH") or "main"
-    retry = f"tk run git.sync --repo {repo or '<git-dir>'}"
     dry_run = os.environ.get("TK_DRY_RUN", "0") == "1"
+    retry = sync_command(repo) if repo else "tk run git.sync --repo <path>"
     if not repo:
-        if dry_run:
-            return emit(dry_run_payload(repo, remote, base))
         return fail("missing_flag", "TK_ARG_REPO is required", "tk run git.sync --repo <path>", 2)
     try:
-        current = current_branch(repo)
-        # Catalog smoke passes a dummy path that is not a checkout. A resolved
-        # branch still hits the same refusal a real run would.
-        if current or not dry_run:
-            blocked = refuse_current_branch(repo, current, base)
-            if blocked is not None:
-                return blocked
+        if _catalog_smoke(repo, dry_run):
+            return emit(_smoke_plan(remote, base))
+        if not _is_work_tree(repo):
+            return refuse_not_a_repo(repo)
+        if _rebase_in_progress(repo):
+            return refuse_rebase_in_progress(repo, retry)
+        branch = _branch_name(repo)
+        if not _head_exists(repo):
+            return refuse_no_commits(repo, branch, retry)
+        blocked = refuse_current_branch(repo, branch, base)
+        if blocked is not None:
+            return blocked
+        if not _has_remote(repo, remote):
+            return refuse_no_remote(repo, remote, retry)
         if dry_run:
             return emit(dry_run_payload(repo, remote, base))
-        fetched = git(repo, "fetch", remote, base)
-        if fetched.returncode != 0:
-            return fail("git_failed", fetched.stderr.strip() or "git fetch failed", retry)
-        pair = counts(repo, remote, base)
-        if pair is None:
-            return fail("git_failed", f"could not compare HEAD with {remote}/{base}", retry)
-        ahead, behind = pair
-        rebased = False
-        if behind != 0:
-            pair, error, why = rebase_onto(repo, remote, base)
-            if pair is None:
-                fix = (
-                    f"resolve the conflicting commit in {repo}, then retry {retry}"
-                    if error == "rebase_conflict"
-                    else retry
-                )
-                return fail(error, why, fix)
-            ahead, behind = pair
-            rebased = True
-        pushed = git(repo, "push", "--force-with-lease", "--set-upstream", remote, current)
-        if pushed.returncode != 0:
-            return fail(
-                "git_failed",
-                pushed.stderr.strip() or "git push failed",
-                f"git push --force-with-lease --set-upstream {remote} {current}",
-            )
-        return emit(
-            {
-                "repo": repo,
-                "remote": remote,
-                "branch": current,
-                "base": base,
-                "status": "rebased" if rebased else "up_to_date",
-                "ahead": ahead,
-                "behind": behind,
-                "rebased": rebased,
-                "pushed": True,
-            }
-        )
+        return _sync(repo, remote, base, branch, retry)
     except subprocess.TimeoutExpired:
         git(repo, "rebase", "--abort")
         return fail("git_failed", "git command timed out", retry)

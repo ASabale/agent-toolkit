@@ -94,7 +94,7 @@ class GitSyncRefuseMainTests(unittest.TestCase):
             self.assertEqual(payload["error"], "on_main")
             self.assertIn("main", payload["why"])
             self.assertIn("tk run git.sync", payload["fix"])
-            self.assertIn("git checkout -b fix/sync", payload["fix"])
+            self.assertIn(f"git -C {str(clone)} checkout -b fix/sync", payload["fix"])
             self.assertEqual(_git(clone, "symbolic-ref", "--short", "HEAD").stdout.strip(), "main")
             self.assertEqual(_sha(origin, "refs/heads/main"), before)
             self.assertEqual(_git(origin, "show-ref", "--heads").stdout.count("\n"), 1)
@@ -110,7 +110,7 @@ class GitSyncRefuseMainTests(unittest.TestCase):
             payload = json.loads(proc.stderr)
             self.assertEqual(payload["error"], "on_base")
             self.assertIn("develop", payload["why"])
-            self.assertIn("git checkout -b fix/sync", payload["fix"])
+            self.assertIn(f"git -C {str(clone)} checkout -b fix/sync", payload["fix"])
             self.assertEqual(_git(clone, "symbolic-ref", "--short", "HEAD").stdout.strip(), "develop")
             self.assertEqual(_sha(origin, "refs/heads/main"), before)
 
@@ -148,35 +148,30 @@ class GitSyncRefuseMainTests(unittest.TestCase):
 
 
 class GitSyncDryRunTests(unittest.TestCase):
-    def test_dry_run_describes_feature_branch_sync_and_does_not_execute(self) -> None:
+    def test_dry_run_on_missing_path_matches_real_refusal_and_does_not_execute(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "not-a-repo"
             sentinel = Path(tmp) / "untouched.txt"
             sentinel.write_text("keep\n", encoding="utf-8")
-            proc = _run(
-                {
-                    "TK_ARG_REPO": str(missing),
-                    "TK_ARG_REMOTE": "origin",
-                    "TK_DRY_RUN": "1",
-                }
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            payload = json.loads(proc.stdout)
-            self.assertTrue(payload["dry_run"])
-            self.assertEqual(payload["repo"], str(missing))
-            self.assertEqual(payload["remote"], "origin")
-            self.assertEqual(payload.get("base"), "main")
-            plan = payload.get("plan")
-            self.assertIsInstance(plan, list)
-            self.assertEqual(len(plan), 3)
-            joined = " ".join(str(item) for item in plan).lower()
-            self.assertIn("fetch", joined)
-            self.assertIn("pull --rebase --autostash", joined)
-            self.assertIn("push", joined)
-            self.assertIn("main", joined)
+            env = {"TK_ARG_REPO": str(missing), "TK_ARG_REMOTE": "origin"}
+            dry = _run({**env, "TK_DRY_RUN": "1"})
+            real = _run(env)
+            self.assertNotEqual(dry.returncode, 0, dry.stdout)
+            self.assertEqual(dry.returncode, real.returncode)
+            self.assertEqual(dry.stdout.strip(), "")
+            self.assertEqual(real.stdout.strip(), "")
+            payload = json.loads(dry.stderr)
+            self.assertEqual(payload, json.loads(real.stderr))
+            self.assertEqual(payload["error"], "not_a_repo")
+            self.assertIn(str(missing), payload["why"])
+            self.assertIn(f"git init -b fix/sync -- {missing}", payload["fix"])
+            self.assertNotIn("git -C ", payload["fix"])
+            self.assertNotIn("user.email", payload["fix"])
+            self.assertNotIn("ada@example.com", payload["fix"])
+            self.assertNotIn("<", payload["fix"])
             self.assertFalse(missing.exists())
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
-            self.assertEqual(list(Path(tmp).iterdir()), [sentinel])
+            self.assertEqual(sorted(Path(tmp).iterdir()), [sentinel])
 
     def test_header_and_example_describe_feature_branch_sync(self) -> None:
         text = SYNC.read_text(encoding="utf-8")
