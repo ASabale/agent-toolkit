@@ -4,7 +4,7 @@ On 2026-11-03, `ASabale/agent-toolkit@9d469d7` added `lib/evolver.py` (921 lines
 
 ## Telemetry
 
-On 2026-11-03, `log_event` created `state/`, appended one compact JSON object to `state/events.jsonl` with `ts` (UTC ISO timestamp) and `event`, copied payload keys other than `ts` and `event`, and returned on any exception. *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@b7f9668`, which added `TK_STATE_DIR` to relocate `events.jsonl`, `quarantine/`, and `archive/`, and `TK_NO_TELEMETRY=1|true|yes` to skip telemetry writes during pre-commit hooks and CI.)*
+On 2026-11-03, `log_event` created `state/`, appended one compact JSON object to `state/events.jsonl` with `ts` (UTC ISO timestamp) and `event`, copied payload keys other than `ts` and `event`, and returned on any exception. *(Superseded on 2026-11-04 by `ASabale/agent-toolkit@b7f9668`, which added `TK_STATE_DIR` to relocate `events.jsonl`, `quarantine/`, and `archive/`, and `TK_NO_TELEMETRY=1|true|yes` to skip telemetry writes during pre-commit hooks and CI. On 2026-11-04 the pre-commit gate moved to the tracked `.githooks/pre-commit` and `install.sh` sets `git config core.hooksPath .githooks`; see [0003](../decisions/0003-autonomous-chief-of-staff-governance.md).)*
 
 On 2026-11-03, `tk` logged `search_miss` from `tk find` (empty match set), from `tk info` (unknown name), and from `tk run` (unknown name). `lib/runner.py` logged `run_ok` or `run_error` only when the call was not a dry-run. See [Runner and chains](runner-and-chains.md).
 
