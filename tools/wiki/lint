@@ -3,12 +3,13 @@
 # @tk-summary: Report wiki orphans, broken relative links, and pages missing a date or commit
 # @tk-safety: read-only
 # @tk-arg: --path | optional | string | Path to wiki directory (default: wiki)
-# @tk-output: json | {ok, path, pages, orphans, broken_links, undated_pages}
+# @tk-output: json | {ok, path, pages, orphans, broken_links, undated_pages, bad_citations}
 # @tk-example: tk run wiki.lint --path wiki
 # @tk-verified: 2026-11-04
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,8 +18,10 @@ from lib.tool_sdk import dry_run_ok, emit, fail, is_dry_run
 
 _DATE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
 _COMMIT = re.compile(r"@[0-9a-f]{7,40}")
+_REPO_SHA = re.compile(r"ASabale/agent-toolkit@([0-9a-f]{7,40})")
 _LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _FIX = "tk run wiki.lint --path wiki"
+_SQUASH_FIX = "cite the squash commit on main"
 
 
 def _link_target(raw: str) -> str:
@@ -63,6 +66,60 @@ def _linked_from_index(root: Path, index: Path) -> set[Path]:
     return linked
 
 
+def _git(root: Path, *args: str):
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _history_ready(root: Path) -> bool:
+    proc = _git(root, "rev-parse", "--is-inside-work-tree")
+    if proc is None or proc.returncode != 0 or proc.stdout.strip() != "true":
+        return False
+    head = _git(root, "rev-parse", "--verify", "HEAD")
+    return head is not None and head.returncode == 0 and bool(head.stdout.strip())
+
+
+def _ancestor(root: Path, sha: str, cache):
+    if sha in cache:
+        return cache[sha]
+    kind = _git(root, "cat-file", "-t", sha)
+    if kind is None or kind.returncode != 0 or kind.stdout.strip() != "commit":
+        cache[sha] = None
+        return None
+    anc = _git(root, "merge-base", "--is-ancestor", sha, "HEAD")
+    if anc is None or anc.returncode not in (0, 1):
+        cache[sha] = None
+        return None
+    cache[sha] = anc.returncode == 0
+    return cache[sha]
+
+
+def _bad_citations(root: Path, rel: str, text: str, cache) -> list:
+    found: list[dict] = []
+    seen: set[str] = set()
+    for match in _REPO_SHA.finditer(text):
+        sha = match.group(1)
+        if sha in seen:
+            continue
+        seen.add(sha)
+        if _ancestor(root, sha, cache) is False:
+            found.append({
+                "source": rel,
+                "sha": sha,
+                "error": "not_ancestor",
+                "fix": _SQUASH_FIX,
+            })
+    return found
+
+
 def lint(root: Path, display_path: str) -> dict:
     pages = _markdown_files(root)
     rels = [page.relative_to(root).as_posix() for page in pages]
@@ -70,15 +127,20 @@ def lint(root: Path, display_path: str) -> dict:
     orphans: list[str] = []
     broken: list[dict] = []
     undated: list[str] = []
+    bad: list[dict] = []
     linked = _linked_from_index(root, index) if index.is_file() else set()
     if not index.is_file():
         orphans = [rel for rel in rels if rel != "index.md"]
+    check_shas = _history_ready(root)
+    cache = {}
     for page, rel in zip(pages, rels):
         text = page.read_text(encoding="utf-8")
         if rel != "index.md" and index.is_file() and page.resolve() not in linked:
             orphans.append(rel)
         if _DATE.search(text) is None or _COMMIT.search(text) is None:
             undated.append(rel)
+        if check_shas:
+            bad.extend(_bad_citations(root, rel, text, cache))
         for match in _LINK.finditer(text):
             target = _link_target(match.group(1))
             if not _is_relative(target):
@@ -88,7 +150,8 @@ def lint(root: Path, display_path: str) -> dict:
     orphans.sort()
     undated.sort()
     broken.sort(key=lambda item: (item["source"], item["target"]))
-    ok = index.is_file() and not orphans and not broken and not undated
+    bad.sort(key=lambda item: (item["source"], item["sha"]))
+    ok = index.is_file() and not orphans and not broken and not undated and not bad
     return {
         "ok": ok,
         "path": display_path,
@@ -96,6 +159,7 @@ def lint(root: Path, display_path: str) -> dict:
         "orphans": orphans,
         "broken_links": broken,
         "undated_pages": undated,
+        "bad_citations": bad,
     }
 
 
