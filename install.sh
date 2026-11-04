@@ -8,7 +8,25 @@ skill_links=""
 skill_links_skipped=""
 
 json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+    out=
+    bytes=$(printf '%s' "$1" | od -An -tu1)
+    for ord in $bytes; do
+        case $ord in
+            34) out="${out}\\\"" ;;
+            92) out="${out}\\\\" ;;
+            9) out="${out}\\t" ;;
+            10) out="${out}\\n" ;;
+            13) out="${out}\\r" ;;
+            *)
+                if [ "$ord" -lt 32 ]; then
+                    out="${out}$(printf '\\u%04x' "$ord")"
+                else
+                    out="${out}$(printf "\\$(printf '%03o' "$ord")")"
+                fi
+                ;;
+        esac
+    done
+    printf '%s' "$out"
 }
 
 append_link() {

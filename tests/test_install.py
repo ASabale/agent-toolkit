@@ -156,3 +156,12 @@ class InstallTests(unittest.TestCase):
         )
         self.assertEqual(payload["skill_links_skipped"], [])
         self.assertFalse((self.home / ".claude").exists())
+
+    def test_control_characters_in_paths_emit_valid_json(self) -> None:
+        home = self.tmp / "ho\tme\nX"
+        extra = self.tmp / "sk\till\x01"
+        payload = self._payload({"HOME": str(home), "TK_SKILL_DIRS": str(extra)})
+        self.assertIn("\t", payload["bin"])
+        self.assertIn("\n", payload["skill"])
+        self.assertIn("\t", payload["skill"])
+        self.assertTrue(any("\t" in link and "\x01" in link for link in payload["skill_links"]))
