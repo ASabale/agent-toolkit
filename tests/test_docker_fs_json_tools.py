@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     for key in list(merged):
-        if key.startswith("TK_ARG_") or key in {"TK_DRY_RUN", "TK_DOCKER_BIN"}:
+        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
             merged.pop(key, None)
     merged.update(env)
     merged.setdefault("TK_DRY_RUN", "0")
@@ -25,6 +25,12 @@ def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
         text=True,
         env=merged,
     )
+
+
+def _with_bin_path(bin_dir: Path, env: dict) -> dict:
+    merged = dict(env)
+    merged["PATH"] = str(bin_dir)
+    return merged
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -50,7 +56,7 @@ class DockerPsDigestTests(unittest.TestCase):
     def test_filters_state_and_caps_limit(self) -> None:
         proc = _run(
             ROOT / "tools/docker/ps-digest",
-            {"TK_DOCKER_BIN": str(self.fake), "TK_ARG_STATE": "running", "TK_ARG_LIMIT": "1"},
+            _with_bin_path(self.root, {"TK_ARG_STATE": "running", "TK_ARG_LIMIT": "1"}),
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
@@ -75,7 +81,7 @@ class DockerPsDigestTests(unittest.TestCase):
     def test_all_returns_every_container(self) -> None:
         proc = _run(
             ROOT / "tools/docker/ps-digest",
-            {"TK_DOCKER_BIN": str(self.fake), "TK_ARG_STATE": "all", "TK_ARG_LIMIT": "25"},
+            _with_bin_path(self.root, {"TK_ARG_STATE": "all", "TK_ARG_LIMIT": "25"}),
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
@@ -84,9 +90,11 @@ class DockerPsDigestTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in payload["containers"]], ["web", "api", "job"])
 
     def test_missing_binary_is_docker_unavailable(self) -> None:
+        empty = self.root / "empty-path"
+        empty.mkdir()
         proc = _run(
             ROOT / "tools/docker/ps-digest",
-            {"TK_DOCKER_BIN": str(self.root / "missing-docker"), "TK_ARG_STATE": "all", "TK_ARG_LIMIT": "5"},
+            _with_bin_path(empty, {"TK_ARG_STATE": "all", "TK_ARG_LIMIT": "5"}),
         )
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(proc.stdout, "")
@@ -94,11 +102,15 @@ class DockerPsDigestTests(unittest.TestCase):
         self.assertEqual(err["error"], "docker_unavailable")
 
     def test_nonzero_docker_is_docker_failed(self) -> None:
-        broken = self.root / "broken-docker"
-        _write_exec(broken, "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n")
+        broken_dir = self.root / "broken-path"
+        broken_dir.mkdir()
+        _write_exec(
+            broken_dir / "docker",
+            "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n",
+        )
         proc = _run(
             ROOT / "tools/docker/ps-digest",
-            {"TK_DOCKER_BIN": str(broken), "TK_ARG_STATE": "all", "TK_ARG_LIMIT": "5"},
+            _with_bin_path(broken_dir, {"TK_ARG_STATE": "all", "TK_ARG_LIMIT": "5"}),
         )
         self.assertEqual(proc.returncode, 1)
         err = json.loads(proc.stderr)
