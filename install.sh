@@ -49,25 +49,33 @@ append_skipped() {
     fi
 }
 
+encode_dir() {
+    out=
+    bytes=$(printf '%s' "$1" | od -An -tu1)
+    for ord in $bytes; do
+        case $ord in
+            92) out="${out}\\\\" ;;
+            10) out="${out}\\n" ;;
+            *) out="${out}$(printf "\\$(printf '%03o' "$ord")")" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 dir_listed() {
     needle=$1
-    list=$2
-    [ -n "$list" ] || return 1
-    printf '%s\n' "$list" | grep -F -x -- "$needle" >/dev/null 2>&1
+    [ -s "$skill_dirs_file" ] || return 1
+    grep -F -x -- "$needle" "$skill_dirs_file" >/dev/null 2>&1
 }
 
 add_skill_dir() {
     dir=$1
     [ -n "$dir" ] || return 0
-    if dir_listed "$dir" "$skill_dirs"; then
+    encoded=$(encode_dir "$dir")
+    if dir_listed "$encoded"; then
         return 0
     fi
-    if [ -n "$skill_dirs" ]; then
-        skill_dirs="${skill_dirs}
-${dir}"
-    else
-        skill_dirs=$dir
-    fi
+    printf '%s\n' "$encoded" >> "$skill_dirs_file"
 }
 
 link_skill() {
@@ -89,7 +97,8 @@ link_skill() {
 mkdir -p "${HOME}/.local/bin"
 ln -sfn "${REPO_ROOT}/tk" "${HOME}/.local/bin/tk"
 
-skill_dirs=""
+skill_dirs_file=$(mktemp)
+trap 'rm -f "$skill_dirs_file"' EXIT
 add_skill_dir "${HOME}/.agents/skills"
 if [ -d "${HOME}/.claude" ]; then
     add_skill_dir "${HOME}/.claude/skills"
@@ -109,12 +118,12 @@ while [ -n "$rest" ]; do
     add_skill_dir "$extra"
 done
 
-while IFS= read -r dest_parent; do
-    [ -n "$dest_parent" ] || continue
+while IFS= read -r encoded || [ -n "$encoded" ]; do
+    [ -n "$encoded" ] || continue
+    dest_parent=$(printf '%b' "$encoded"; printf x)
+    dest_parent=${dest_parent%x}
     link_skill "$dest_parent"
-done <<EOF
-${skill_dirs}
-EOF
+done < "$skill_dirs_file"
 
 hooks_path=""
 if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
