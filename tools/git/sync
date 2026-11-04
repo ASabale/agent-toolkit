@@ -19,6 +19,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import safe_git_path, safe_git_token
+
 # Catalog smoke sets the required string flag to this dummy and leaves optionals unset.
 _SMOKE_REPO = "example"
 
@@ -366,6 +369,13 @@ def main() -> int:
     retry = sync_command(repo) if repo else "tk run git.sync --repo <path>"
     if not repo:
         return fail("missing_flag", "TK_ARG_REPO is required", "tk run git.sync --repo <path>", 2)
+    if not safe_git_path(repo) or not safe_git_token(remote) or not safe_git_token(base):
+        return fail(
+            "unsafe_git_ref",
+            "repo must not start with '-' and remote/branch must not be options or contain whitespace",
+            retry,
+            2,
+        )
     try:
         if _catalog_smoke(repo, dry_run):
             return emit(_smoke_plan(remote, base))

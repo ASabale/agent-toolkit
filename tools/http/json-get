@@ -19,6 +19,10 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import UnsafeURL, checked_open, public_url_error
 
 _MAX_DEFAULT_BYTES = 2048
 _RUNNER_CAP_DEFAULT = 65536
@@ -370,12 +374,12 @@ def main() -> int:
             },
             2,
         )
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    blocked = public_url_error(url)
+    if blocked:
         return emit(
             {
                 "error": "invalid_url",
-                "why": "url must be an absolute http or https URL",
+                "why": blocked,
                 "fix": "tk run http.json-get --url https://example.com/data.json",
             },
             2,
@@ -386,8 +390,17 @@ def main() -> int:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with checked_open(request, timeout) as response:
             body = response.read()
+    except UnsafeURL as exc:
+        return emit(
+            {
+                "error": "invalid_url",
+                "why": str(exc),
+                "fix": "tk run http.json-get --url https://example.com/data.json",
+            },
+            2,
+        )
     except urllib.error.HTTPError as exc:
         return emit(
             {

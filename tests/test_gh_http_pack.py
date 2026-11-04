@@ -291,7 +291,7 @@ class HealthProbeTests(unittest.TestCase):
         urls = f"http://127.0.0.1:{port}/ok,http://127.0.0.1:{port}/fail"
         proc = _run(
             ROOT / "tools/http/health-probe",
-            {"TK_ARG_URLS": urls, "TK_ARG_TIMEOUT": "5"},
+            {"TK_ARG_URLS": urls, "TK_ARG_TIMEOUT": "5", "TK_ALLOW_PRIVATE_URLS": "1"},
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import safe_git_path
 from lib.tool_sdk import arg_str, dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run git.branch-digest --repo <path>"
@@ -41,6 +42,8 @@ def main() -> int:
         )
     if not repo:
         return fail("missing_flag", "TK_ARG_REPO is required", _FIX, 2)
+    if not safe_git_path(repo):
+        return fail("unsafe_git_ref", "repo must not start with '-'", _FIX, 2)
     probe = git(repo, "rev-parse", "--is-inside-work-tree")
     if probe.returncode != 0 or probe.stdout.strip() != "true":
         return fail(

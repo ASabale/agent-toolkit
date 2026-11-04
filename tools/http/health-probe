@@ -17,6 +17,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.guards import UnsafeURL, checked_open, public_url_error
 from lib.tool_sdk import arg_int, arg_str, dry_run_ok, emit, fail, is_dry_run
 
 _FIX = "tk run http.health-probe --urls https://example.com --timeout 5"
@@ -33,16 +34,21 @@ def probe(url: str, timeout: int) -> dict:
     content_type = ""
     error = None
     ok = False
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    blocked = public_url_error(url)
+    if blocked:
+        error = blocked
+    elif parsed.scheme not in {"http", "https"} or not parsed.netloc:
         error = "url must be http or https"
     else:
         request = urllib.request.Request(url, method="GET", headers={"User-Agent": "tk-http-health-probe"})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with checked_open(request, timeout) as response:
                 response.read(256)
                 status = int(response.status)
                 content_type = response.headers.get("Content-Type") or ""
                 ok = 200 <= status < 300
+        except UnsafeURL as exc:
+            error = str(exc)
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             content_type = exc.headers.get("Content-Type") or "" if exc.headers else ""

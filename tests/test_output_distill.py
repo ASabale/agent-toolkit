@@ -143,6 +143,7 @@ def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
             merged.pop(key, None)
     merged.update(env)
     merged.setdefault("TK_DRY_RUN", "0")
+    merged.setdefault("TK_ALLOW_PRIVATE_URLS", "1")
     return subprocess.run(
         [sys.executable, str(script)],
         capture_output=True,
@@ -241,6 +242,7 @@ class JsonGetDistillTests(unittest.TestCase):
             if key.startswith("TK_ARG_") or key in {"TK_DRY_RUN", "TK_MAX_OUTPUT_BYTES"}:
                 env.pop(key, None)
         env["TK_NO_TELEMETRY"] = "1"
+        env["TK_ALLOW_PRIVATE_URLS"] = "1"
         env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
         return subprocess.run(
             fix,
