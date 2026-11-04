@@ -243,6 +243,13 @@ class ValidateAndBuildEnvTests(unittest.TestCase):
 
 
 class RunToolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict(os.environ, {"TK_NO_TELEMETRY": ""}, clear=False)
+        self._env_patcher.start()
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
+
     def test_compacts_json_stdout_and_injects_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -493,6 +500,13 @@ class RunToolTests(unittest.TestCase):
 
 
 class RunChainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict(os.environ, {"TK_NO_TELEMETRY": ""}, clear=False)
+        self._env_patcher.start()
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
+
     def _tools(self, root: Path):
         first = _write_script(
             root,

@@ -31,18 +31,21 @@ class CliIntegrationTests(unittest.TestCase):
         )
         self.tk = self.root / "tk"
         self.tk.chmod(self.tk.stat().st_mode | 0o755)
+        self._base_env = os.environ.copy()
+        self._base_env["TK_NO_TELEMETRY"] = ""
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def _run(self, *args: str, stdin: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+        run_env = env if env is not None else self._base_env
         return subprocess.run(
             [str(self.tk), *args],
             input=stdin,
             capture_output=True,
             text=True,
             cwd=self.root,
-            env=env,
+            env=run_env,
         )
 
     def _events(self) -> list[dict]:
