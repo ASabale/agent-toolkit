@@ -108,8 +108,8 @@ def main() -> int:
         else:
             found["count"] += 1
             found["last_line"] = number
-    truncated = len(order) > limit
     errors = [groups[key] for key in order[:limit]]
+    truncated = max(0, len(order) - len(errors))
     return emit(
         {
             "path": path,

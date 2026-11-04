@@ -189,7 +189,7 @@ class PrDiffDigestTests(unittest.TestCase):
         self.assertEqual(payload["files_changed"], 2)
         self.assertEqual(payload["additions"], 12)
         self.assertEqual(payload["deletions"], 3)
-        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated"], 1)
         self.assertEqual(len(payload["files"]), 1)
         file0 = payload["files"][0]
         self.assertEqual(file0["path"], "src/a.py")
@@ -214,9 +214,27 @@ class PrDiffDigestTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["truncated"], 0)
         self.assertEqual([row["path"] for row in payload["files"]], ["src/a.py", "src/b.py"])
         self.assertEqual(payload["files"][1]["hunks"], ["@@ -8,4 +8,5 @@ class Bee:"])
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        env = os.environ.copy()
+        env["TK_NO_TELEMETRY"] = "1"
+        env["PATH"] = str(self.fake.parent) + os.pathsep + env.get("PATH", "")
+        proc = subprocess.run(
+            [str(ROOT / "tk"), "run", "gh.pr-diff-digest", "--repo", "cli/cli", "--pr", "7", "--limit", "1"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(payload["next"], "tk run gh.pr-diff-digest --repo cli/cli --pr 7 --limit 2")
 
     def test_dry_run(self) -> None:
         proc = _run(

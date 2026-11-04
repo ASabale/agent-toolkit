@@ -89,7 +89,7 @@ def main() -> int:
             "count": len(shown),
             "running": running,
             "exited": exited,
-            "truncated": len(matched) > limit,
+            "truncated": max(0, len(matched) - len(shown)),
             "containers": shown,
         }
     )

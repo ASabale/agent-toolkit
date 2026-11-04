@@ -114,11 +114,11 @@ def main() -> int:
         if cursor.description is None:
             return fail("not_a_query", "SQL did not return rows")
         columns = [item[0] for item in cursor.description]
-        fetched = cursor.fetchmany(limit + 1)
+        fetched = cursor.fetchall()
     finally:
         conn.close()
-    truncated = len(fetched) > limit
     visible = fetched[:limit]
+    truncated = max(0, len(fetched) - len(visible))
     rows = [
         {column: cell(value) for column, value in zip(columns, row)}
         for row in visible

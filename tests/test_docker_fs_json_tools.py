@@ -63,7 +63,7 @@ class DockerPsDigestTests(unittest.TestCase):
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["running"], 2)
         self.assertEqual(payload["exited"], 1)
-        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated"], 1)
         self.assertEqual(
             payload["containers"],
             [
@@ -86,7 +86,7 @@ class DockerPsDigestTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["count"], 3)
-        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["truncated"], 0)
         self.assertEqual([row["name"] for row in payload["containers"]], ["web", "api", "job"])
 
     def test_missing_binary_is_docker_unavailable(self) -> None:
@@ -125,6 +125,24 @@ class DockerPsDigestTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout), {"dry_run": True, "state": "exited", "limit": 4})
 
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        env = os.environ.copy()
+        env["TK_NO_TELEMETRY"] = "1"
+        env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
+        proc = subprocess.run(
+            [str(ROOT / "tk"), "run", "docker.ps-digest", "--state", "running", "--limit", "1"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(payload["next"], "tk run docker.ps-digest --state running --limit 2")
+
 
 class JsonDiffTests(unittest.TestCase):
     def test_nested_added_removed_and_changed(self) -> None:
@@ -159,7 +177,7 @@ class JsonDiffTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertFalse(payload["equal"])
-        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["truncated"], 0)
         self.assertEqual(payload["added"], [{"path": "a.d", "value": 3}, {"path": "extra", "value": 1}])
         self.assertEqual(
             payload["removed"],
@@ -202,7 +220,7 @@ class JsonDiffTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(
             payload,
-            {"equal": True, "count": 0, "truncated": False, "added": [], "removed": [], "changed": []},
+            {"equal": True, "count": 0, "truncated": 0, "added": [], "removed": [], "changed": []},
         )
 
     def test_limit_caps_each_category(self) -> None:
@@ -218,7 +236,7 @@ class JsonDiffTests(unittest.TestCase):
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated"], 2)
         self.assertEqual(payload["count"], 4)
         self.assertEqual([row["path"] for row in payload["added"]], ["k0", "k1"])
 
@@ -231,6 +249,42 @@ class JsonDiffTests(unittest.TestCase):
         self.assertEqual(
             json.loads(proc.stdout),
             {"dry_run": True, "left": "a.json", "right": "b.json", "limit": 20},
+        )
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            left = root / "left.json"
+            right = root / "right.json"
+            left.write_text("{}", encoding="utf-8")
+            right.write_text(json.dumps({"a": 1, "b": 2}), encoding="utf-8")
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [
+                    str(ROOT / "tk"),
+                    "run",
+                    "json.diff",
+                    "--left",
+                    str(left),
+                    "--right",
+                    str(right),
+                    "--limit",
+                    "1",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(
+            payload["next"],
+            f"tk run json.diff --left {left} --right {right} --limit 2",
         )
 
 

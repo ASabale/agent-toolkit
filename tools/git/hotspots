@@ -142,7 +142,7 @@ def main() -> int:
                 "repo": repo,
                 "commits_scanned": 0,
                 "count": 0,
-                "truncated": False,
+                "truncated": 0,
                 "hotspots": [],
             }
         )
@@ -170,7 +170,7 @@ def main() -> int:
             "repo": repo,
             "commits_scanned": scanned,
             "count": len(shown),
-            "truncated": len(rows) > limit,
+            "truncated": max(0, len(rows) - len(shown)),
             "hotspots": shown,
         }
     )

@@ -205,13 +205,45 @@ class HotspotTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["commits_scanned"], 2)
-        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated"], 2)
         self.assertEqual(payload["count"], 1)
         self.assertEqual(len(payload["hotspots"]), 1)
         top = payload["hotspots"][0]
         self.assertEqual(top["file"], "alpha.txt")
         self.assertEqual(top["commits"], 2)
         self.assertEqual(top["authors"], 2)
+
+    def test_limit_one_sets_integer_truncated_and_next(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _sample_repo(Path(tmp))
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            proc = subprocess.run(
+                [
+                    str(ROOT / "tk"),
+                    "run",
+                    "git.hotspots",
+                    "--repo",
+                    str(repo),
+                    "--max-commits",
+                    "100",
+                    "--limit",
+                    "1",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=ROOT,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIsInstance(payload["truncated"], int)
+        self.assertNotIsInstance(payload["truncated"], bool)
+        self.assertGreaterEqual(payload["truncated"], 1)
+        self.assertEqual(
+            payload["next"],
+            f"tk run git.hotspots --repo {repo} --max-commits 100 --limit 2",
+        )
 
     def test_empty_repo_reports_no_hotspots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,7 +258,7 @@ class HotspotTests(unittest.TestCase):
                 "repo": str(repo),
                 "commits_scanned": 0,
                 "count": 0,
-                "truncated": False,
+                "truncated": 0,
                 "hotspots": [],
             },
         )

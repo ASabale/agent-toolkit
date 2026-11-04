@@ -166,7 +166,7 @@ def scan(root: str, tags: list[str], limit: int) -> dict:
     return {
         "path": root,
         "count": len(items),
-        "truncated": len(items) > limit,
+        "truncated": max(0, len(items) - len(kept)),
         "items": kept,
     }
 
