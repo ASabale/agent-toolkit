@@ -1,0 +1,184 @@
+"""Seams for git.blame-slice and git.hotspots."""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BLAME = ROOT / "tools/git/blame-slice"
+HOTSPOTS = ROOT / "tools/git/hotspots"
+
+
+def _run(script: Path, env: dict) -> subprocess.CompletedProcess[str]:
+    merged = os.environ.copy()
+    for key in list(merged):
+        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+            merged.pop(key, None)
+    merged.update(env)
+    merged.setdefault("TK_DRY_RUN", "0")
+    return subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        env=merged,
+    )
+
+
+def _git(repo: Path, *args: str, author: str) -> None:
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"] = author
+    env["GIT_AUTHOR_EMAIL"] = f"{author.lower()}@example.com"
+    env["GIT_COMMITTER_NAME"] = author
+    env["GIT_COMMITTER_EMAIL"] = f"{author.lower()}@example.com"
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr or proc.stdout)
+
+
+def _sample_repo(root: Path) -> Path:
+    repo = root / "repo"
+    repo.mkdir()
+    _git(repo, "init", author="Alice")
+    notes = repo / "notes.txt"
+    notes.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    (repo / "beta.txt").write_text("beta\n", encoding="utf-8")
+    _git(repo, "add", "notes.txt", "alpha.txt", "beta.txt", author="Alice")
+    _git(repo, "commit", "-m", "first note", author="Alice")
+    notes.write_text("one\ntwo\nCHANGED\nAGAIN\nfive\n", encoding="utf-8")
+    (repo / "alpha.txt").write_text("alpha2\n", encoding="utf-8")
+    _git(repo, "add", "notes.txt", "alpha.txt", author="Bob")
+    _git(repo, "commit", "-m", "second note", author="Bob")
+    return repo
+
+
+class BlameSliceTests(unittest.TestCase):
+    def test_groups_consecutive_lines_by_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _sample_repo(Path(tmp))
+            proc = _run(
+                BLAME,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_FILE": "notes.txt",
+                    "TK_ARG_START": "1",
+                    "TK_ARG_END": "5",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["file"], "notes.txt")
+        self.assertEqual(payload["start"], 1)
+        self.assertEqual(payload["end"], 5)
+        hunks = payload["hunks"]
+        self.assertEqual(len(hunks), 3)
+        self.assertEqual(
+            [(h["start_line"], h["end_line"]) for h in hunks],
+            [(1, 2), (3, 4), (5, 5)],
+        )
+        self.assertEqual(hunks[0]["author"], "Alice")
+        self.assertEqual(hunks[0]["summary"], "first note")
+        self.assertEqual(len(hunks[0]["sha"]), 40)
+        self.assertEqual(hunks[1]["author"], "Bob")
+        self.assertEqual(hunks[1]["summary"], "second note")
+        self.assertNotEqual(hunks[0]["sha"], hunks[1]["sha"])
+        self.assertEqual(hunks[2]["sha"], hunks[0]["sha"])
+        self.assertTrue(hunks[0]["date"])
+
+    def test_missing_file_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _sample_repo(Path(tmp))
+            proc = _run(
+                BLAME,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_FILE": "missing.txt",
+                    "TK_ARG_START": "1",
+                    "TK_ARG_END": "5",
+                },
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "missing_file")
+        self.assertIn("missing.txt", payload["why"])
+
+    def test_dry_run_skips_git(self) -> None:
+        proc = _run(
+            BLAME,
+            {
+                "TK_ARG_REPO": "example",
+                "TK_ARG_FILE": "example",
+                "TK_DRY_RUN": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            json.loads(proc.stdout),
+            {
+                "dry_run": True,
+                "repo": "example",
+                "file": "example",
+                "start": 1,
+                "end": 40,
+            },
+        )
+
+
+class HotspotTests(unittest.TestCase):
+    def test_ranks_files_and_truncates_at_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _sample_repo(Path(tmp))
+            proc = _run(
+                HOTSPOTS,
+                {
+                    "TK_ARG_REPO": str(repo),
+                    "TK_ARG_MAX_COMMITS": "100",
+                    "TK_ARG_LIMIT": "1",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["commits_scanned"], 2)
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["hotspots"]), 1)
+        top = payload["hotspots"][0]
+        self.assertEqual(top["file"], "alpha.txt")
+        self.assertEqual(top["commits"], 2)
+        self.assertEqual(top["authors"], 2)
+
+    def test_dry_run_skips_git(self) -> None:
+        proc = _run(
+            HOTSPOTS,
+            {
+                "TK_ARG_REPO": "example",
+                "TK_ARG_MAX_COMMITS": "50",
+                "TK_ARG_LIMIT": "10",
+                "TK_DRY_RUN": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            json.loads(proc.stdout),
+            {
+                "dry_run": True,
+                "repo": "example",
+                "max_commits": 50,
+                "limit": 10,
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

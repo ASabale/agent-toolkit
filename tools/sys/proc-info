@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 FIX = "tk run sys.proc-info --query <name-or-pid> --limit 15"
+COMMAND_CAP = 160
 
 
 def emit(payload: dict, code: int = 0) -> int:
@@ -97,11 +98,18 @@ def main() -> int:
             2,
         )
     proc = subprocess.run(
-        ["ps", "-Ao", "pid=,ppid=,pcpu=,rss=,comm="],
+        ["ps", "-Ao", "pid=,ppid=,pcpu=,rss=,command="],
         capture_output=True,
         text=True,
         timeout=15,
     )
+    if proc.returncode != 0:
+        proc = subprocess.run(
+            ["ps", "-Ao", "pid=,ppid=,pcpu=,rss=,comm="],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
     if proc.returncode != 0:
         return emit(
             {
@@ -113,6 +121,8 @@ def main() -> int:
         )
     found = [row for row in parse_ps(proc.stdout) if matches(row, query)]
     processes = found[:limit]
+    for row in processes:
+        row["command"] = row["command"][:COMMAND_CAP]
     return emit(
         {
             "query": query,

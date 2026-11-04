@@ -520,6 +520,84 @@ def _resolve(root_dir: Path, name_or_path: str | Path) -> tuple[Path | None, dic
     return path, item, None
 
 
+_CHAIN_INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
+_CHAIN_STEP_REF = re.compile(r"^\$step\[(-?\d+)\](?:\..*)?$")
+
+
+def _flag_name(key: object) -> str:
+    text = str(key)
+    return text if text.startswith("--") else f"--{text}"
+
+
+def _bare_arg_name(flag: str) -> str:
+    bare = flag[2:] if flag.startswith("--") else flag.lstrip("-")
+    return bare.replace("-", "_")
+
+
+def _chain_wiring_errors(item: dict, catalog: dict) -> list[str]:
+    """Static flag and reference checks for each chain step."""
+    errors: list[str] = []
+    declared_inputs = {
+        _bare_arg_name(str(arg.get("flag") or ""))
+        for arg in (item.get("args") or [])
+        if isinstance(arg, dict)
+    }
+    steps = item.get("steps") or []
+    if not isinstance(steps, list):
+        return errors
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        tool_name = step.get("tool")
+        tool = catalog.get(tool_name) if tool_name else None
+        if not tool_name or tool is None:
+            continue
+        declared: dict[str, dict] = {}
+        for arg in tool.get("args") or []:
+            if isinstance(arg, dict) and arg.get("flag"):
+                declared[str(arg["flag"])] = arg
+        raw = step.get("args") or {}
+        if not isinstance(raw, dict):
+            errors.append(f"step {index} ({tool_name}) args must be an object")
+            continue
+        present: set[str] = set()
+        for key, val in raw.items():
+            flag = _flag_name(key)
+            present.add(flag)
+            if flag not in declared:
+                errors.append(f"step {index} ({tool_name}) unknown flag: {flag}")
+            if not isinstance(val, str):
+                continue
+            text = val.strip()
+            input_match = _CHAIN_INPUT_REF.fullmatch(text)
+            if input_match and _bare_arg_name(input_match.group(1)) not in declared_inputs:
+                errors.append(f"step {index} unresolved input reference: {text}")
+            if (text == "$prev" or text.startswith("$prev.")) and index == 0:
+                errors.append(f"step 0 cannot reference $prev: {text}")
+            step_match = _CHAIN_STEP_REF.fullmatch(text)
+            if step_match:
+                ref = int(step_match.group(1))
+                if ref < 0 or ref >= index:
+                    errors.append(f"step {index} invalid step reference: {text}")
+        for flag, arg in declared.items():
+            if arg.get("required") and arg.get("default") is None and flag not in present:
+                errors.append(f"step {index} ({tool_name}) missing required flag: {flag}")
+    return errors
+
+
+def _chain_dry_run_error(root_dir: Path, item: dict) -> str | None:
+    from lib.runner import run_chain
+
+    flags: dict[str, str] = {}
+    for arg in item.get("args") or []:
+        if isinstance(arg, dict) and arg.get("required") and arg.get("flag"):
+            flags[str(arg["flag"])] = _dummy(str(arg.get("type") or "string"))
+    rc, _stdout, err = run_chain(root_dir, item, flags, dry_run=True)
+    if rc != 0:
+        return f"chain dry-run failed: {err}"
+    return None
+
+
 def _is_chain_path(root_dir: Path, path: Path) -> bool:
     if path.suffix.lower() != ".json":
         return False
@@ -566,6 +644,11 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                         errors.append(f"step {index} missing tool")
                     elif tool_name not in catalog:
                         errors.append(f"step {index} tool not in catalog: {tool_name}")
+                errors.extend(_chain_wiring_errors(item, catalog))
+            if not errors:
+                dry = _chain_dry_run_error(root_dir, item)
+                if dry:
+                    errors.append(dry)
         return {"name": name, "ok": not errors, "errors": errors}
     except Exception as exc:
         return {"name": label, "ok": False, "errors": [f"internal_error: {exc}"]}

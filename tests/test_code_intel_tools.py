@@ -117,6 +117,29 @@ class SymbolsTests(unittest.TestCase):
         self.assertEqual({item["name"] for item in payload["symbols"]}, {"Alpha", "Panel", "Box"})
         self.assertTrue(all(item["kind"] == "class" for item in payload["symbols"]))
 
+        functions = _run(
+            SYMBOLS,
+            {"TK_ARG_PATH": tmp.name, "TK_ARG_KIND": "function", "TK_ARG_LIMIT": "40"},
+        )
+        self.assertEqual(functions.returncode, 0, functions.stderr)
+        function_rows = json.loads(functions.stdout)
+        self.assertEqual(function_rows["kind"], "function")
+        found = {(item["file"], item["kind"], item["name"]) for item in function_rows["symbols"]}
+        self.assertIn(("pkg/widget.py", "function", "greet"), found)
+        self.assertIn(("pkg/widget.py", "async_function", "load"), found)
+        self.assertIn(("ui.js", "async_function", "greet"), found)
+        self.assertNotIn("Alpha", {item["name"] for item in function_rows["symbols"]})
+
+        async_only = _run(
+            SYMBOLS,
+            {"TK_ARG_PATH": tmp.name, "TK_ARG_KIND": "async_function", "TK_ARG_LIMIT": "40"},
+        )
+        self.assertEqual(async_only.returncode, 0, async_only.stderr)
+        async_rows = json.loads(async_only.stdout)
+        self.assertGreaterEqual(async_rows["count"], 1)
+        self.assertTrue(all(item["kind"] == "async_function" for item in async_rows["symbols"]))
+        self.assertIn("load", {item["name"] for item in async_rows["symbols"]})
+
         limited = _run(
             SYMBOLS,
             {"TK_ARG_PATH": tmp.name, "TK_ARG_KIND": "all", "TK_ARG_LIMIT": "2"},

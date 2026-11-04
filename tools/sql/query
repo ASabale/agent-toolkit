@@ -17,7 +17,7 @@ import sys
 
 _FIX = 'tk run sql.query --db <path> --sql "SELECT 1"'
 _MUTATING = re.compile(
-    r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH)\b",
+    r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|REPLACE|VACUUM|REINDEX|DETACH|ANALYZE|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b",
     re.IGNORECASE,
 )
 
@@ -35,7 +35,10 @@ def fail(error: str, why: str) -> int:
 def strip_sql(sql: str) -> str:
     without_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
     without_line = re.sub(r"--[^\n]*", " ", without_block)
-    return re.sub(r"'(?:''|[^'])*'", "''", without_line)
+    without_single = re.sub(r"'(?:''|[^'])*'", "''", without_line)
+    without_double = re.sub(r'"(?:""|[^"])*"', '""', without_single)
+    without_backtick = re.sub(r"`(?:``|[^`])*`", "``", without_double)
+    return re.sub(r"\[(?:\]\]|[^\]])*\]", "[]", without_backtick)
 
 
 def reject_reason(sql: str) -> str | None:

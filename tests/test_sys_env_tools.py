@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import unittest
@@ -46,6 +47,32 @@ class ProcInfoTests(unittest.TestCase):
         self.assertIsInstance(row["rss_kb"], int)
         self.assertIsInstance(row["command"], str)
         self.assertTrue(row["command"])
+
+    def test_matches_command_arguments(self) -> None:
+        marker = "tk-proc-info-arg-marker-9f3a"
+        script = Path("/tmp") / marker
+        script.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        self.addCleanup(script.unlink, missing_ok=True)
+        child = subprocess.Popen([str(script), "--extra-arg"])
+
+        def _stop() -> None:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+
+        self.addCleanup(_stop)
+        proc = _run(
+            ROOT / "tools/sys/proc-info",
+            {"TK_ARG_QUERY": marker, "TK_ARG_LIMIT": "5"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertGreaterEqual(payload["count"], 1)
+        matched = [row for row in payload["processes"] if marker in row["command"]]
+        self.assertEqual(len(matched), 1)
+        self.assertIn("--extra-arg", matched[0]["command"])
+        self.assertTrue(all(len(row["command"]) <= 160 for row in payload["processes"]))
 
     def test_dry_run_skips_ps(self) -> None:
         proc = _run(

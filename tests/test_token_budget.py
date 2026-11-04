@@ -1,6 +1,7 @@
 """Token-budget and wiki.lint gates from CODING_STANDARDS.md §3."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -12,16 +13,19 @@ sys.path.insert(0, str(ROOT))
 
 from lib.catalog import find_items, format_find_output  # noqa: E402
 
-LINT = ROOT / "tools" / "wiki" / "lint"
+TK = ROOT / "tk"
 SKILL = ROOT / "skills" / "toolkit" / "SKILL.md"
 
 
 def _run_lint(path: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["TK_NO_TELEMETRY"] = "1"
     return subprocess.run(
-        [sys.executable, str(LINT), "--path", str(path)],
+        [sys.executable, str(TK), "run", "wiki.lint", "--path", str(path)],
         capture_output=True,
         text=True,
         cwd=ROOT,
+        env=env,
         check=False,
     )
 

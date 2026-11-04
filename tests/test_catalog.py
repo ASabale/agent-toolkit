@@ -366,6 +366,115 @@ printf '%s\\n' '{"ok":true}'
             result = check_item(root, "demo.pipeline")
         self.assertFalse(result["ok"])
         self.assertTrue(any("missing.tool" in err for err in result["errors"]))
+        self.assertFalse(any("dry-run" in err for err in result["errors"]))
+
+    def _chain_with_tool(self, root: Path, steps, chain_args=None, tool_args=None, body=None):
+        _write(
+            root / "tools" / "demo" / "echo",
+            _bash_tool(
+                "demo.echo",
+                "Echo a target id",
+                args=tool_args
+                or [
+                    ("--target", "required", "string", "Target resource identifier"),
+                    ("--limit", "optional", "int", "Maximum items (default: 3)"),
+                ],
+                body=body,
+            ),
+            executable=True,
+        )
+        chain = root / "chains" / "demo.pipeline.json"
+        chain.parent.mkdir(parents=True)
+        chain.write_text(json.dumps({
+            "name": "demo.pipeline",
+            "summary": "Wires demo.echo",
+            "safety": "read-only",
+            "args": chain_args if chain_args is not None else [
+                {"flag": "--repo", "required": True, "type": "string", "description": "Repository path"},
+            ],
+            "steps": steps,
+            "output": "json | object",
+            "example": "tk run demo.pipeline --repo .",
+            "verified": "none",
+        }), encoding="utf-8")
+
+    def test_check_item_chain_unknown_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_tool(root, [{"tool": "demo.echo", "args": {"nope": "x", "target": "a"}}])
+            result = check_item(root, "demo.pipeline")
+        self.assertFalse(result["ok"])
+        self.assertIn("step 0 (demo.echo) unknown flag: --nope", result["errors"])
+
+    def test_check_item_chain_missing_required_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_tool(
+                root,
+                [{"tool": "demo.echo", "args": {}}],
+                tool_args=[
+                    ("--target", "required", "string", "Target resource identifier"),
+                    ("--limit", "required", "int", "Maximum items (default: 3)"),
+                ],
+            )
+            result = check_item(root, "demo.pipeline")
+        self.assertFalse(result["ok"])
+        self.assertIn("step 0 (demo.echo) missing required flag: --target", result["errors"])
+        self.assertFalse(any("--limit" in err and "missing required" in err for err in result["errors"]))
+
+    def test_check_item_chain_unresolved_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_tool(
+                root,
+                [{"tool": "demo.echo", "args": {"target": "$input.repo_path"}}],
+                chain_args=[
+                    {"flag": "--repo-path", "required": True, "type": "string", "description": "Repository path"},
+                ],
+            )
+            chain = root / "chains" / "demo.pipeline.json"
+            data = json.loads(chain.read_text(encoding="utf-8"))
+            data["example"] = "tk run demo.pipeline --repo-path ."
+            data["steps"] = [{"tool": "demo.echo", "args": {"target": "$input.missing"}}]
+            chain.write_text(json.dumps(data), encoding="utf-8")
+            bad = check_item(root, "demo.pipeline")
+            data["steps"] = [{"tool": "demo.echo", "args": {"target": "$input.repo_path"}}]
+            chain.write_text(json.dumps(data), encoding="utf-8")
+            good = check_item(root, "demo.pipeline")
+        self.assertIn("step 0 unresolved input reference: $input.missing", bad["errors"])
+        self.assertNotIn("unresolved input reference", " ".join(good["errors"]))
+        self.assertTrue(good["ok"], good["errors"])
+
+    def test_check_item_chain_step0_prev_and_bad_step_ref(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._chain_with_tool(
+                root,
+                [
+                    {"tool": "demo.echo", "args": {"target": "$prev.id"}},
+                    {"tool": "demo.echo", "args": {"target": "$step[1].id"}},
+                    {"tool": "demo.echo", "args": {"target": "$prev"}},
+                ],
+            )
+            result = check_item(root, "demo.pipeline")
+        self.assertIn("step 0 cannot reference $prev: $prev.id", result["errors"])
+        self.assertIn("step 1 invalid step reference: $step[1].id", result["errors"])
+        self.assertFalse(any("step 2 cannot reference $prev" in err for err in result["errors"]))
+
+    def test_check_item_chain_dry_run_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = """printf '%s\\n' '{"error":"nope"}' >&2
+exit 2
+"""
+            self._chain_with_tool(
+                root,
+                [{"tool": "demo.echo", "args": {"target": "$input.repo"}}],
+                body=body,
+            )
+            result = check_item(root, "demo.pipeline")
+        self.assertFalse(result["ok"])
+        self.assertTrue(any(err.startswith("chain dry-run failed:") for err in result["errors"]))
 
     def test_check_all_aggregates(self):
         with tempfile.TemporaryDirectory() as tmp:

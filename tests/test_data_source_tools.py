@@ -161,6 +161,44 @@ class SqlQueryTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(json.loads(proc.stdout)["dry_run"])
 
+    def test_allows_double_quoted_delete_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "items.db"
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("CREATE TABLE items (delete_flag TEXT)")
+                conn.execute("INSERT INTO items (delete_flag) VALUES ('keep')")
+                conn.commit()
+            finally:
+                conn.close()
+            proc = _run(
+                ROOT / "tools/sql/query",
+                {
+                    "TK_ARG_DB": str(db),
+                    "TK_ARG_SQL": 'SELECT "delete_flag" FROM items',
+                    "TK_ARG_LIMIT": "25",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["rows"], [{"delete_flag": "keep"}])
+
+    def test_rejects_vacuum_as_mutating_sql(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "empty.db"
+            sqlite3.connect(db).close()
+            proc = _run(
+                ROOT / "tools/sql/query",
+                {
+                    "TK_ARG_DB": str(db),
+                    "TK_ARG_SQL": "VACUUM",
+                    "TK_ARG_LIMIT": "25",
+                },
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(json.loads(proc.stderr)["error"], "mutating_sql")
+        self.assertEqual(proc.stdout.strip(), "")
+
 
 class WebReadTextTests(unittest.TestCase):
     def test_distills_local_html(self) -> None:
@@ -247,13 +285,34 @@ class LogTailErrorsTests(unittest.TestCase):
         self.assertEqual(len(payload["errors"]), 2)
         disk, fatal = payload["errors"]
         self.assertEqual(disk["count"], 2)
-        self.assertEqual(disk["message"], "error disk full on /data")
+        self.assertEqual(disk["message"], "ERROR disk full on /data")
         self.assertEqual(disk["first_line"], 23)
         self.assertEqual(disk["last_line"], 24)
         self.assertEqual(fatal["count"], 1)
         self.assertEqual(fatal["first_line"], 25)
         self.assertEqual(fatal["last_line"], 25)
         self.assertFalse(payload["truncated"])
+
+    def test_preserves_case_in_message_while_deduping(self) -> None:
+        body = "ValueError: missing field\nvalueerror: missing field\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "app.log"
+            path.write_text(body, encoding="utf-8")
+            proc = _run(
+                ROOT / "tools/log/tail-errors",
+                {
+                    "TK_ARG_PATH": str(path),
+                    "TK_ARG_TAIL": "50",
+                    "TK_ARG_LIMIT": "20",
+                },
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(len(payload["errors"]), 1)
+        error = payload["errors"][0]
+        self.assertEqual(error["message"], "ValueError: missing field")
+        self.assertEqual(error["count"], 2)
+        self.assertIn("ValueError", error["message"])
 
     def test_limit_caps_groups(self) -> None:
         body = "\n".join(
@@ -279,7 +338,7 @@ class LogTailErrorsTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(len(payload["errors"]), 2)
         self.assertTrue(payload["truncated"])
-        self.assertEqual([item["message"] for item in payload["errors"]], ["error one", "error two"])
+        self.assertEqual([item["message"] for item in payload["errors"]], ["ERROR one", "ERROR two"])
 
 
 class InspectChainTests(unittest.TestCase):

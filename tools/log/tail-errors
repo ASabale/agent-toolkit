@@ -13,10 +13,12 @@ import json
 import os
 import re
 import sys
+from collections import deque
 
 _FIX = "tk run log.tail-errors --path <file>"
 _HIT = re.compile(r"error|exception|fatal|traceback|panic|fail", re.IGNORECASE)
 _SPACE = re.compile(r"\s+")
+_NUMBER = re.compile(r"0x[0-9A-Fa-f]+|\d+")
 
 
 def emit(payload, code: int = 0) -> int:
@@ -39,18 +41,21 @@ def parse_int(raw: str) -> int | None:
     return value
 
 
-def normalize(line: str) -> str:
-    return _SPACE.sub(" ", line).strip().lower()
+def normalize_message(line: str) -> str:
+    collapsed = _SPACE.sub(" ", line).strip()
+    return _NUMBER.sub("N", collapsed)
+
+
+def normalize_key(line: str) -> str:
+    return normalize_message(line).lower()
 
 
 def tail(path: str, count: int) -> list[tuple[int, str]]:
     with open(path, encoding="utf-8", errors="replace") as handle:
-        lines = handle.readlines()
-    start = max(0, len(lines) - count)
-    return [
-        (index + 1, lines[index].rstrip("\r\n"))
-        for index in range(start, len(lines))
-    ]
+        kept: deque[tuple[int, str]] = deque(maxlen=count)
+        for number, line in enumerate(handle, start=1):
+            kept.append((number, line.rstrip("\r\n")))
+    return list(kept)
 
 
 def main() -> int:
@@ -85,13 +90,14 @@ def main() -> int:
     for number, line in rows:
         if not _HIT.search(line):
             continue
-        key = normalize(line)
+        key = normalize_key(line)
+        message = normalize_message(line)
         if not key:
             continue
         found = groups.get(key)
         if found is None:
             groups[key] = {
-                "message": key,
+                "message": message,
                 "count": 1,
                 "first_line": number,
                 "last_line": number,

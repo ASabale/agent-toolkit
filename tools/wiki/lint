@@ -3,7 +3,7 @@
 # @tk-summary: Report wiki orphans, broken relative links, and pages missing a date or commit
 # @tk-safety: read-only
 # @tk-arg: --path | optional | string | Path to wiki directory (default: wiki)
-# @tk-output: json | {ok, path, pages, orphans, broken_links, undated_pages, unindexed_Commit_pages}
+# @tk-output: json | {ok, path, pages, orphans, broken_links, undated_pages}
 # @tk-example: tk run wiki.lint --path wiki
 # @tk-verified: 2026-11-04
 
@@ -23,15 +23,6 @@ def emit(payload: dict, code: int = 0) -> int:
     stream = sys.stdout if code == 0 else sys.stderr
     stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
     return code
-
-
-def _flag_path(argv: list[str]) -> str | None:
-    for index, token in enumerate(argv):
-        if token == "--path" and index + 1 < len(argv):
-            return argv[index + 1]
-        if token.startswith("--path="):
-            return token.split("=", 1)[1]
-    return None
 
 
 def _link_target(raw: str) -> str:
@@ -113,9 +104,7 @@ def lint(root: Path, display_path: str) -> dict:
 
 
 def main() -> int:
-    display = _flag_path(sys.argv[1:])
-    if display is None:
-        display = os.environ.get("TK_ARG_PATH") or "wiki"
+    display = os.environ.get("TK_ARG_PATH") or "wiki"
     if os.environ.get("TK_DRY_RUN", "0") == "1":
         return emit({"dry_run": True, "path": display})
     root = Path(display)

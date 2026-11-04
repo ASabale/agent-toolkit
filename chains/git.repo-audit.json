@@ -1,0 +1,39 @@
+{
+  "kind": "chain",
+  "name": "git.repo-audit",
+  "summary": "Recent commits distilled to sha and subject for a git repository",
+  "safety": "read-only",
+  "args": [
+    {
+      "flag": "--repo",
+      "required": true,
+      "type": "string",
+      "description": "Path to the git working tree"
+    },
+    {
+      "flag": "--limit",
+      "required": false,
+      "type": "int",
+      "description": "Max commits (default: 5)",
+      "default": "5"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "git.log-recent",
+      "args": {
+        "repo": "$input.repo",
+        "limit": "$input.limit"
+      }
+    },
+    {
+      "tool": "json.query",
+      "args": {
+        "expr": "commits[*].{sha,subject}"
+      }
+    }
+  ],
+  "output": "json | [{sha, subject}]",
+  "example": "tk run git.repo-audit --repo . --limit 5",
+  "verified": "2026-11-04"
+}

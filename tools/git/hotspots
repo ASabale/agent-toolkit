@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+# @tk-name: git.hotspots
+# @tk-summary: Files touched most often in recent commits
+# @tk-safety: read-only
+# @tk-arg: --repo | required | string | Path to the git working tree
+# @tk-arg: --max-commits | optional | int | Maximum recent commits to scan (default: 100)
+# @tk-arg: --limit | optional | int | Maximum hotspot files to return (default: 15)
+# @tk-output: json | {repo, commits_scanned, count, truncated, hotspots:[{file, commits, authors}]}
+# @tk-example: tk run git.hotspots --repo . --max-commits 50 --limit 10
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import subprocess
+import sys
+
+FIX = "tk run git.hotspots --repo <git-dir> --max-commits 100 --limit 15"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def parse_int(raw: str, flag: str) -> tuple[int | None, dict | None]:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"{flag} is not an int: {raw}",
+            "fix": FIX,
+        }
+    if value < 1:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"{flag} must be >= 1",
+            "fix": FIX,
+        }
+    return value, None
+
+
+def parse_log(text: str) -> tuple[int, list[dict]]:
+    touches: dict[str, int] = {}
+    authors: dict[str, set[str]] = {}
+    scanned = 0
+    author = ""
+    seen: set[str] = set()
+    for line in text.splitlines():
+        if line.startswith("__COMMIT__"):
+            scanned += 1
+            _sha, _, author = line[len("__COMMIT__") :].partition("|")
+            seen = set()
+            continue
+        if not line.strip():
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        touches[line] = touches.get(line, 0) + 1
+        authors.setdefault(line, set())
+        if author:
+            authors[line].add(author)
+    ranked = sorted(touches, key=lambda name: (-touches[name], name))
+    rows = [
+        {
+            "file": name,
+            "commits": touches[name],
+            "authors": len(authors.get(name, ())),
+        }
+        for name in ranked
+    ]
+    return scanned, rows
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    max_raw = os.environ.get("TK_ARG_MAX_COMMITS") or "100"
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or "15"
+    max_commits, max_err = parse_int(max_raw, "max-commits")
+    if max_err:
+        return emit(max_err, 2)
+    limit, limit_err = parse_int(limit_raw, "limit")
+    if limit_err:
+        return emit(limit_err, 2)
+    assert max_commits is not None and limit is not None
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "dry_run": True,
+                "repo": repo or "example",
+                "max_commits": max_commits,
+                "limit": limit,
+            }
+        )
+    if not repo:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_REPO is required", "fix": FIX},
+            2,
+        )
+    probe = git(repo, "rev-parse", "--is-inside-work-tree")
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return emit(
+            {
+                "error": "not_a_repo",
+                "why": probe.stderr.strip() or f"{repo} is not a git working tree",
+                "fix": FIX,
+            },
+            1,
+        )
+    log = git(
+        repo,
+        "log",
+        "-n",
+        str(max_commits),
+        "--name-only",
+        "--pretty=format:__COMMIT__%H|%an",
+    )
+    if log.returncode != 0:
+        return emit(
+            {
+                "error": "git_failed",
+                "why": log.stderr.strip() or "git log failed",
+                "fix": FIX,
+            },
+            1,
+        )
+    scanned, rows = parse_log(log.stdout)
+    shown = rows[:limit]
+    return emit(
+        {
+            "repo": repo,
+            "commits_scanned": scanned,
+            "count": len(shown),
+            "truncated": len(rows) > limit,
+            "hotspots": shown,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "git timed out after 30s",
+                    "fix": FIX,
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'git'} not found",
+                    "fix": FIX,
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

@@ -75,7 +75,14 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   4. Syntax check passes (`bash -n` for `sh`/`bash` shebang; `py_compile` for `python` shebang).
   5. No duplicate `--flag` names in `args`, and any `(default: X)` value conforms to the declared arg `type`.
   6. Dry-run smoke check: running the tool with `TK_DRY_RUN=1` and synthetic dummy values for required flags (`"example"` for string, `"1"` for int/float, `"true"` for bool) exits `0` and produces valid JSON on `stdout`.
-  7. For chains: every step's `"tool"` exists in `discover_catalog(root_dir)`.
+  7. For chains:
+     - Every step's `"tool"` exists in `discover_catalog(root_dir)`.
+     - Every step's `args` keys are declared `--flags` on that step's target tool (rejecting unknown step flags at check time).
+     - Every required flag on step $i$'s target tool is supplied in step $i$'s `args` (or has a default), except for step $i > 0$ tools that read piped `stdin` and have zero required flags missing.
+     - Every `$input.<flag>` reference in step `args` refers to a flag declared in the chain's own `args`.
+     - Every `$prev` or `$prev.<path>` reference appears only in step index `>= 1` (never step `0`).
+     - Every `$step[k]` or `$step[k].<path>` reference satisfies `0 <= k < i`.
+     - Dry-run smoke check: running `run_chain(root_dir, item, dummy_required_flags, dry_run=True)` exits `0` and produces valid JSON on `stdout`.
 - **`check_all(root_dir: Path) -> dict`**
   Runs `check_item` across every item in `discover_catalog(root_dir)` and returns `{"ok": bool, "checked": int, "results": list[dict], "errors": list[str]}`.
 
@@ -94,7 +101,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
 - **`run_tool(root_dir: Path, item: dict, flags: dict[str, str], positional: list[str] | None = None, dry_run: bool = False, stdin_data: str | None = None) -> tuple[int, str, str]`**
   - Validates arguments, executes `item["path"]`, enforces `TK_MAX_OUTPUT_BYTES` (default `65536` bytes; returns `error="output_too_large"` if exceeded), ensures `stdout` is compacted single-line or clean JSON, and formats any failure as a self-healing JSON error on `stderr`.
 - **`run_chain(root_dir: Path, chain_item: dict, flags: dict[str, str], positional: list[str] | None = None, dry_run: bool = False) -> tuple[int, str, str]`**
-  - Validates chain flags, resolves `$input.<arg>`, `$prev.<path>`, and `$step[i].<path>` across `steps`, pipes each step's JSON `stdout` into the next step's `stdin_data`, and halts on first error.
+  - Validates chain flags, resolves `$input.<arg>`, `$prev` (whole JSON), `$prev.<path>`, `$step[i]` (whole JSON), and `$step[i].<path>` across `steps` (with dry-run fallback when `dry_run=True` and a step's synthetic dry-run payload omits a nested field), pipes each step's JSON `stdout` into the next step's `stdin_data`, and halts on first error.
 
 ---
 

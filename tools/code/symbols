@@ -3,7 +3,7 @@
 # @tk-summary: List class and function symbols in a file or directory
 # @tk-safety: read-only
 # @tk-arg: --path | required | string | File or directory path to extract symbols from
-# @tk-arg: --kind | optional | string | Filter by class, function, or all (default: all)
+# @tk-arg: --kind | optional | string | class, function (sync and async_function), async_function, or all (default: all)
 # @tk-arg: --limit | optional | int | Maximum symbols to return (default: 40)
 # @tk-output: json | {path, kind, count, truncated, symbols:[{file, line, kind, name, signature}]}
 # @tk-example: tk run code.symbols --path lib --kind all --limit 40
@@ -228,7 +228,7 @@ def main() -> int:
         return emit(
             {
                 "error": "invalid_flag",
-                "why": f"kind must be class, function, or all: {kind}",
+                "why": f"kind must be class, function, async_function, or all: {kind}",
                 "fix": "tk run code.symbols --path <path> --kind all",
             },
             2,

@@ -343,6 +343,32 @@ class RunToolTests(unittest.TestCase):
                 else:
                     os.environ["TK_TIMEOUT"] = previous
 
+    def test_malformed_timeout_and_max_output_use_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "ok-tool",
+                "#!/usr/bin/env python3\nimport json\njson.dump({'ok': True}, open(1, 'w'))\n",
+            )
+            item = _item()
+            item["path"] = str(script)
+            saved = {key: os.environ.get(key) for key in ("TK_TIMEOUT", "TK_MAX_OUTPUT_BYTES")}
+            os.environ["TK_TIMEOUT"] = ""
+            os.environ["TK_MAX_OUTPUT_BYTES"] = "abc"
+            try:
+                code, out, err = run_tool(root, item, {"--name": "ada"})
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+        self.assertEqual(code, 0)
+        self.assertEqual(out, '{"ok":true}')
+        self.assertEqual(err, "")
+        self.assertNotIn("internal_error", err)
+
     def test_success_requires_json_stdout(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -665,6 +691,98 @@ class RunChainTests(unittest.TestCase):
                 "fix": "tk run demo.pipe --id example",
             },
         )
+
+    def test_whole_object_prev_and_step_refs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog, _marker = self._tools(root)
+            chain = self._chain()
+            chain["steps"] = [
+                {"tool": "demo.first", "args": {"--id": "$input.id"}},
+                {"tool": "demo.second", "args": {"--id": "$prev", "--label": "$step[0]"}},
+            ]
+            with patch("lib.catalog.discover_catalog", return_value=catalog):
+                code, out, err = run_chain(root, chain, {"--id": "a9"})
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(json.loads(payload["id"]), {"id": "a9", "n": 2})
+        self.assertEqual(json.loads(payload["label"]), {"id": "a9", "n": 2})
+
+    def test_dry_run_falls_back_when_synthetic_payload_omits_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "dry",
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "if os.environ.get('TK_DRY_RUN') == '1':\n"
+                "    json.dump({'dry_run': True}, sys.stdout)\n"
+                "else:\n"
+                "    json.dump({'id': os.environ['TK_ARG_ID'], 'n': 2}, sys.stdout)\n",
+            )
+            sink = _write_script(
+                root,
+                "sink",
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "json.dump({'n': os.environ['TK_ARG_N'], 'on': os.environ['TK_ARG_ON'], 'name': os.environ['TK_ARG_NAME']}, sys.stdout)\n",
+            )
+            catalog = {
+                "demo.dry": {
+                    "name": "demo.dry",
+                    "example": "tk run demo.dry --id x",
+                    "path": str(script),
+                    "args": [{
+                        "flag": "--id",
+                        "env_var": "TK_ARG_ID",
+                        "required": True,
+                        "type": "string",
+                        "description": "id",
+                        "default": None,
+                    }],
+                },
+                "demo.sink": {
+                    "name": "demo.sink",
+                    "example": "tk run demo.sink --n 1 --on true --name example",
+                    "path": str(sink),
+                    "args": [
+                        {"flag": "--n", "env_var": "TK_ARG_N", "required": True, "type": "int", "description": "n", "default": None},
+                        {"flag": "--on", "env_var": "TK_ARG_ON", "required": True, "type": "bool", "description": "on", "default": None},
+                        {"flag": "--name", "env_var": "TK_ARG_NAME", "required": True, "type": "string", "description": "name", "default": None},
+                    ],
+                },
+            }
+            chain = {
+                "kind": "chain",
+                "name": "demo.drypipe",
+                "example": "tk run demo.drypipe --id example",
+                "args": [{
+                    "flag": "--id",
+                    "env_var": "TK_ARG_ID",
+                    "required": True,
+                    "type": "string",
+                    "description": "id",
+                    "default": None,
+                }],
+                "steps": [
+                    {"tool": "demo.dry", "args": {"--id": "$input.id"}},
+                    {"tool": "demo.sink", "args": {
+                        "--n": "$prev.n",
+                        "--on": "$step[0].on",
+                        "--name": "$prev.name",
+                    }},
+                ],
+            }
+            with patch("lib.catalog.discover_catalog", return_value=catalog):
+                code, out, err = run_chain(root, chain, {"--id": "a9"}, dry_run=True)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out), {"n": "1", "on": "true", "name": "example"})
+
+            with patch("lib.catalog.discover_catalog", return_value=catalog):
+                code, _out, err = run_chain(root, chain, {"--id": "a9"}, dry_run=False)
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(err)["error"], "unresolved_reference")
 
     def test_unresolved_reference(self):
         with tempfile.TemporaryDirectory() as tmp:

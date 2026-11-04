@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+# @tk-name: git.blame-slice
+# @tk-summary: Blame a line range as compact commit hunks
+# @tk-safety: read-only
+# @tk-arg: --repo | required | string | Path to the git working tree
+# @tk-arg: --file | required | string | Repository-relative file path to blame
+# @tk-arg: --start | optional | int | Start line number 1-indexed (default: 1)
+# @tk-arg: --end | optional | int | End line number inclusive (default: 40)
+# @tk-output: json | {repo, file, start, end, hunks:[{start_line, end_line, sha, author, date, summary}]}
+# @tk-example: tk run git.blame-slice --repo . --file README.md --start 1 --end 20
+# @tk-verified: 2026-11-04
+
+import datetime
+import json
+import os
+import subprocess
+import sys
+
+FIX = "tk run git.blame-slice --repo <git-dir> --file <path> --start 1 --end 40"
+
+
+def emit(payload: dict, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def parse_int(raw: str, flag: str) -> tuple[int | None, dict | None]:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"{flag} is not an int: {raw}",
+            "fix": FIX,
+        }
+    if value < 1:
+        return None, {
+            "error": "invalid_flag",
+            "why": f"{flag} must be >= 1",
+            "fix": FIX,
+        }
+    return value, None
+
+
+def iso_date(raw: str | None) -> str:
+    if not raw:
+        return ""
+    try:
+        stamp = int(raw)
+    except ValueError:
+        return raw
+    return datetime.datetime.fromtimestamp(
+        stamp, datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_blame(text: str) -> list[dict]:
+    hunks: list[dict] = []
+    sha = ""
+    final_line = 0
+    header: dict[str, str] = {}
+    for line in text.splitlines():
+        if line.startswith("\t"):
+            if (
+                hunks
+                and hunks[-1]["sha"] == sha
+                and hunks[-1]["end_line"] + 1 == final_line
+            ):
+                hunks[-1]["end_line"] = final_line
+            else:
+                hunks.append(
+                    {
+                        "start_line": final_line,
+                        "end_line": final_line,
+                        "sha": sha,
+                        "author": header.get("author", ""),
+                        "date": iso_date(header.get("author-time")),
+                        "summary": header.get("summary", ""),
+                    }
+                )
+            header = {}
+            continue
+        parts = line.split(" ", 3)
+        if len(parts[0]) == 40 and len(parts) >= 3 and parts[1].isdigit():
+            sha = parts[0]
+            final_line = int(parts[2])
+            continue
+        key, _, value = line.partition(" ")
+        if key:
+            header[key] = value
+    return hunks
+
+
+def main() -> int:
+    repo = os.environ.get("TK_ARG_REPO", "")
+    path = os.environ.get("TK_ARG_FILE", "")
+    start_raw = os.environ.get("TK_ARG_START") or "1"
+    end_raw = os.environ.get("TK_ARG_END") or "40"
+    start, start_err = parse_int(start_raw, "start")
+    if start_err:
+        return emit(start_err, 2)
+    end, end_err = parse_int(end_raw, "end")
+    if end_err:
+        return emit(end_err, 2)
+    assert start is not None and end is not None
+    if end < start:
+        return emit(
+            {
+                "error": "invalid_flag",
+                "why": "end must be >= start",
+                "fix": FIX,
+            },
+            2,
+        )
+    if os.environ.get("TK_DRY_RUN", "0") == "1":
+        return emit(
+            {
+                "dry_run": True,
+                "repo": repo or "example",
+                "file": path or "example",
+                "start": start,
+                "end": end,
+            }
+        )
+    if not repo:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_REPO is required", "fix": FIX},
+            2,
+        )
+    if not path:
+        return emit(
+            {"error": "missing_flag", "why": "TK_ARG_FILE is required", "fix": FIX},
+            2,
+        )
+    probe = git(repo, "rev-parse", "--is-inside-work-tree")
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return emit(
+            {
+                "error": "not_a_repo",
+                "why": probe.stderr.strip() or f"{repo} is not a git working tree",
+                "fix": FIX,
+            },
+            1,
+        )
+    blamed = git(
+        repo,
+        "blame",
+        "--line-porcelain",
+        "-L",
+        f"{start},{end}",
+        "--",
+        path,
+    )
+    if blamed.returncode != 0:
+        why = blamed.stderr.strip() or "git blame failed"
+        lowered = why.lower()
+        if "no such path" in lowered or "does not exist" in lowered:
+            return emit(
+                {"error": "missing_file", "why": why, "fix": FIX},
+                1,
+            )
+        return emit({"error": "git_failed", "why": why, "fix": FIX}, 1)
+    hunks = parse_blame(blamed.stdout)
+    return emit(
+        {
+            "repo": repo,
+            "file": path,
+            "start": start,
+            "end": end,
+            "hunks": hunks,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "timeout",
+                    "why": "git timed out after 30s",
+                    "fix": FIX,
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "why": f"{exc.filename or 'git'} not found",
+                    "fix": FIX,
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {"error": "tool_error", "why": str(exc), "fix": FIX},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)

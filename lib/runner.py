@@ -19,7 +19,8 @@ from lib.evolver import log_event
 
 _INPUT_REF = re.compile(r"^\$input\.([A-Za-z0-9_-]+)$")
 _PREV_REF = re.compile(r"^\$prev\.(.+)$")
-_STEP_REF = re.compile(r"^\$step\[(\d+)\]\.(.+)$")
+_STEP_WHOLE = re.compile(r"^\$step\[(-?\d+)\]$")
+_STEP_REF = re.compile(r"^\$step\[(-?\d+)\]\.(.+)$")
 _PATH_PART = re.compile(r"[^.\[\]]+|\[\d+\]")
 _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no"}
@@ -313,6 +314,26 @@ def _record_run(root_dir: Path, item: dict, code: int, stderr: str, dry_run: boo
     log_event(root_dir, "run_error", payload)
 
 
+def _positive_float(raw: str, default: float) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+def _positive_int(raw: str, default: int) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
 def run_tool(
     root_dir: Path,
     item: dict,
@@ -334,7 +355,7 @@ def run_tool(
 
         env = os.environ.copy()
         env.update(built)
-        timeout = float(os.environ.get("TK_TIMEOUT", "60"))
+        timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)
         try:
             completed = subprocess.run(
                 [str(item["path"])],
@@ -376,7 +397,7 @@ def run_tool(
                 ),
             )
         compact_out = _compact(parsed)
-        max_bytes = int(os.environ.get("TK_MAX_OUTPUT_BYTES", "65536"))
+        max_bytes = _positive_int(os.environ.get("TK_MAX_OUTPUT_BYTES", ""), 65536)
         size = len(compact_out.encode("utf-8"))
         if size > max_bytes:
             return _record_and_return(
@@ -454,12 +475,33 @@ def _bare_forms(flag: str) -> set[str]:
     return {bare, bare.replace("-", "_"), bare.replace("_", "-")}
 
 
+def _synthetic_dry_payload(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("dry_run") is True
+
+
+def _dry_dummy(expect_type: str) -> str:
+    if expect_type in {"int", "float"}:
+        return "1"
+    if expect_type == "bool":
+        return "true"
+    return "example"
+
+
+def _missing_on_synthetic(dry_run: bool, payload: object, expect_type: str) -> tuple[str | None, str | None] | None:
+    """Dummy stand-in when a dry-run payload omitted the referenced key."""
+    if dry_run and _synthetic_dry_payload(payload):
+        return _dry_dummy(expect_type), None
+    return None
+
+
 def _resolve_expr(
     expr: str,
     chain_item: dict,
     env: dict[str, str],
     prev: object,
     steps: list[object],
+    dry_run: bool = False,
+    expect_type: str = "string",
 ) -> tuple[str | None, str | None]:
     text = expr.strip()
     input_match = _INPUT_REF.fullmatch(text)
@@ -473,6 +515,11 @@ def _resolve_expr(
                 return env[key], None
         return None, text
 
+    if text == "$prev":
+        if prev is None:
+            return None, text
+        return _stringify(prev), None
+
     prev_match = _PREV_REF.fullmatch(text)
     if prev_match:
         if prev is None:
@@ -480,17 +527,26 @@ def _resolve_expr(
         try:
             return _stringify(_walk(prev, prev_match.group(1))), None
         except (KeyError, IndexError, TypeError):
+            fallback = _missing_on_synthetic(dry_run, prev, expect_type)
+            return fallback if fallback is not None else (None, text)
+
+    whole_step = _STEP_WHOLE.fullmatch(text)
+    if whole_step:
+        index = int(whole_step.group(1))
+        if index < 0 or index >= len(steps):
             return None, text
+        return _stringify(steps[index]), None
 
     step_match = _STEP_REF.fullmatch(text)
     if step_match:
         index = int(step_match.group(1))
-        if index >= len(steps):
+        if index < 0 or index >= len(steps):
             return None, text
         try:
             return _stringify(_walk(steps[index], step_match.group(2))), None
         except (KeyError, IndexError, TypeError):
-            return None, text
+            fallback = _missing_on_synthetic(dry_run, steps[index], expect_type)
+            return fallback if fallback is not None else (None, text)
 
     return text, None
 
@@ -546,12 +602,25 @@ def run_chain(
                 )
             step_flags: dict[str, str] = {}
             raw_args = step.get("args") or {}
+            flag_types = {
+                str(arg.get("flag")): str(arg.get("type") or "string")
+                for arg in (tool.get("args") or [])
+                if isinstance(arg, dict) and arg.get("flag")
+            }
             for key, value in raw_args.items():
                 flag = key if str(key).startswith("--") else f"--{key}"
                 if not isinstance(value, str):
                     step_flags[flag] = _stringify(value)
                     continue
-                resolved, bad = _resolve_expr(value, chain_item, env, prev, outputs)
+                resolved, bad = _resolve_expr(
+                    value,
+                    chain_item,
+                    env,
+                    prev,
+                    outputs,
+                    dry_run,
+                    flag_types.get(flag, "string"),
+                )
                 if bad is not None or resolved is None:
                     return _record_and_return(
                         root_dir, chain_item, dry_run,

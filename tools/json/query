@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+# @tk-name: json.query
+# @tk-summary: Extract nested paths, array slices, or filtered fields from JSON on stdin
+# @tk-safety: read-only
+# @tk-arg: --expr | required | string | Query path like a.b, items[*].name, or items[?ok==true].{id,name}
+# @tk-arg: --limit | optional | int | Max array items to return when result is a list (default: 50)
+# @tk-output: json | Queried value or {count, truncated, results} when list
+# @tk-example: tk run json.query --expr items[*].name --limit 20
+# @tk-verified: 2026-11-04
+
+import json
+import os
+import sys
+
+_DEFAULT_LIMIT = 50
+_OPS = ("!=", "==", ">", "<")
+
+
+def emit(payload, code: int = 0) -> int:
+    stream = sys.stdout if code == 0 else sys.stderr
+    stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return code
+
+
+def _parse_limit(raw: str, dry: bool) -> tuple[int | None, dict | None]:
+    text = raw.strip() or str(_DEFAULT_LIMIT)
+    try:
+        limit = int(text)
+    except ValueError:
+        if dry:
+            return _DEFAULT_LIMIT, None
+        return None, {
+            "error": "invalid_flag",
+            "why": f"limit is not an int: {text}",
+            "fix": "tk run json.query --expr <path> --limit 50",
+        }
+    if limit < 1:
+        if dry:
+            return _DEFAULT_LIMIT, None
+        return None, {
+            "error": "invalid_flag",
+            "why": "limit must be >= 1",
+            "fix": "tk run json.query --expr <path> --limit 50",
+        }
+    return limit, None
+
+
+def _tokenize(expr: str) -> list[tuple]:
+    text = expr.strip()
+    if text.startswith("."):
+        text = text[1:]
+    tokens: list[tuple] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == ".":
+            index += 1
+            if index >= length:
+                raise ValueError("trailing dot")
+            continue
+        if char == "{":
+            end = text.find("}", index)
+            if end < 0:
+                raise ValueError("unclosed projection")
+            keys = [part.strip() for part in text[index + 1 : end].split(",") if part.strip()]
+            if not keys:
+                raise ValueError("empty projection")
+            tokens.append(("proj", keys))
+            index = end + 1
+            continue
+        if char == "[":
+            end = text.find("]", index)
+            if end < 0:
+                raise ValueError("unclosed bracket")
+            inner = text[index + 1 : end].strip()
+            if inner == "*":
+                tokens.append(("wild",))
+            elif inner.startswith("?"):
+                tokens.append(("filter", inner[1:].strip()))
+            else:
+                tokens.append(("index", int(inner)))
+            index = end + 1
+            continue
+        end = index
+        while end < length and text[end] not in ".[{":
+            end += 1
+        ident = text[index:end].strip()
+        if not ident:
+            raise ValueError("empty segment")
+        tokens.append(("field", ident))
+        index = end
+    return tokens
+
+
+def _literal(raw: str):
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "null":
+        return None
+    try:
+        if any(mark in text for mark in ".eE"):
+            return float(text)
+        return int(text)
+    except ValueError:
+        return text
+
+
+def _matches(item, predicate: str) -> bool:
+    if not isinstance(item, dict):
+        return False
+    op = next((candidate for candidate in _OPS if candidate in predicate), None)
+    if op is None:
+        return False
+    key, raw_value = predicate.split(op, 1)
+    key = key.strip()
+    if not key or key not in item:
+        return False
+    actual = item[key]
+    expected = _literal(raw_value)
+    if op == "==":
+        return actual == expected
+    if op == "!=":
+        return actual != expected
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return False
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return actual > expected if op == ">" else actual < expected
+    if isinstance(actual, str) and isinstance(expected, str):
+        return actual > expected if op == ">" else actual < expected
+    return False
+
+
+def _project(value, keys: list[str]):
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in keys if key in value}
+
+
+def _field(value, key: str):
+    if isinstance(value, dict) and key in value:
+        return value[key]
+    return None
+
+
+def _index(value, idx: int):
+    if isinstance(value, list) and -len(value) <= idx < len(value):
+        return value[idx]
+    return None
+
+
+def evaluate(data, expr: str):
+    current = data
+    many = False
+    for token in _tokenize(expr):
+        kind = token[0]
+        if kind == "field":
+            key = token[1]
+            if many:
+                current = [_field(item, key) for item in current]
+            else:
+                current = _field(current, key)
+        elif kind == "index":
+            idx = token[1]
+            if many:
+                current = [_index(item, idx) for item in current]
+            else:
+                current = _index(current, idx)
+        elif kind == "wild":
+            if many:
+                flattened = []
+                for item in current:
+                    if isinstance(item, list):
+                        flattened.extend(item)
+                current = flattened
+            else:
+                current = list(current) if isinstance(current, list) else []
+                many = True
+        elif kind == "filter":
+            source = current if isinstance(current, list) else []
+            current = [item for item in source if _matches(item, token[1])]
+            many = True
+        elif kind == "proj":
+            keys = token[1]
+            if many:
+                current = [_project(item, keys) for item in current]
+            else:
+                current = _project(current, keys)
+        else:
+            raise ValueError(f"unknown token: {kind}")
+    return current
+
+
+def _finish(result, limit: int):
+    if isinstance(result, list):
+        kept = result[:limit]
+        return {"count": len(kept), "truncated": len(result) - len(kept), "results": kept}
+    return result
+
+
+def main() -> int:
+    expr = os.environ.get("TK_ARG_EXPR", "").strip()
+    limit_raw = os.environ.get("TK_ARG_LIMIT") or str(_DEFAULT_LIMIT)
+    dry = os.environ.get("TK_DRY_RUN", "0") == "1"
+    limit, limit_err = _parse_limit(limit_raw, dry)
+    if dry:
+        return emit({"dry_run": True, "expr": expr or "example", "limit": limit if limit is not None else _DEFAULT_LIMIT})
+    if not expr:
+        return emit(
+            {
+                "error": "missing_flag",
+                "why": "TK_ARG_EXPR is required",
+                "fix": "tk run json.query --expr <path>",
+            },
+            2,
+        )
+    if limit_err is not None or limit is None:
+        return emit(limit_err or {"error": "invalid_flag", "why": "limit is invalid", "fix": "tk run json.query --expr <path> --limit 50"}, 2)
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return emit(
+            {
+                "error": "empty_stdin",
+                "why": "json.query expects JSON on stdin",
+                "fix": "tk run <producer> | tk run json.query --expr <path>",
+            },
+            1,
+        )
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return emit(
+            {
+                "error": "invalid_json",
+                "why": str(exc),
+                "fix": "tk run json.query --expr <path>",
+            },
+            1,
+        )
+    try:
+        result = evaluate(data, expr)
+    except (ValueError, IndexError) as exc:
+        return emit(
+            {
+                "error": "invalid_expr",
+                "why": str(exc),
+                "fix": "tk run json.query --expr a.b or items[*].name",
+            },
+            2,
+        )
+    return emit(_finish(result, limit))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "error": "tool_error",
+                    "why": str(exc),
+                    "fix": "tk run json.query --expr <path>",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1)
