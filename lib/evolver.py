@@ -399,6 +399,20 @@ def _failure(error: str, why: str, fix: str) -> tuple[int, str, str]:
     return 1, "", _error_json(error, why, fix)
 
 
+def _fix_from_check_errors(errors: list) -> str:
+    """Use a runnable ``fix:`` embedded in a check error, else ``tk check``."""
+    for err in errors:
+        text = str(err)
+        marker = "fix: "
+        pos = text.find(marker)
+        if pos == -1:
+            continue
+        fix = text[pos + len(marker) :].strip()
+        if fix.startswith("tk "):
+            return fix
+    return "tk check"
+
+
 def _error_json(error: str, why: str, fix: str) -> str:
     return json.dumps({"error": error, "why": why, "fix": fix}, separators=(",", ":"))
 
@@ -811,7 +825,7 @@ def _commit_draft(
                 dest.chmod(0o755)
         errors = check.get("errors") or ["validation failed"]
         why = "; ".join(str(err) for err in errors)
-        return _failure("check_failed", why, "tk check")
+        return _failure("check_failed", why, _fix_from_check_errors(errors))
     log_event(root, saved_event, saved_payload)
     return 0, json.dumps(success, separators=(",", ":")), ""
 

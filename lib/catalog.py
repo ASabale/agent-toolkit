@@ -429,16 +429,30 @@ def suggest_closest_item(root_dir: Path, name: str) -> dict | None:
 
 
 def format_find_output(items: list[dict]) -> str:
-    """Two lines per item: name/safety/summary, then the run example."""
+    """Two lines per item: name/safety/summary, then the run example.
+
+    ``@tk-verified: none`` adds a short ``unverified`` tag on the first line.
+    Lines stay within 140 characters so the find budget does not grow.
+    """
     try:
         lines: list[str] = []
         for item in items:
-            name = item.get("name") or ""
-            safety = item.get("safety") or ""
-            summary = item.get("summary") or ""
-            example = item.get("example") or ""
-            lines.append(f"{name} [{safety}] — {summary}")
-            lines.append(f"  run: {example}")
+            name = str(item.get("name") or "")
+            safety = str(item.get("safety") or "")
+            summary = str(item.get("summary") or "")
+            example = str(item.get("example") or "")
+            tag = " unverified" if str(item.get("verified") or "") == "none" else ""
+            prefix = f"{name} [{safety}]{tag} — "
+            room = 140 - len(prefix)
+            if room < 0:
+                head = prefix[:140]
+            else:
+                head = prefix + summary[:room]
+            run = f"  run: {example}"
+            if len(run) > 140:
+                run = run[:140]
+            lines.append(head)
+            lines.append(run)
         if not lines:
             return ""
         return "\n".join(lines) + "\n"
@@ -669,6 +683,113 @@ def _dry_run_error(
     if isinstance(payload, dict) and payload.get("dry_run") is not True:
         return 'dry-run payload is not marked "dry_run": true'
     return None
+
+
+def _output_allows_raw_stdout(output: str) -> bool:
+    """True when ``@tk-output`` declares a raw contract instead of JSON."""
+    text = output.strip().lower()
+    return text == "raw" or text.startswith("raw ") or text.startswith("raw|")
+
+
+def _shell_body_after_dry_run(path: Path) -> str:
+    """Return the commands a generated tool runs when ``TK_DRY_RUN`` is unset."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    index = 1 if lines and lines[0].startswith("#!") else 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped == "" or stripped.startswith("#") or stripped.startswith("set -"):
+            index += 1
+            continue
+        break
+    if index < len(lines) and "TK_DRY_RUN" in lines[index] and lines[index].lstrip().startswith("if "):
+        index += 1
+        while index < len(lines) and lines[index].strip() != "fi":
+            index += 1
+        if index < len(lines) and lines[index].strip() == "fi":
+            index += 1
+    return "\n".join(lines[index:]).strip()
+
+
+def _json_stdout_fix(name: str, summary: str, command: str) -> str:
+    """A copy-pasteable ``tk save`` that wraps command stdout as JSON."""
+    code = 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))'
+    body = command.strip() or "cat"
+    if "\n" in body:
+        body = "bash -c " + shlex.quote(body)
+    wrapped = body + " | python3 -c " + shlex.quote(code)
+    parts = ["tk", "save", name or "namespace.tool", "--summary", summary or name or "tool", "--from-cmd", wrapped]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _skip_live_json(body: str) -> bool:
+    """Skip the live JSON smoke when the body already emits JSON or reads args.
+
+    Arg-driven commands get dummy ``TK_ARG_*`` values, so a non-JSON exit 0 is
+    not evidence the real invocation is non-JSON. Commands such as ``wc`` never
+    build a JSON value; the dry-run stub would otherwise be the only stdout
+    ``tk check`` sees.
+    """
+    if "TK_ARG_" in body:
+        return True
+    return "json.dumps" in body or "json.dump" in body or '{"' in body or "{'" in body
+
+
+def _live_json_error(
+    path: Path,
+    args: list[dict],
+    output: str,
+    name: str,
+    summary: str,
+    root_dir: Path | None = None,
+) -> str | None:
+    """Run a read-only tool for real and require JSON stdout, unless output is raw.
+
+    A non-zero exit is not a JSON failure: dummy flag values often make a real
+    tool refuse the input. Exit 0 with non-JSON stdout is the save/check hole
+    left by the dry-run stub.
+    """
+    if _output_allows_raw_stdout(output):
+        return None
+    command = _shell_body_after_dry_run(path) or str(path)
+    if _skip_live_json(command):
+        return None
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
+            env.pop(key, None)
+    env["TK_DRY_RUN"] = "0"
+    root = root_dir if root_dir is not None else path.resolve().parents[2]
+    env["TK_ROOT_DIR"] = str(root)
+    for arg in args:
+        if arg.get("required"):
+            env_var = str(arg.get("env_var") or "")
+            if env_var:
+                env[env_var] = _dummy(str(arg.get("type") or "string"))
+    try:
+        proc = subprocess.run(
+            [str(path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+            cwd=str(root),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    stdout = proc.stdout or ""
+    if stdout.strip():
+        try:
+            json.loads(stdout)
+            return None
+        except json.JSONDecodeError:
+            pass
+    return f"stdout is not valid JSON; fix: {_json_stdout_fix(name, summary, command)}"
 
 
 def _default_matches(typ: str, default: str) -> bool:
@@ -961,14 +1082,26 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                 if guard:
                     errors.append(guard)
                 else:
+                    safety = str(item.get("safety") or "")
                     dry = _dry_run_error(
                         path,
                         item.get("args") or [],
-                        str(item.get("safety") or ""),
+                        safety,
                         root_dir=root_dir,
                     )
                     if dry:
                         errors.append(dry)
+                    elif safety == "read-only":
+                        live = _live_json_error(
+                            path,
+                            item.get("args") or [],
+                            str(item.get("output") or ""),
+                            name,
+                            str(item.get("summary") or ""),
+                            root_dir=root_dir,
+                        )
+                        if live:
+                            errors.append(live)
         else:
             catalog = discover_catalog(root_dir)
             steps = item.get("steps") or []
