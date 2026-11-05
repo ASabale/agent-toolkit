@@ -92,3 +92,15 @@ changes: PLAN_STATUS.md only
 acceptance-output: not run; the task was skipped before commit. A trial of `safe_fix` was reverted after `tests.test_error_hints` failed on `gh auth login`.
 decisions: VISION and the existing tests win. Do not add the SKILL.md line. Do not replace the current fix strings.
 follow-ups: a later change can reject only a tool-supplied `fix` that adds a second command (`;`, unquoted `$()`, newline) while leaving every pinned fix string unchanged. That is narrower than this task.
+
+## T0.3 Architecture review and threat model
+
+status: DONE
+branch: plan/t0.3-architecture-review
+baseline: no product code since T1.1; unittest 460 OK was the T1.1 commit hook; T1.2 changed no product code
+result: design only. Gateway, trust, namespaces, secrets, MCP, isolation, and self-audit are specified. No enforcement was added.
+verify-evidence: `lib/runner.py` `_safe_write_result` still returns dry_run/plan/apply and `_apply_command` still appends `--yes`. `lib/guards.py` `tool_subprocess_env` is an allowlist, not a jail. `lib/evolver.py` `log_event` appends with no lock. `SECURITY.md` still says `--yes` performs the write. `CODING_STANDARDS.md` §2.1 header fields unchanged.
+changes: ARCHITECTURE_REVIEW.md, THREAT_MODEL.md, DECISIONS.md, docs/HARDENING_PLAN.md, PLAN_STATUS.md
+acceptance-output: not a behavior change. The amended plan is `docs/HARDENING_PLAN.md`. Human decisions are `DECISIONS.md` D1–D7. Defaults leave `--yes`, the catalog layout, MCP import, self-audit, and OS isolation unimplemented.
+decisions: VISION and the existing `@tk-*` contract stay. Plan hash is integrity, not authorization. Destructive `--yes` removal waits on D1. No `tomllib`. No `TK_HOME`. No silent project override. `tk doctor` stays unbuilt. T0.4–T0.7 are the sections of this review, not extra branches. `arch/secure-seams` was not merged; its guard work is already on this tree.
+follow-ups: next implementation is T1.3 plan integrity only, on a new branch. Do not start T1.3b, T4.3, T4.6, or an isolator until the matching decision in DECISIONS.md is accepted. T1.7 is the narrow fix filter left over from T1.2.
