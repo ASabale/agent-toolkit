@@ -16,7 +16,9 @@ Meanwhile, language models already possess a superpower from pretraining: **they
 
 **Purpose**: Enable any agent to **get the job done** with **minimum cognitive load** and **minimum tokens**, while making the toolkit effortless to use and evolve.
 
-Replace static, context-heavy MCP servers with a **portable, self-evolving CLI toolkit packaged as an Agent Skill**. Once a user drops this toolkit into any agentic harness (OMP, Claude Code, Cursor, Codex, Devin), they can **turn off MCP servers entirely**.
+Agent Toolkit is capability infrastructure. An agent discovers a capability, runs it, composes several into one chain, saves one after a real task needs it, verifies it, and prunes what no longer earns its place. The runtime is a portable CLI packaged as an Agent Skill. Any harness that can run a shell can use it (OMP, Claude Code, Cursor, Codex, Devin).
+
+MCP is one source of capabilities. The bottlenecks above are why a skill that stays on disk beats always-loaded tool schemas. An agent that already has a working integration keeps it. Replacing an MCP server is one use of `tk`, not a requirement to turn every MCP off.
 
 Every decision in `agent-toolkit` is governed by three non-negotiable principles:
 
