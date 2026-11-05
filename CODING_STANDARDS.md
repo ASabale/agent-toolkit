@@ -49,8 +49,10 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
       "output": str,          # @tk-output
       "example": str,         # @tk-example
       "verified": str,        # @tk-verified
+      "needs": [str],         # optional @tk-needs: command name, or env:NAME
       "path": str,            # str(path.resolve())
   }
+  `@tk-needs` is optional and repeatable. `tk check` reports a missing executable (`shutil.which`) or an unset `env:NAME`. It does not install the dependency and does not skip the tool body. A lint hit here is not a sandbox.
   ```
 - **`load_chain(path: Path) -> dict`**
   Reads `chains/<name>.json` and returns a normalized dict with `"kind": "chain"`, `"name"`, `"summary"`, `"safety"`, `"args"`, `"steps"`, `"output"`, `"example"`, `"verified"`, `"path"`.
@@ -70,7 +72,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   Returns `{"name": str, "ok": bool, "errors": list[str]}`.
   Checks:
   1. File exists and (for tools) is executable (`os.access(p, os.X_OK)`).
-  2. All required header fields present (`name`, `summary`, `safety` in `{"read-only", "mutating", "destructive"}`, `output`, `example`, `verified`).
+  2. All required header fields present (`name`, `summary`, `safety` in `{"read-only", "mutating", "destructive"}`, `output`, `example`, `verified`). Optional `@tk-needs` adds `missing executable: <name>` or `missing env: <NAME>`, each with a `fix`, and does not by itself skip executing the file.
   3. `example` starts with `tk run <name>` and includes every required `--flag`.
   4. Syntax check passes (`bash -n` for `sh`/`bash` shebang; `py_compile` for `python` shebang).
   5. No duplicate `--flag` names in `args`, any `(default: X)` value conforms to the declared arg `type`, and every `TK_ARG_<NAME>` referenced in the tool's non-comment script body is declared in `args` (`undeclared arg env var in script: TK_ARG_<NAME>`).

@@ -131,3 +131,27 @@ TK_NO_TELEMETRY=1 ./tk run wiki.lint --path wiki
 ```
 decisions: `plan_id` checks that the later command matches the dry-run plan. It does not change `--yes` (D1 default). In-process `confirmed=True` still executes. No SKILL.md change.
 follow-ups: T1.3b waits on an explicit D1 acceptance. Do not start T4.3, T4.6, or an isolator until that decision row is accepted. T1.7 can follow and does not share these lines.
+
+## T1.4 `@tk-needs`
+
+status: DONE
+branch: plan/t1.4-needs
+baseline: unittest 467 OK; tk check 41/41 (T1.3)
+result: optional header. A missing command or `env:NAME` is an error with a `fix`. The tool body still runs. Nothing is installed.
+verify-evidence: fixture `@tk-needs: definitely-missing-bin` fails check and names that token plus `fix:`. A tool with no `@tk-needs` line stays ok. `sh` plus a set `env:TK_NEEDS_PRESENT` stays ok. A missing need does not hide a dry-run JSON failure.
+changes: lib/catalog.py parses `@tk-needs` and reports `missing executable` / `missing env`; CODING_STANDARDS.md documents the optional field; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 TK_STATE_DIR=$(mktemp -d) python3 -m unittest tests.test_catalog tests.test_plan_id -q
+Ran 48 tests in 3.517s
+OK
+
+TK_NO_TELEMETRY=1 TK_STATE_DIR=$(mktemp -d) python3 -m unittest discover -s tests -q
+Ran 471 tests in 162.459s
+OK
+
+TK_NO_TELEMETRY=1 ./tk check --json
+{"ok": true, "checked": 41, "errors": []}
+```
+decisions: bare token is a PATH command; `env:NAME` is an environment variable. No TOML. No confinement. This branch is stacked on `plan/t1.3-plan-integrity` and is not merged to `main` (issue #222).
+follow-ups: T2.1 and T2.2 depend on this header. T1.5 is independent.

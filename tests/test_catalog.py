@@ -287,6 +287,80 @@ class CheckItemTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["name"], "demo.echo")
 
+    def test_check_item_needs_missing_executable_names_a_fix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: definitely-missing-bin\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertFalse(result["ok"])
+        blob = " ".join(result["errors"])
+        self.assertIn("definitely-missing-bin", blob)
+        self.assertIn("fix:", blob)
+        self.assertNotIn("sandbox", blob.lower())
+
+    def test_check_item_needs_missing_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: env:TK_NEEDS_ABSENT_FOR_TEST\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            os.environ.pop("TK_NEEDS_ABSENT_FOR_TEST", None)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("missing env: TK_NEEDS_ABSENT_FOR_TEST", blob)
+        self.assertIn("fix:", blob)
+
+    def test_check_item_needs_present_bin_and_env_stay_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: sh env:TK_NEEDS_PRESENT\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            old = os.environ.get("TK_NEEDS_PRESENT")
+            os.environ["TK_NEEDS_PRESENT"] = "1"
+            try:
+                result = check_item(root, "demo.echo")
+            finally:
+                if old is None:
+                    os.environ.pop("TK_NEEDS_PRESENT", None)
+                else:
+                    os.environ["TK_NEEDS_PRESENT"] = old
+        self.assertTrue(result["ok"], result)
+
+    def test_check_item_needs_still_runs_the_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            body = "printf '%s\\n' 'not-json'\n"
+            text = _bash_tool("demo.echo", "Echo a target id", body=body)
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: definitely-missing-bin\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("definitely-missing-bin", blob)
+        self.assertTrue(any("json" in err.lower() for err in result["errors"]))
+
     def test_check_item_missing_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -13,6 +13,7 @@ import os
 import py_compile
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -24,6 +25,8 @@ from lib.redact import secret_hits
 _SAFETY = {"read-only", "mutating", "destructive"}
 _TYPES = {"string", "int", "float", "bool"}
 _DEFAULT_RE = re.compile(r"\(default:\s*([^)]*)\)", re.IGNORECASE)
+_NEED_ENV = re.compile(r"env:([A-Za-z_][A-Za-z0-9_]*)\Z")
+_NEED_BIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,64}\Z")
 
 
 def _empty_tool(path: Path) -> dict:
@@ -40,6 +43,7 @@ def _empty_tool(path: Path) -> dict:
         "output": "",
         "example": "",
         "verified": "",
+        "needs": [],
         "path": resolved,
     }
 
@@ -133,6 +137,8 @@ def parse_tool_header(path: Path) -> dict:
                 item["example"] = value
             elif key == "@tk-verified":
                 item["verified"] = value
+            elif key == "@tk-needs":
+                item["needs"].extend(part for part in re.split(r"[\s,]+", value) if part)
     except Exception:
         return item
     return item
@@ -904,6 +910,27 @@ def _header_errors(item: dict) -> list[str]:
     return errors
 
 
+def _needs_errors(item: dict) -> list[str]:
+    """Name a missing executable or env var. Does not install or confine."""
+    errors: list[str] = []
+    for raw in item.get("needs") or []:
+        token = str(raw).strip()
+        env_match = _NEED_ENV.fullmatch(token)
+        if env_match:
+            name = env_match.group(1)
+            if not os.environ.get(name):
+                errors.append(f"missing env: {name}; fix: export {name}=<value>")
+            continue
+        if not _NEED_BIN.fullmatch(token):
+            errors.append(
+                f"invalid @tk-needs: {token}; fix: use a command name or env:NAME"
+            )
+            continue
+        if shutil.which(token) is None:
+            errors.append(f"missing executable: {token}; fix: install {token}")
+    return errors
+
+
 def _resolve(root_dir: Path, name_or_path: str | Path) -> tuple[Path | None, dict | None, str | None]:
     """Return path, preloaded item (chains), and a not-found message."""
     if isinstance(name_or_path, Path):
@@ -1130,6 +1157,8 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         if not is_chain and not os.access(path, os.X_OK):
             errors.append(f"not executable: {path}")
         errors.extend(_header_errors(item))
+        if not is_chain:
+            errors.extend(_needs_errors(item))
         errors.extend(_example_ok(str(item.get("name") or ""), str(item.get("example") or ""), item.get("args") or []))
         if not is_chain:
             errors.extend(_undeclared_arg_env_errors(path, item))
