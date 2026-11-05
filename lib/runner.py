@@ -668,6 +668,22 @@ def _record_and_return(
     return result
 
 
+def _annotate_step_stop(stderr: str, chain_name: str, index: int, total: int, tool_name: str) -> str:
+    text = (stderr or "").strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return stderr
+    if not isinstance(payload, dict) or not {"error", "why", "fix"} <= payload.keys():
+        return stderr
+    why = str(payload.get("why") or "")
+    marker = f"chain {chain_name} stopped at step {index}/{total} ({tool_name}): "
+    if why.startswith(marker):
+        return stderr
+    payload["why"] = marker + why
+    return _compact(payload)
+
+
 def _tool_failure(item: dict, code: int, stderr: str) -> dict:
     text = stderr.strip()
     if text:
@@ -727,7 +743,7 @@ def run_chain(
         prev: object = None
         outputs: list[object] = []
         last_stdout = ""
-        for step in steps:
+        for index, step in enumerate(steps, start=1):
             tool_name = step.get("tool") if isinstance(step, dict) else None
             tool = catalog.get(tool_name) if tool_name else None
             if tool is None:
@@ -785,6 +801,13 @@ def run_chain(
                 stdin_data=None if prev is None else last_stdout,
             )
             if code != 0:
+                stderr = _annotate_step_stop(
+                    stderr,
+                    str(chain_item.get("name") or ""),
+                    index,
+                    len(steps),
+                    str(tool_name),
+                )
                 return _record_and_return(root_dir, chain_item, dry_run, (code, stdout, stderr))
             prev = json.loads(stdout)
             outputs.append(prev)
