@@ -1,0 +1,13 @@
+#!/bin/bash
+# @tk-name: fixture.schema-ok
+# @tk-summary: Dry-run object includes the declared schema key
+# @tk-safety: read-only
+# @tk-output: json | object
+# @tk-example: tk run fixture.schema-ok
+# @tk-verified: none
+# @tk-schema: ok
+if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\n' '{"dry_run":true,"ok":true}'
+  exit 0
+fi
+printf '%s\n' '{"ok":true}'

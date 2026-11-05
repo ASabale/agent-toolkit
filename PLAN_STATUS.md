@@ -192,3 +192,20 @@ OK
 ```
 decisions: keys are presence checks only. Braces reuse `output_keys`. Not merged to `main` (issue #226).
 follow-ups: T2.2 `@tk-requires` depends on T1.4 and does not share the dry-run key check.
+
+## T2.3 Fixtures
+
+status: DONE
+branch: plan/t2.3-fixtures
+baseline: plan/t2.1-schema at e32875c
+result: schema fixtures live in tests/fixtures, not tools/. schema_ok passes check. schema_missing names the absent key `count` and includes `fix:`.
+verify-evidence: both files are executable and their paths contain `tests/fixtures`, not `tools/`.
+changes: tests/fixtures/schema_ok; tests/fixtures/schema_missing; tests/test_schema_fixtures.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_schema_fixtures -v
+Ran 3 tests in 0.300s
+OK
+```
+decisions: fixtures are not catalog tools. Not merged to `main` (issue #228).
+follow-ups: T2.4 locks state writes and does not move these fixtures.
