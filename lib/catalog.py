@@ -19,6 +19,7 @@ from pathlib import Path
 
 from lib.chainref import bare_arg_name, static_ref_error
 from lib.guards import tool_subprocess_env
+from lib.redact import secret_hits
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _TYPES = {"string", "int", "float", "bool"}
@@ -1093,6 +1094,14 @@ def _chain_dry_run_error(root_dir: Path, item: dict) -> str | None:
     return None
 
 
+def _file_secret_rules(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return secret_hits(text)
+
+
 def _is_chain_path(root_dir: Path, path: Path) -> bool:
     if path.suffix.lower() != ".json":
         return False
@@ -1115,6 +1124,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         item = preloaded if preloaded is not None else (load_chain(path) if is_chain else parse_tool_header(path))
         name = str(item.get("name") or path.stem)
         errors: list[str] = []
+        secret_rules = _file_secret_rules(path)
         if not is_chain and not os.access(path, os.X_OK):
             errors.append(f"not executable: {path}")
         errors.extend(_header_errors(item))
@@ -1124,7 +1134,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
             syntax = _syntax_error(path)
             if syntax:
                 errors.append(syntax)
-            elif os.access(path, os.X_OK):
+            elif os.access(path, os.X_OK) and not secret_rules:
                 guard = _dry_run_guard_error(path)
                 if guard:
                     errors.append(guard)
@@ -1162,10 +1172,15 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                     elif tool_name not in catalog:
                         errors.append(f"step {index} tool not in catalog: {tool_name}")
                 errors.extend(_chain_wiring_errors(item, catalog))
-            if not errors:
+            if not errors and not secret_rules:
                 dry = _chain_dry_run_error(root_dir, item)
                 if dry:
                     errors.append(dry)
+        if secret_rules:
+            shown = ", ".join(secret_rules)
+            errors.append(
+                f"secret in file ({shown}); remove the credential from the file; fix: tk check {name}"
+            )
         errors.extend(_layout_errors(root_dir, path, item, is_chain))
         errors.extend(_duplicate_name_errors(root_dir, str(item.get("name") or "")))
         if errors and not any("fix: tk " in str(err) for err in errors):

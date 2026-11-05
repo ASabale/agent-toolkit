@@ -9,6 +9,8 @@ import shlex
 import sys
 from pathlib import Path
 
+from lib.redact import redact
+
 ROOT = Path(__file__).resolve().parent
 
 _SAFETY = {"read-only", "mutating", "destructive"}
@@ -16,7 +18,7 @@ _SAFETY = {"read-only", "mutating", "destructive"}
 
 def _err(error: str, why: str, fix: str) -> None:
     sys.stderr.write(
-        json.dumps({"error": error, "why": why, "fix": fix}, separators=(",", ":")) + "\n"
+        redact(json.dumps({"error": error, "why": why, "fix": fix}, separators=(",", ":"))) + "\n"
     )
 
 
@@ -24,6 +26,7 @@ def _emit_streams(out: str, err: str) -> None:
     if out:
         sys.stdout.write(out if out.endswith("\n") else out + "\n")
     if err:
+        err = redact(err)
         sys.stderr.write(err if err.endswith("\n") else err + "\n")
 
 

@@ -22,6 +22,7 @@ from pathlib import Path
 
 from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys
 from lib.guards import tool_subprocess_env
+from lib.redact import redact_data
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -99,6 +100,7 @@ def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
             for key, value in payload.items():
                 if key not in {"ts", "event"}:
                     record[key] = value
+        record = redact_data(record)
         line = json.dumps(record, separators=(",", ":"), default=str)
         with (state / "events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")

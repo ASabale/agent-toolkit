@@ -54,3 +54,29 @@ changes: AUDIT.md added; PLAN_STATUS.md appended
 acceptance-output: AUDIT.md table has rows A1–A15 with file evidence. No task marked ALREADY_DONE.
 decisions: none new. Skill line-cap conflict from T0.1 still stands (skip T1.2's extra SKILL.md line).
 follow-ups: T1.1 next. T2.5 must extend the existing timeout, not add a second one. T4.1 tk doctor conflicts with an older "do not rebuild doctor" note; re-check VISION.md before that task.
+
+## T1.1 Secret scanning and redaction
+
+status: DONE
+branch: plan/t1.1-redact
+baseline: tk check 41/41 ok; unittest 455 OK (T0.1)
+result: tests.test_redact 5 OK; tk check on the real catalog still 41/41; full suite is the commit hook
+verify-evidence: A4 was no. tools/sec/secret-scan is a manual tool and is not on the check, event, or stderr path.
+changes: lib/redact.py added; lib/catalog.py check_item fails a tool or chain file that matches a secret rule and skips executing it; lib/evolver.py log_event redacts string values; lib/runner.py _failure and tk _err/_emit_streams redact stderr; tests/test_redact.py added
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_redact -v
+Ran 5 tests in 0.249s
+OK
+
+./tk check demo.leak
+exit 1
+{"name":"demo.leak","ok":false,"errors":["secret in file (github_token); remove the credential from the file; fix: tk check demo.leak"]}
+secret_leaked False
+
+failing run_tool with a runtime slack token:
+stderr and events.jsonl contain *** and do not contain the token
+ordinary why "missing --repo" unchanged
+```
+decisions: mask is ***; rule names only in check errors; no SKILL.md change
+follow-ups: T1.2 fix contract. github_pat_ and ASIA keys are out of this rule set.

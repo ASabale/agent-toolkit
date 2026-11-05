@@ -19,6 +19,7 @@ from lib.catalog import output_keys
 from lib.chainref import resolve_expr, stringify
 from lib.evolver import log_event
 from lib.guards import tool_subprocess_env
+from lib.redact import redact_data
 
 _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no"}
@@ -333,7 +334,7 @@ def validate_and_build_env(
 
 
 def _failure(code: int, payload: dict) -> tuple[int, str, str]:
-    return code, "", _compact(payload)
+    return code, "", _compact(redact_data(payload))
 
 
 def _why_from_stderr(stderr: str) -> str:
