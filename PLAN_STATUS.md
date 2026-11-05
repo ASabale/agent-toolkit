@@ -192,3 +192,22 @@ OK
 ```
 decisions: keys are presence checks only. Braces reuse `output_keys`. Not merged to `main` (issue #226).
 follow-ups: T2.2 `@tk-requires` depends on T1.4 and does not share the dry-run key check.
+
+## T2.2 `@tk-requires`
+
+status: DONE
+branch: plan/t2.2-requires
+baseline: plan/t2.1-schema at e32875c
+result: optional header. `env:`, `bin:`, and `file:` (relative, inside the repo) are reads. Any other token is skipped and named under `skipped`. A skip is not a failure. No shell.
+verify-evidence: `env:PATH, bin:python3, file:tools/demo/echo` passes. A missing file fails and includes `fix:`. `rm <marker>` is skipped, the marker is not created, and `ok` stays true.
+changes: lib/catalog.py; CODING_STANDARDS.md; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.CheckItemTests.test_requires_file_inside_repo_passes tests.test_catalog.CheckItemTests.test_requires_missing_file_fails tests.test_catalog.CheckItemTests.test_requires_shell_is_skipped_not_run tests.test_catalog.CheckItemTests.test_check_item_accepts_valid_tool -v
+Ran 4 tests in 0.612s
+OK
+TK_NO_TELEMETRY=1 ./tk check --json
+ok true, checked 41, errors 0
+```
+decisions: a skip is recorded, not turned into a lint or a sandbox. Not merged to `main` (issue #227).
+follow-ups: T2.3 fixtures depend on T2.1.

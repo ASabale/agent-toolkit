@@ -401,6 +401,52 @@ class CheckItemTests(unittest.TestCase):
         for field in ("summary", "safety", "output", "example", "verified"):
             self.assertIn(field, blob)
 
+    def test_requires_file_inside_repo_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-requires: env:PATH, bin:python3, file:tools/demo/echo\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("skipped", result)
+
+    def test_requires_missing_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-requires: file:tools/demo/missing\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("tools/demo/missing", blob)
+        self.assertIn("fix:", blob)
+
+    def test_requires_shell_is_skipped_not_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-requires: not-a-predicate\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertTrue(result["ok"], result)
+        skipped = " ".join(result.get("skipped") or [])
+        self.assertIn("not-a-predicate", skipped)
+        self.assertIn("shell", skipped)
+        self.assertNotIn("sandbox", skipped.lower())
+
     def test_schema_keys_are_required_on_dry_run_object(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
