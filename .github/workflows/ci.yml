@@ -1,5 +1,10 @@
 name: ci
 
+# pull_request, not pull_request_target: fork PRs must not receive secrets.
+# contents: read is enough for checkout and tests.
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:

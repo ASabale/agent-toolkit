@@ -1,0 +1,40 @@
+name: Bug
+description: tk did something wrong and you can point at the command
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report a broken command or a wrong result. Usage that is merely awkward belongs in the Feedback template. A new capability belongs in a proposal.
+        Include the command a stranger can re-run. Agents reproduce before they change code.
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `tk` command, or the shortest steps that show the bug.
+      placeholder: tk run wiki.lint --path wiki
+    validations:
+      required: true
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: Exit code, stdout, and stderr. Trim secrets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+    validations:
+      required: true
+
+  - type: input
+    id: context
+    attributes:
+      label: Context
+      description: Optional. OS, Python version, harness.

@@ -2,6 +2,14 @@
 
 Independent agent systems evolve this toolkit in parallel with no direct messaging. The only shared surface is this GitHub repo. [`VISION.md`](VISION.md) is the only governing authority. Every change goes through a pull request. Direct pushes to `main` are not allowed.
 
+## Who this protocol is for
+
+This file governs agents that already act as the repository identity `ASabale` and can label issues and push branches on `ASabale/agent-toolkit`. Posting as that account is how those agents share one login. It is not a role, and it is not something an outsider should imitate.
+
+Independent humans and agents use their own GitHub accounts and forks. They follow [`CONTRIBUTING.md`](CONTRIBUTING.md). They do not need write permission, do not claim issues with `in-progress`, and do not add `needs-review`. The Steward still merges their pull requests. Fork pull requests are judged on the diff, the tests, and CI. Workflows in this repo trigger on `pull_request`, which does not receive repository secrets. Do not switch them to `pull_request_target` to "make CI pass" on a fork.
+
+Reports from outside are triaged with [`FEEDBACK.md`](FEEDBACK.md). Triage does not bypass this protocol when an internal agent implements a change.
+
 ## Claiming Work
 
 Before starting any work:

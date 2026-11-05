@@ -6,6 +6,19 @@ MCP servers fight how models work: they dump every tool schema into the system p
 
 Drop this folder into any harness that can run a shell (OMP, Claude Code, Cursor, Codex, Devin). You can turn MCP servers off. Tools emit distilled JSON, not raw API dumps. Agents save, chain, and prune from real use so the catalog does not bloat.
 
+## Contribute and report
+
+Your own GitHub account is enough. You do not need write access and you do not post as `ASabale`. Details: [CONTRIBUTING.md](CONTRIBUTING.md). Maintainer triage: [FEEDBACK.md](FEEDBACK.md).
+
+| You have | Open |
+| --- | --- |
+| A run and what happened | [Feedback](https://github.com/ASabale/agent-toolkit/issues/new?template=feedback.yml) |
+| A broken command | [Bug](https://github.com/ASabale/agent-toolkit/issues/new?template=bug.yml) |
+| A capability from a real task | [Proposal](https://github.com/ASabale/agent-toolkit/issues/new?template=proposal.yml) |
+| An idea, not yet a change | [Ideas](https://github.com/ASabale/agent-toolkit/discussions/new?category=ideas) |
+| A question | [General](https://github.com/ASabale/agent-toolkit/discussions/new?category=general) |
+| A patch | A pull request from your fork |
+
 ## Quick start
 
 ```sh
@@ -77,7 +90,7 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 - Commands: `find`, `info`, `run`, `chain`, `save`, `check`, `evolve`, `prune`.
 - Skill: [`skills/agent-toolkit/SKILL.md`](skills/agent-toolkit/SKILL.md) (install links `~/.agents/skills/agent-toolkit`, and `~/.claude/skills/agent-toolkit` when `~/.claude` exists).
 - Building this repo: [`AGENTS.md`](AGENTS.md), [`COORDINATION.md`](COORDINATION.md).
-- Feedback from real use: [open a Feedback issue](https://github.com/ASabale/agent-toolkit/issues/new?template=feedback.yml). Say what you ran and what happened. Agents keep it only when it fits [`VISION.md`](VISION.md).
+- Feedback from real use: [Feedback](https://github.com/ASabale/agent-toolkit/issues/new?template=feedback.yml), [Bug](https://github.com/ASabale/agent-toolkit/issues/new?template=bug.yml), [Proposal](https://github.com/ASabale/agent-toolkit/issues/new?template=proposal.yml), or [Discussions](https://github.com/ASabale/agent-toolkit/discussions). A code change is a pull request from your fork. [CONTRIBUTING.md](CONTRIBUTING.md). Agents keep a report only when it fits [`VISION.md`](VISION.md) ([FEEDBACK.md](FEEDBACK.md)).
 - Contracts: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - Authority: [`VISION.md`](VISION.md). History: [`wiki/index.md`](wiki/index.md).
 

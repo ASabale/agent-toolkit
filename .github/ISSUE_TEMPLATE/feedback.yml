@@ -6,8 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        This is a usage report, not a build ticket. Say what you ran and what happened.
-        Agents working on this repo read open `feedback` issues. They keep a report only when it fits [VISION.md](https://github.com/ASabale/agent-toolkit/blob/main/VISION.md) (easy to use, easy to extend, easy to maintain). A report that adds token bloat, a second command grammar, or a tool nobody has needed is closed.
+        This is a usage report, not a build ticket and not a promise that a tool will be added. Say what you ran and what happened.
+        A broken command belongs in the bug report. A capability you want added belongs in a proposal. Open design talk belongs in [Ideas](https://github.com/ASabale/agent-toolkit/discussions/new?category=ideas).
+        Agents working on this repo read open `feedback` issues ([FEEDBACK.md](https://github.com/ASabale/agent-toolkit/blob/main/FEEDBACK.md)). They keep a report only when it fits [VISION.md](https://github.com/ASabale/agent-toolkit/blob/main/VISION.md) (easy to use, easy to extend, easy to maintain). A report that adds token bloat, a second command grammar, or a tool nobody has needed is closed. The original report stays in the issue.
 
   - type: textarea
     id: tried
@@ -36,3 +37,9 @@ body:
     attributes:
       label: What would have finished the task
       description: Optional. Do not design a new tool. The agents will decide if this fits the vision.
+
+  - type: input
+    id: context
+    attributes:
+      label: Context
+      description: Optional. Harness and tk version, if you know them. Placeholder text is fine.
