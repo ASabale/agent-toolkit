@@ -42,3 +42,15 @@ tk find "search code": 777 chars
 ```
 decisions: docs/BASELINE.md path; suite includes wiki.lint from ci.yml
 follow-ups: T0.2 audit; local py39 and shellcheck not run
+
+## T0.2 Verify each suspected gap
+
+status: DONE
+branch: plan/t0.2-audit
+baseline: tk check 41/41 ok; unittest 455 OK; wiki.lint ok (T0.1, no code since)
+result: same (no product code changed)
+verify-evidence: AUDIT.md A1–A15. None of T1–T5 is ALREADY_DONE. Partial only: T2.5 already has TK_TIMEOUT (default 60s, exit 1); T5.2 already has keyword _score and one ranking test.
+changes: AUDIT.md added; PLAN_STATUS.md appended
+acceptance-output: AUDIT.md table has rows A1–A15 with file evidence. No task marked ALREADY_DONE.
+decisions: none new. Skill line-cap conflict from T0.1 still stands (skip T1.2's extra SKILL.md line).
+follow-ups: T1.1 next. T2.5 must extend the existing timeout, not add a second one. T4.1 tk doctor conflicts with an older "do not rebuild doctor" note; re-check VISION.md before that task.
