@@ -9,6 +9,7 @@
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,15 @@ _REPO_SHA = re.compile(r"ASabale/agent-toolkit@([0-9a-f]{7,40})")
 _LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _FIX = "tk run wiki.lint --path wiki"
 _SQUASH_FIX = "cite the squash commit on main"
+
+
+def _missing_directory_fix() -> str:
+    root = os.environ.get("TK_ROOT_DIR")
+    base = Path(root) if root else Path(__file__).resolve().parents[2]
+    wiki = (base / "wiki").resolve()
+    if wiki.is_dir():
+        return "tk run wiki.lint --path " + shlex.quote(str(wiki))
+    return _FIX
 
 
 def _link_target(raw: str) -> str:
@@ -169,7 +179,7 @@ def main() -> int:
         return dry_run_ok(path=display)
     root = Path(display)
     if not root.is_dir():
-        return fail("not_a_directory", f"{display} is not a directory", _FIX)
+        return fail("not_a_directory", f"{display} is not a directory", _missing_directory_fix())
     return emit(lint(root, display))
 
 
@@ -177,4 +187,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        raise SystemExit(fail("tool_error", str(exc), _FIX))
+        raise SystemExit(fail("tool_error", str(exc), _missing_directory_fix()))

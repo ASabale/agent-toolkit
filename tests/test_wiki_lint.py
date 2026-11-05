@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,31 @@ class WikiLintAncestorTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["bad_citations"], [])
+
+    def test_missing_directory_fix_runs_from_another_cwd(self):
+        missing = ROOT / "does-not-exist-wiki"
+        proc = _run_lint(missing)
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stderr)
+        self.assertEqual(payload["error"], "not_a_directory")
+        self.assertIn(str(missing), payload["why"])
+        expected_fix = "tk run wiki.lint --path " + shlex.quote(str(ROOT / "wiki"))
+        self.assertEqual(payload["fix"], expected_fix)
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
+            rerun = subprocess.run(
+                expected_fix,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                env=env,
+                check=False,
+            )
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertTrue(json.loads(rerun.stdout)["ok"])
 
 
 if __name__ == "__main__":
