@@ -80,3 +80,15 @@ ordinary why "missing --repo" unchanged
 ```
 decisions: mask is ***; rule names only in check errors; no SKILL.md change
 follow-ups: T1.2 fix contract. github_pat_ and ASIA keys are out of this rule set.
+
+## T1.2 Harden the fix contract
+
+status: SKIPPED
+branch: plan/t1.2-fix-contract
+baseline: unittest 460 OK on plan/t1.1-redact (455 plus tests.test_redact)
+result: no product code changed
+verify-evidence: A3 is real (`lib/runner.py` `_tool_failure` copies a tool stderr `fix`). Applying the plan's rule (fix must start with `tk ` and must not contain `;|&$`><` or a newline) fails pinned tests. `tests/test_error_hints.py` and `tests/test_gh_write_tools.py` require `gh auth login`. `tests/test_git_sync.py` requires `git … && tk run git.sync`. `tests/test_tool_sdk.py` requires a caller fix of `install it`. `tests/test_verify_flag.py` requires a prose fix containing `<`. `tests/test_runner.py` requires `TK_TIMEOUT=<n> tk …` and `TK_MAX_OUTPUT_BYTES=<n> tk … | tk run json.pick`. VISION.md wants that exact repair command. CODING_STANDARDS.md still forbids the extra SKILL.md line (51-line cap).
+changes: PLAN_STATUS.md only
+acceptance-output: not run; the task was skipped before commit. A trial of `safe_fix` was reverted after `tests.test_error_hints` failed on `gh auth login`.
+decisions: VISION and the existing tests win. Do not add the SKILL.md line. Do not replace the current fix strings.
+follow-ups: a later change can reject only a tool-supplied `fix` that adds a second command (`;`, unquoted `$()`, newline) while leaving every pinned fix string unchanged. That is narrower than this task.
