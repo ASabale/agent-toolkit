@@ -175,3 +175,20 @@ ok true, checked 41, errors [], sandbox False
 ```
 decisions: only the read-only live JSON finding is tagged `lint`. Header and dry-run failures stay enforcement errors. The tag is not a sandbox and the field is not named isolation. Not merged to `main` (issue #223).
 follow-ups: T1.6 trust label is next and does not share these lines.
+
+## T1.7 Narrow fix filter
+
+status: DONE
+branch: plan/t1.7-fix-filter
+baseline: unittest 472 OK on plan/t1.5-lint (380c1ca)
+result: a tool stderr `fix` with a newline, `;`, or unquoted `$()` is replaced by the tool example. `&&` and `|` stay. Pinned repair strings are not edited.
+verify-evidence: `tk run demo.echo; rm -rf /` does not appear in the failure payload. `gh auth login`, `git status && tk run git.sync`, `install it`, the prose verify hint, `TK_TIMEOUT=…`, and `TK_MAX_OUTPUT_BYTES=… | tk run json.pick` are unchanged. A quoted `'$(not expanded)'` stays.
+changes: lib/runner.py `_tool_failure`; tests/test_tool_fix_filter.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 TK_STATE_DIR=$(mktemp -d) python3 -m unittest tests.test_tool_fix_filter tests.test_error_hints tests.test_git_sync tests.test_runner tests.test_verify_flag tests.test_gh_write_tools tests.test_tool_sdk -q
+Ran 86 tests in 18.082s
+OK
+```
+decisions: only the tool-supplied `fix` is filtered. Runner-built fixes are untouched. Not merged to `main` (issue #225).
+follow-ups: T1.6 is on `plan/t1.6-trust` and does not share these lines.
