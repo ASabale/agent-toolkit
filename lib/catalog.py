@@ -886,6 +886,8 @@ def _header_errors(item: dict) -> list[str]:
             errors.append(f"invalid arg flag: {flag or '(empty)'}")
         elif flag == "--yes":
             errors.append("reserved flag: --yes; fix: drop @tk-arg --yes")
+        elif flag == "--confirm":
+            errors.append("reserved flag: --confirm; fix: drop @tk-arg --confirm")
         elif flag in {"--raw", "--dry-run"}:
             errors.append(f"reserved flag: {flag}")
         elif flag in seen_flags:

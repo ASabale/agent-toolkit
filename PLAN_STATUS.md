@@ -104,3 +104,30 @@ changes: ARCHITECTURE_REVIEW.md, THREAT_MODEL.md, DECISIONS.md, docs/HARDENING_P
 acceptance-output: not a behavior change. The amended plan is `docs/HARDENING_PLAN.md`. Human decisions are `DECISIONS.md` D1–D7. Defaults leave `--yes`, the catalog layout, MCP import, self-audit, and OS isolation unimplemented.
 decisions: VISION and the existing `@tk-*` contract stay. Plan hash is integrity, not authorization. Destructive `--yes` removal waits on D1. No `tomllib`. No `TK_HOME`. No silent project override. `tk doctor` stays unbuilt. T0.4–T0.7 are the sections of this review, not extra branches. `arch/secure-seams` was not merged; its guard work is already on this tree.
 follow-ups: next implementation is T1.3 plan integrity only, on a new branch. Do not start T1.3b, T4.3, T4.6, or an isolator until the matching decision in DECISIONS.md is accepted. T1.7 is the narrow fix filter left over from T1.2.
+
+## T1.3 Plan integrity
+
+status: DONE
+branch: plan/t1.3-plan-integrity
+baseline: unittest 460 OK on plan/t1.1-redact; tk check 41/41
+result: unittest 467 OK (460 plus tests.test_plan_id 7); tk check 41/41; wiki.lint ok
+verify-evidence: a changed `--path` changes `plan_id`. A stale `--confirm` exits 2 with `plan_mismatch` and does not create the file. A matching `--confirm` through `tk run` creates the file and returns `{}`. `--yes` still executes. `apply` still ends with `--yes`. New error text does not say the run was permitted by the hash.
+changes: lib/runner.py adds `plan_id` and `confirm` on the unconfirmed write payload and checks `--confirm`; tk passes `confirm_id`; lib/catalog.py reserves `--confirm`; tests/test_plan_id.py added
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 TK_STATE_DIR=$(mktemp -d) python3 -m unittest tests.test_plan_id tests.test_safe_writes tests.test_gh_write_tools -v
+Ran 23 tests in 3.915s
+OK
+
+TK_NO_TELEMETRY=1 TK_STATE_DIR=$(mktemp -d) python3 -m unittest discover -s tests
+Ran 467 tests in 163.823s
+OK
+
+TK_NO_TELEMETRY=1 ./tk check --json
+ok true, checked 41, errors []
+
+TK_NO_TELEMETRY=1 ./tk run wiki.lint --path wiki
+{"ok": true}
+```
+decisions: `plan_id` checks that the later command matches the dry-run plan. It does not change `--yes` (D1 default). In-process `confirmed=True` still executes. No SKILL.md change.
+follow-ups: T1.3b waits on an explicit D1 acceptance. Do not start T4.3, T4.6, or an isolator until that decision row is accepted. T1.7 can follow and does not share these lines.

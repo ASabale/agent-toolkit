@@ -7,6 +7,7 @@ stdout is compact JSON. Failures are single-line JSON on stderr
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import math
 import os
@@ -152,16 +153,26 @@ def _is_yes_token(token: str) -> bool:
     return token == "--yes" or token.startswith("--yes=")
 
 
+def _is_confirm_token(token: str) -> bool:
+    return token == "--confirm" or token.startswith("--confirm=")
+
+
 def _is_global_modifier(token: str) -> bool:
-    return _is_dry_run_token(token) or _is_raw_token(token) or _is_yes_token(token)
+    return (
+        _is_dry_run_token(token)
+        or _is_raw_token(token)
+        or _is_yes_token(token)
+        or _is_confirm_token(token)
+    )
 
 
 def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str, str], bool, list[str]]:
-    """Extract ``--dry-run``, ignore ``--raw`` and ``--yes``, parse ``--flag`` values, and stray tokens.
+    """Extract ``--dry-run``, ignore ``--raw``, ``--yes``, and ``--confirm``.
 
     When ``item`` is set, boolean args only swallow a following token that is
     an explicit bool literal. Other declared (and unknown) flags take the next
-    token even when it starts with ``-``, except ``--dry-run``, ``--raw``, and ``--yes``.
+    token even when it starts with ``-``, except ``--dry-run``, ``--raw``,
+    ``--yes``, and ``--confirm``. A bare ``--confirm`` consumes its plan id.
     """
     flags: dict[str, str] = {}
     positional: list[str] = []
@@ -180,6 +191,15 @@ def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str
             index += 1
             continue
         if _is_raw_token(token) or _is_yes_token(token):
+            index += 1
+            continue
+        if token == "--confirm":
+            if index + 1 < len(argv) and not _is_global_modifier(argv[index + 1]):
+                index += 2
+            else:
+                index += 1
+            continue
+        if token.startswith("--confirm="):
             index += 1
             continue
         if token.startswith("--"):
@@ -212,6 +232,36 @@ def parse_cli_flags(argv: list[str], item: dict | None = None) -> tuple[dict[str
         positional.append(token)
         index += 1
     return flags, dry_run, positional
+
+
+def confirm_id_from_argv(argv: list[str]) -> str | None:
+    """Return the ``--confirm`` value.
+
+    ``None`` when the flag is absent. ``""`` when it is present without a value.
+    """
+    found = False
+    value = ""
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--confirm":
+            found = True
+            if index + 1 < len(argv) and not _is_global_modifier(argv[index + 1]):
+                value = argv[index + 1]
+                index += 2
+                continue
+            value = ""
+            index += 1
+            continue
+        if token.startswith("--confirm="):
+            found = True
+            value = token.split("=", 1)[1]
+            index += 1
+            continue
+        index += 1
+    if not found:
+        return None
+    return value
 
 
 def validate_and_build_env(
@@ -511,11 +561,45 @@ def _apply_command(item: dict, flags: dict[str, str]) -> str:
     return _fix_command(item, flags) + " --yes"
 
 
-def _safe_write_result(item: dict, flags: dict[str, str], payload: object) -> dict:
+def _plan_id(name: str, flags: dict[str, str], plan: list) -> str:
+    """8 hex chars over name, sorted flags, and the dry-run plan. Not permission."""
+    body = {
+        "name": name,
+        "flags": [[flag, flags[flag]] for flag in sorted(flags)],
+        "plan": plan,
+    }
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+
+
+def _confirm_command(item: dict, flags: dict[str, str], plan_id: str) -> str:
+    return _fix_command(item, flags) + " --confirm " + plan_id
+
+
+def _plan_list(payload: object) -> list:
     plan = payload.get("plan") if isinstance(payload, dict) else None
     if not isinstance(plan, list):
-        plan = []
-    return {"dry_run": True, "plan": plan, "apply": _apply_command(item, flags)}
+        return []
+    return plan
+
+
+def _safe_write_result(item: dict, flags: dict[str, str], payload: object) -> dict:
+    plan = _plan_list(payload)
+    plan_id = _plan_id(str(item.get("name") or ""), flags, plan)
+    return {
+        "dry_run": True,
+        "plan": plan,
+        "plan_id": plan_id,
+        "apply": _apply_command(item, flags),
+        "confirm": _confirm_command(item, flags, plan_id),
+    }
+
+
+def _plan_mismatch(item: dict, flags: dict[str, str], why: str) -> tuple[int, str, str]:
+    return _failure(
+        2,
+        {"error": "plan_mismatch", "why": why, "fix": _fix_command(item, flags)},
+    )
 
 
 def _chain_writes(root_dir: Path, chain_item: dict) -> bool:
@@ -542,15 +626,65 @@ def run_tool(
     stdin_data: str | None = None,
     confirmed: bool = True,
     raw: bool = False,
+    confirm_id: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
     ``confirmed`` defaults to true so in-process callers keep today's behavior.
     ``tk run`` passes false unless argv contains ``--yes``. A mutating or
     destructive tool then runs as a dry-run and returns ``plan`` plus ``apply``.
+    ``confirm_id`` reruns that dry-run and executes only when the id matches.
+    ``--yes`` (``confirmed`` true) ignores ``confirm_id``.
     """
     try:
-        gated = (not confirmed) and _writes(item)
+        user_dry_run = dry_run
+        writer = _writes(item)
+        if writer and not confirmed and confirm_id is not None and not user_dry_run:
+            if confirm_id == "":
+                return _record_and_return(
+                    root_dir,
+                    item,
+                    False,
+                    _plan_mismatch(item, flags, "--confirm needs a plan_id"),
+                )
+            code, out, err = run_tool(
+                root_dir,
+                item,
+                flags,
+                positional,
+                False,
+                stdin_data,
+                confirmed=False,
+                raw=raw,
+                confirm_id=None,
+            )
+            if code != 0:
+                return code, out, err
+            try:
+                probed = json.loads(out)
+            except json.JSONDecodeError:
+                probed = None
+            expected = probed.get("plan_id") if isinstance(probed, dict) else None
+            if not isinstance(expected, str) or expected != confirm_id:
+                shown = expected if isinstance(expected, str) else ""
+                return _record_and_return(
+                    root_dir,
+                    item,
+                    False,
+                    _plan_mismatch(item, flags, f"plan_id is {shown}, got {confirm_id}"),
+                )
+            return run_tool(
+                root_dir,
+                item,
+                flags,
+                positional,
+                False,
+                stdin_data,
+                confirmed=True,
+                raw=raw,
+                confirm_id=None,
+            )
+        gated = (not confirmed) and writer
         if gated:
             dry_run = True
         ok, built, err = validate_and_build_env(
@@ -708,14 +842,61 @@ def run_chain(
     positional: list[str] | None = None,
     dry_run: bool = False,
     confirmed: bool = True,
+    confirm_id: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate chain flags, resolve step references, and stop on the first error.
 
     A chain that writes, or that calls a mutating or destructive step, follows
     the same ``--yes`` rule as ``run_tool`` when ``confirmed`` is false.
+    ``confirm_id`` executes that chain only when it matches the dry-run id.
     """
     try:
-        gated = (not confirmed) and _chain_writes(root_dir, chain_item)
+        user_dry_run = dry_run
+        writer = _chain_writes(root_dir, chain_item)
+        if writer and not confirmed and confirm_id is not None and not user_dry_run:
+            if confirm_id == "":
+                return _record_and_return(
+                    root_dir,
+                    chain_item,
+                    False,
+                    _plan_mismatch(chain_item, flags, "--confirm needs a plan_id"),
+                )
+            code, out, err = run_chain(
+                root_dir,
+                chain_item,
+                flags,
+                positional,
+                False,
+                confirmed=False,
+                confirm_id=None,
+            )
+            if code != 0:
+                return code, out, err
+            try:
+                probed = json.loads(out)
+            except json.JSONDecodeError:
+                probed = None
+            expected = probed.get("plan_id") if isinstance(probed, dict) else None
+            if not isinstance(expected, str) or expected != confirm_id:
+                shown = expected if isinstance(expected, str) else ""
+                return _record_and_return(
+                    root_dir,
+                    chain_item,
+                    False,
+                    _plan_mismatch(
+                        chain_item, flags, f"plan_id is {shown}, got {confirm_id}"
+                    ),
+                )
+            return run_chain(
+                root_dir,
+                chain_item,
+                flags,
+                positional,
+                False,
+                confirmed=True,
+                confirm_id=None,
+            )
+        gated = (not confirmed) and writer
         if gated:
             dry_run = True
         plans: list = []
@@ -816,8 +997,15 @@ def run_chain(
                 plans.extend(prev["plan"])
             last_stdout = stdout
         if gated:
+            plan_id = _plan_id(str(chain_item.get("name") or ""), flags, plans)
             last_stdout = _compact(
-                {"dry_run": True, "plan": plans, "apply": _apply_command(chain_item, flags)}
+                {
+                    "dry_run": True,
+                    "plan": plans,
+                    "plan_id": plan_id,
+                    "apply": _apply_command(chain_item, flags),
+                    "confirm": _confirm_command(chain_item, flags, plan_id),
+                }
             )
         return _record_and_return(root_dir, chain_item, dry_run, (0, last_stdout, ""))
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback

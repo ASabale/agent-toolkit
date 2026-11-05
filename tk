@@ -224,14 +224,16 @@ def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chain
         return 2
     flags, dry_run, positional = runner.parse_cli_flags(flag_argv, item)
     confirmed = any(token == "--yes" or token.startswith("--yes=") for token in flag_argv)
+    confirm_id = runner.confirm_id_from_argv(flag_argv)
     raw = any(token == "--raw" or token.startswith("--raw=") for token in flag_argv)
     if item.get("kind") == "chain":
         code, out, err = runner.run_chain(
-            ROOT, item, flags, positional, dry_run, confirmed=confirmed
+            ROOT, item, flags, positional, dry_run, confirmed=confirmed, confirm_id=confirm_id
         )
     else:
         code, out, err = runner.run_tool(
-            ROOT, item, flags, positional, dry_run, _stdin_data(), confirmed=confirmed, raw=raw
+            ROOT, item, flags, positional, dry_run, _stdin_data(),
+            confirmed=confirmed, raw=raw, confirm_id=confirm_id,
         )
     _emit_streams(out or "", err or "")
     return int(code)
