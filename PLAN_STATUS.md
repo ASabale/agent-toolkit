@@ -155,3 +155,24 @@ TK_NO_TELEMETRY=1 ./tk check --json
 ```
 decisions: bare token is a PATH command; `env:NAME` is an environment variable. No TOML. No confinement. This branch is stacked on `plan/t1.3-plan-integrity` and is not merged to `main` (issue #222).
 follow-ups: T2.1 and T2.2 depend on this header. T1.5 is independent.
+
+## T1.6 Trust label
+
+status: DONE
+branch: plan/t1.6-trust
+baseline: unittest 471 OK; tk check 41/41 (T1.4). Branched beside T1.5 because that commit was still in its hook.
+result: `tk info` prints `trust: draft` unless the caller sets `check_passed` after a real check. `@tk-verified: signed` stays `draft` and fails check. No signature library.
+verify-evidence: `trust_label("signed", check_passed=True)` is `draft`. A date without a check is `draft`. `none` after a passed check is `check_passed`. Info text does not contain `trust: signed` or the word signature. `tk info env.check` shows `verified: 2026-11-04` and `trust: draft`.
+changes: lib/catalog.py `trust_label` and the info line; check rejects `signed` and any other non-date; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.DiscoverAndFindTests.test_format_info_output_lists_contract_fields tests.test_catalog.DiscoverAndFindTests.test_signed_header_stays_draft_and_fails_check -q
+Ran 2 tests in 0.173s
+OK
+
+TK_NO_TELEMETRY=1 ./tk info env.check
+verified: 2026-11-04
+trust: draft
+```
+decisions: a header date is not `check_passed`. `check_passed` is only when the caller passes that flag after check exited 0. `signed` never wins. Not merged to `main` (issue #224).
+follow-ups: rebase onto `plan/t1.5-lint` once that commit exists. T1.7 is the narrow fix filter.
