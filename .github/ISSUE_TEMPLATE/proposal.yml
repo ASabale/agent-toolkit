@@ -1,0 +1,40 @@
+name: Proposal
+description: A capability or workflow that finished a real task
+title: "Proposal: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a capability or a saved workflow. This is not a commitment to build it.
+        An agent may turn a useful proposal into a work item. Proposals that need a tool nobody has used, a second command grammar, or more tokens in context are declined. Cite the task you already did.
+
+  - type: textarea
+    id: job
+    attributes:
+      label: The job
+      description: What you were trying to finish, in one or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: The commands you already ran, how often this repeats, or the Feedback issue that showed the same gap. Wishes without a task are not enough.
+    validations:
+      required: true
+
+  - type: textarea
+    id: vision
+    attributes:
+      label: VISION.md
+      description: Which pillar this serves (easy to use, easy to extend, easy to maintain) and what it refuses to add.
+    validations:
+      required: true
+
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Smallest change
+      description: Optional. Name the existing tool to extend, or say that none fits. Do not paste a full implementation.

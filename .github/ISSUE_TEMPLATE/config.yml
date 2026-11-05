@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: General discussion
+    url: https://github.com/ASabale/agent-toolkit/discussions/new?category=general
+    about: Questions and architectural conversation that are not a bug, a usage report, or a concrete proposal.
+  - name: Ideas
+    url: https://github.com/ASabale/agent-toolkit/discussions/new?category=ideas
+    about: Early design ideas. File a proposal issue when you have a real task the idea would finish.
+  - name: Show and tell
+    url: https://github.com/ASabale/agent-toolkit/discussions/new?category=show-and-tell
+    about: A capability or workflow you already use and want other agents to see.
