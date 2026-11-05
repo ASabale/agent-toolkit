@@ -175,3 +175,20 @@ ok true, checked 41, errors [], sandbox False
 ```
 decisions: only the read-only live JSON finding is tagged `lint`. Header and dry-run failures stay enforcement errors. The tag is not a sandbox and the field is not named isolation. Not merged to `main` (issue #223).
 follow-ups: T1.6 trust label is next and does not share these lines.
+
+## T2.1 `@tk-schema`
+
+status: DONE
+branch: plan/t2.1-schema
+baseline: unittest 472 OK on plan/t1.5-lint (380c1ca); tk check 41/41
+result: optional header. Dry-run JSON objects must contain each declared top-level key. No schema package. Tools with no header are unchanged.
+verify-evidence: `@tk-schema: ok` passes when the object has `ok`. `@tk-schema: {ok, count}` fails and names `count` plus a `fix`.
+changes: lib/catalog.py parses `@tk-schema` and checks keys after the existing dry-run smoke; CODING_STANDARDS.md; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.CheckItemTests.test_schema_keys_are_required_on_dry_run_object tests.test_catalog.CheckItemTests.test_schema_reports_a_missing_dry_run_key tests.test_catalog.CheckItemTests.test_check_item_accepts_valid_tool -v
+Ran 3 tests in 0.427s
+OK
+```
+decisions: keys are presence checks only. Braces reuse `output_keys`. Not merged to `main` (issue #226).
+follow-ups: T2.2 `@tk-requires` depends on T1.4 and does not share the dry-run key check.

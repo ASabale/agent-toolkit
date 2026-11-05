@@ -401,6 +401,52 @@ class CheckItemTests(unittest.TestCase):
         for field in ("summary", "safety", "output", "example", "verified"):
             self.assertIn(field, blob)
 
+    def test_schema_keys_are_required_on_dry_run_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-schema: ok\n",
+                1,
+            )
+            body = """if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\\n' '{"dry_run":true,"ok":true}'
+  exit 0
+fi
+printf '%s\\n' '{"ok":true}'
+"""
+            text = text.replace(
+                """if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\\n' '{"dry_run":true}'
+  exit 0
+fi
+printf '%s\\n' '{"ok":true}'
+""",
+                body,
+                1,
+            )
+            _write(path, text, executable=True)
+            ok = check_item(root, "demo.echo")
+        self.assertTrue(ok["ok"], ok)
+
+    def test_schema_reports_a_missing_dry_run_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-schema: {ok, count}\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("count", blob)
+        self.assertIn("fix:", blob)
+        self.assertNotIn("sandbox", blob.lower())
+
     def test_check_item_non_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

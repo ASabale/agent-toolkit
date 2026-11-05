@@ -44,6 +44,7 @@ def _empty_tool(path: Path) -> dict:
         "example": "",
         "verified": "",
         "needs": [],
+        "schema": [],
         "path": resolved,
     }
 
@@ -139,6 +140,8 @@ def parse_tool_header(path: Path) -> dict:
                 item["verified"] = value
             elif key == "@tk-needs":
                 item["needs"].extend(part for part in re.split(r"[\s,]+", value) if part)
+            elif key == "@tk-schema":
+                item["schema"].extend(_schema_keys(value))
     except Exception:
         return item
     return item
@@ -696,11 +699,31 @@ def _dry_run_plan_error(payload: object, safety: str) -> str | None:
     return None
 
 
+def _schema_keys(value: str) -> list[str]:
+    """Top-level names from ``@tk-schema``. Braces reuse the output-key parser."""
+    text = value.strip()
+    if not text:
+        return []
+    if "{" in text:
+        keys = output_keys(text)
+        return list(keys or [])
+    return [part for part in re.split(r"[\s,]+", text) if part]
+
+
+def _schema_error(payload: dict, schema: list[str]) -> str | None:
+    missing = [key for key in schema if key not in payload]
+    if not missing:
+        return None
+    shown = ", ".join(missing)
+    return f"dry-run missing schema key: {shown}; fix: include {shown} in the dry-run JSON object"
+
+
 def _dry_run_error(
     path: Path,
     args: list[dict],
     safety: str = "",
     root_dir: Path | None = None,
+    schema: list[str] | None = None,
 ) -> str | None:
     env = tool_subprocess_env()
     for key in list(env):
@@ -754,6 +777,10 @@ def _dry_run_error(
         return 'dry-run payload is not marked "dry_run": true'
     if isinstance(payload.get("truncated"), bool):
         return 'dry-run "truncated" must be an int (omitted count), not bool'
+    if schema:
+        missing = _schema_error(payload, schema)
+        if missing:
+            return missing
     return None
 
 
@@ -1177,6 +1204,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                         item.get("args") or [],
                         safety,
                         root_dir=root_dir,
+                        schema=list(item.get("schema") or []),
                     )
                     if dry:
                         errors.append(dry)
