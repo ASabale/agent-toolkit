@@ -884,7 +884,34 @@ class RunChainTests(unittest.TestCase):
                 code, out, err = run_chain(root, chain, {"--id": "a9"})
         self.assertEqual(code, 4)
         self.assertEqual(out, "")
-        self.assertEqual(json.loads(err)["error"], "tool_failed")
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "tool_failed")
+        self.assertEqual(
+            payload["why"],
+            "chain demo.pipe stopped at step 1/2 (demo.boom): step failed",
+        )
+        self.assertEqual(payload["fix"], "tk run demo.boom")
+        self.assertFalse(marker.exists())
+
+    def test_second_step_failure_names_step_and_skips_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog, marker = self._tools(root)
+            chain = self._chain()
+            chain["steps"] = [
+                {"tool": "demo.first", "args": {"--id": "$input.id"}},
+                {"tool": "demo.boom", "args": {}},
+                {"tool": "demo.later", "args": {}},
+            ]
+            with patch("lib.catalog.discover_catalog", return_value=catalog):
+                code, out, err = run_chain(root, chain, {"--id": "a9"})
+        self.assertEqual(code, 4)
+        payload = json.loads(err)
+        self.assertIn(
+            "chain demo.pipe stopped at step 2/3 (demo.boom):",
+            payload["why"],
+        )
+        self.assertEqual(payload["fix"], "tk run demo.boom")
         self.assertFalse(marker.exists())
 
     def test_chain_flag_validation_and_unknown_tool(self):

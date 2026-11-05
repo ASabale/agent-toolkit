@@ -78,7 +78,7 @@ Agents chain tools in two ways:
    tk run gh.pr-checks --repo owner/repo --pr 42 | jq '.[] | select(.conclusion == "failure")'
    ```
 2. **Saved Deterministic Chains (`chains/<name>.json`)**:
-   A declarative list of steps where outputs map cleanly into downstream `--flag` inputs via JSONPath/jq expressions. Once saved, a chain appears in `tk find` identically to an atomic tool—collapsing multi-step workflows into one deterministic call for smaller models.
+   A declarative list of steps where outputs map cleanly into downstream `--flag` inputs via JSONPath/jq expressions. Once saved, a chain appears in `tk find` identically to an atomic tool—collapsing multi-step workflows into one deterministic call for smaller models. A failing step stops the chain and prefixes `why` with `chain <name> stopped at step <i>/<n> (<tool>): `.
 
 ---
 
