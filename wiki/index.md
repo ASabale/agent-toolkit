@@ -29,6 +29,7 @@ On 2026-11-05, after that read, `git fetch` moved `origin/main` to `ASabale/agen
 - [Benchmark](subsystems/benchmark.md) — On 2026-11-03, `ASabale/agent-toolkit@257f1a8` had no MCP-vs-tk measurement; this page records the first offline fixture run.
 - [0010 — Safe writes by default](decisions/0010-safe-writes-by-default.md) — On 2026-11-04, `ASabale/agent-toolkit@04844f8` still ran mutating tools immediately; `--yes` is now required before they change anything.
 - [0011 — Steward handoff proposal](decisions/0011-steward-handoff.md) — On 2026-11-05, at `ASabale/agent-toolkit@d273be3`, this page proposes who may merge and how the Steward role moves. It is not in force. `COORDINATION.md` is unchanged.
+- [0012 — Capability pack contract](decisions/0012-capability-pack.md) — On 2026-11-05, at `ASabale/agent-toolkit@d273be3`, a pack is a git directory of `tools/` files and optional `chains/*.json`. No installer was added.
 
 ## Reports
 
