@@ -81,6 +81,16 @@ Read next: [VISION.md](VISION.md) (why this exists), [ARCHITECTURE.md](ARCHITECT
 - Contracts: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - Authority: [`VISION.md`](VISION.md). History: [`wiki/index.md`](wiki/index.md).
 
+## Platforms
+
+Python 3.9 or newer, using the system `python3`. `./install.sh` exits non-zero when `python3` is missing. `gh` is optional. At `ASabale/agent-toolkit@cbb13c3`, `.github/workflows/ci.yml` runs the suite on `ubuntu-latest` and `macos-latest`, and runs the unit tests again on Python 3.9.
+
+## Troubleshooting
+
+- `tk` is not on `PATH` after install: `export PATH="$HOME/.local/bin:$PATH"`.
+- A mutating or destructive run returned `plan` and changed nothing: run the same command with `--yes`. See [SECURITY.md](SECURITY.md).
+- `stderr` is one JSON object with `error`, `why`, and `fix`: run the `fix` command.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
