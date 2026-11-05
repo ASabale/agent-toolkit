@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import stat
 import sys
 import tempfile
@@ -321,6 +322,34 @@ class CheckItemTests(unittest.TestCase):
         blob = " ".join(result["errors"])
         self.assertIn("missing env: TK_NEEDS_ABSENT_FOR_TEST", blob)
         self.assertIn("fix:", blob)
+
+    def test_read_only_lint_is_not_a_sandbox_and_run_still_executes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "ran"
+            path = root / "tools" / "demo" / "echo"
+            body = (
+                "if [[ \"${TK_DRY_RUN:-0}\" == \"1\" ]]; then\n"
+                "  printf '%s\\n' '{\"dry_run\":true}'\n"
+                "  exit 0\n"
+                "fi\n"
+                f"printf '%s\\n' ran > {shlex.quote(str(marker))}\n"
+                "printf '%s\\n' 'plain-text'\n"
+            )
+            _write(path, _bash_tool("demo.echo", "Echo a target id", body=body), executable=True)
+            result = check_item(root, "demo.echo")
+            blob = " ".join(result["errors"])
+            self.assertIn("lint:", blob)
+            self.assertNotIn("sandbox", blob.lower())
+            self.assertNotIn("isolation", blob.lower())
+            self.assertTrue(result.get("lint"))
+            marker.unlink(missing_ok=True)
+            item = parse_tool_header(path)
+            code, _out, err = run_tool(root, item, {"--target": "example"})
+            self.assertTrue(marker.is_file())
+            self.assertNotEqual(code, 0)
+            self.assertNotIn("sandbox", err.lower())
+            self.assertNotIn("isolation", err.lower())
 
     def test_check_item_needs_present_bin_and_env_stay_ok(self):
         with tempfile.TemporaryDirectory() as tmp:

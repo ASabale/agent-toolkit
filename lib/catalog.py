@@ -1153,6 +1153,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         item = preloaded if preloaded is not None else (load_chain(path) if is_chain else parse_tool_header(path))
         name = str(item.get("name") or path.stem)
         errors: list[str] = []
+        lint_hits: list[str] = []
         secret_rules = _file_secret_rules(path)
         if not is_chain and not os.access(path, os.X_OK):
             errors.append(f"not executable: {path}")
@@ -1189,7 +1190,10 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                             root_dir=root_dir,
                         )
                         if live:
-                            errors.append(live)
+                            # Tag the read-only stdout lint. It is not enforcement.
+                            finding = f"lint: {live}"
+                            errors.append(finding)
+                            lint_hits.append(finding)
         else:
             catalog = discover_catalog(root_dir)
             steps = item.get("steps") or []
@@ -1216,7 +1220,10 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         errors.extend(_duplicate_name_errors(root_dir, str(item.get("name") or "")))
         if errors and not any("fix: tk " in str(err) for err in errors):
             errors.append(f"fix: tk check {name} --json")
-        return {"name": name, "ok": not errors, "errors": errors}
+        payload = {"name": name, "ok": not errors, "errors": errors}
+        if lint_hits:
+            payload["lint"] = lint_hits
+        return payload
     except Exception as exc:
         return {"name": label, "ok": False, "errors": [f"internal_error: {exc}"]}
 

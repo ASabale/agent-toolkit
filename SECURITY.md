@@ -6,3 +6,4 @@
 - Leave credentials in the caller environment. A GitHub tool uses the existing `gh` login. It does not store a token in the catalog.
 - A mutating or destructive `tk run` returns `plan` and does not change anything until the same command includes `--yes`.
 - Check a tool with `tk check <name>` before you rely on it. Do not run a script you have not read.
+- The lint is not a sandbox; tools run as the user.

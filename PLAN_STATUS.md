@@ -155,3 +155,23 @@ TK_NO_TELEMETRY=1 ./tk check --json
 ```
 decisions: bare token is a PATH command; `env:NAME` is an environment variable. No TOML. No confinement. This branch is stacked on `plan/t1.3-plan-integrity` and is not merged to `main` (issue #222).
 follow-ups: T2.1 and T2.2 depend on this header. T1.5 is independent.
+
+## T1.5 Lint is not a sandbox
+
+status: DONE
+branch: plan/t1.5-lint
+baseline: unittest 471 OK; tk check 41/41 (T1.4)
+result: a read-only stdout finding is tagged `lint:`. `tk run` still executes the tool. `SECURITY.md` says the lint is not a sandbox and tools run as the user.
+verify-evidence: the fixture prints plain text after a JSON dry-run. `tk check` reports `lint:` and does not say `sandbox` or `isolation`. Deleting the marker and calling `run_tool` creates it again. Real catalog check JSON does not contain `sandbox`.
+changes: lib/catalog.py tags the read-only live JSON finding and adds a `lint` list; SECURITY.md one sentence; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.CheckItemTests.test_read_only_lint_is_not_a_sandbox_and_run_still_executes tests.test_catalog.CheckItemTests.test_check_item_accepts_valid_tool -q
+Ran 2 tests in 0.321s
+OK
+
+TK_NO_TELEMETRY=1 ./tk check --json
+ok true, checked 41, errors [], sandbox False
+```
+decisions: only the read-only live JSON finding is tagged `lint`. Header and dry-run failures stay enforcement errors. The tag is not a sandbox and the field is not named isolation. Not merged to `main` (issue #223).
+follow-ups: T1.6 trust label is next and does not share these lines.
