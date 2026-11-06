@@ -112,7 +112,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertFalse(target.exists())
 
-    def test_destructive_without_yes_does_not_write_and_yes_warns(self) -> None:
+    def test_destructive_yes_does_not_write(self) -> None:
         target = self.root / "sentinel"
         self.tool.write_text(_WRITE.replace('touch "$1"', f'touch "{target}"'), encoding="utf-8")
         self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
@@ -123,11 +123,10 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(json.loads(err)["error"], "policy_denied")
         self.assertFalse(target.exists())
         code, out, err = run_tool(self.root, item, {}, confirmed=True)
-        self.assertEqual(code, 0, err)
-        self.assertTrue(target.is_file())
-        self.assertIn("deprecated", err)
-        audit = (Path(self.state) / "audit.jsonl").read_text(encoding="utf-8")
-        self.assertIn('"via":"yes"', audit)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "policy_denied")
+        self.assertFalse(target.exists())
+        self.assertNotIn("deprecated", err)
 
     def test_name_allow_does_not_survive_a_byte_change(self) -> None:
         target = self.root / "sentinel"
@@ -230,3 +229,166 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(json.loads(err)["error"], "policy_denied")
         self.assertFalse(marker.exists())
+
+    def test_deny_wins_over_hash_allow_for_cli_and_chain(self) -> None:
+        import subprocess
+        import sys
+
+        target = self.root / "sentinel"
+        self.tool.write_text(_WRITE.replace('touch "$1"', f'touch "{target}"'), encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        digest = _sha256_file(self.tool)
+        self._write_policy(
+            [
+                {"rank": "hash", "sha256": digest, "decision": "allow"},
+                {"rank": "name", "name": "lab.policy", "decision": "deny"},
+            ]
+        )
+        code, out, err = run_tool(self.root, _tool(self.tool, "mutating"), {})
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "policy_denied")
+        self.assertFalse(target.exists())
+        repo = Path(__file__).resolve().parents[1]
+        tool_dir = repo / "tools" / "zz299"
+        tool_dir.mkdir(parents=True, exist_ok=True)
+        script = tool_dir / "deny"
+        script.write_text(
+            "#!/bin/sh\n"
+            "# @tk-name: zz299.deny\n"
+            "# @tk-summary: policy fixture\n"
+            "# @tk-safety: mutating\n"
+            "# @tk-output: json | object\n"
+            "# @tk-example: tk run zz299.deny\n"
+            "# @tk-verified: none\n"
+            "if [ \"${TK_DRY_RUN:-0}\" = 1 ]; then\n"
+            "  printf '%s\\n' '{\"dry_run\":true,\"plan\":[\"noop\"]}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "printf '%s\\n' '{}'\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        try:
+            write_state_json(
+                repo,
+                "policy.json",
+                {
+                    "version": 1,
+                    "classes": {
+                        "read-only": "allow",
+                        "mutating": "confirm",
+                        "destructive": "deny",
+                    },
+                    "rules": [
+                        {"rank": "hash", "sha256": _sha256_file(script), "decision": "allow"},
+                        {"rank": "name", "name": "zz299.deny", "decision": "deny"},
+                    ],
+                },
+            )
+            env = os.environ.copy()
+            env["TK_NO_TELEMETRY"] = "1"
+            env["TK_STATE_DIR"] = self.state
+            # policy was written via write_state_json(repo) which uses TK_STATE_DIR
+            ran = subprocess.run(
+                [sys.executable, str(repo / "tk"), "run", "zz299.deny"],
+                capture_output=True,
+                text=True,
+                cwd=repo,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(ran.returncode, 2, ran.stderr)
+            self.assertEqual(json.loads(ran.stderr)["error"], "policy_denied")
+        finally:
+            script.unlink(missing_ok=True)
+            if tool_dir.exists():
+                tool_dir.rmdir()
+        chain = {
+            "kind": "chain",
+            "name": "lab.chain",
+            "safety": "read-only",
+            "example": "tk run lab.chain",
+            "args": [],
+            "steps": [{"tool": "lab.policy", "args": {}}],
+        }
+        from unittest.mock import patch
+
+        self._write_policy(
+            [
+                {"rank": "hash", "sha256": digest, "decision": "allow"},
+                {"rank": "name", "name": "lab.policy", "decision": "deny"},
+            ]
+        )
+        catalog = {"lab.policy": _tool(self.tool, "mutating")}
+        with patch("lib.catalog.discover_catalog", return_value=catalog):
+            code, out, err = run_chain(self.root, chain, {}, confirmed=True)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "policy_denied")
+        self.assertFalse(target.exists())
+
+    def test_yes_does_not_satisfy_hash_confirm(self) -> None:
+        target = self.root / "sentinel"
+        self.tool.write_text(_WRITE.replace('touch "$1"', f'touch "{target}"'), encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        self._write_policy(
+            [{"rank": "hash", "sha256": _sha256_file(self.tool), "decision": "confirm"}]
+        )
+        code, out, err = run_tool(self.root, _tool(self.tool, "mutating"), {}, confirmed=True)
+        self.assertEqual(code, 2, err)
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "confirm_required")
+        self.assertIn("--confirm ", payload["fix"])
+        self.assertNotIn("--yes", payload["fix"])
+        self.assertFalse(target.exists())
+
+    def test_mutating_class_yes_still_runs_and_warns(self) -> None:
+        target = self.root / "sentinel"
+        self.tool.write_text(_WRITE.replace('touch "$1"', f'touch "{target}"'), encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        code, out, err = run_tool(self.root, _tool(self.tool, "mutating"), {}, confirmed=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out), {})
+        self.assertTrue(target.is_file())
+        self.assertIn("deprecated", err)
+
+    def test_destructive_hash_allow_needs_matching_plan_id(self) -> None:
+        target = self.root / "sentinel"
+        self.tool.write_text(_WRITE.replace('touch "$1"', f'touch "{target}"'), encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        self._write_policy(
+            [{"rank": "hash", "sha256": _sha256_file(self.tool), "decision": "allow"}]
+        )
+        item = _tool(self.tool, "destructive")
+        code, out, err = run_tool(self.root, item, {})
+        self.assertEqual(code, 0, err)
+        preview = json.loads(out)
+        self.assertIs(preview["dry_run"], True)
+        self.assertIn("--confirm ", preview["apply"])
+        self.assertNotIn("--yes", preview["apply"])
+        self.assertFalse(target.exists())
+        code, out, err = run_tool(self.root, item, {}, confirmed=True)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "confirm_required")
+        self.assertFalse(target.exists())
+        code, out, err = run_tool(self.root, item, {}, confirm_id="0" * 64)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "plan_mismatch")
+        self.assertFalse(target.exists())
+        code, out, err = run_tool(self.root, item, {}, confirm_id=preview["plan_id"])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(target.is_file())
+
+    def test_name_deny_and_name_confirm(self) -> None:
+        target = self.root / "sentinel"
+        self.tool.write_text(_WRITE.replace('touch "$1"', f'touch "{target}"'), encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        self._write_policy([{"rank": "name", "name": "lab.policy", "decision": "deny"}])
+        code, _out, err = run_tool(self.root, _tool(self.tool, "mutating"), {}, confirmed=True)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "policy_denied")
+        self.assertFalse(target.exists())
+        self._write_policy([{"rank": "name", "name": "lab.policy", "decision": "confirm"}])
+        code, out, err = run_tool(self.root, _tool(self.tool, "mutating"), {}, confirmed=True)
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "confirm_required")
+        self.assertFalse(target.exists())

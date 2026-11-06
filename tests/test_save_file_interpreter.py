@@ -21,7 +21,7 @@ from lib.evolver import save_tool, write_state_json  # noqa: E402
 from lib.runner import _sha256_file, run_tool  # noqa: E402
 
 
-def _hash_confirm(root: Path, name: str) -> None:
+def _hash_confirm(root: Path, name: str, decision: str = "confirm") -> None:
     item = discover_catalog(root)[name]
     write_state_json(
         root,
@@ -29,7 +29,7 @@ def _hash_confirm(root: Path, name: str) -> None:
         {
             "version": 1,
             "classes": {"read-only": "allow", "mutating": "confirm", "destructive": "deny"},
-            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": "confirm"}],
+            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": decision}],
         },
     )
 
@@ -133,6 +133,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         self.assertTrue(payload["plan"])
         self.assertFalse(target.exists())
 
+        _hash_confirm(self.root, "demo.touch", "allow")
         live, live_out, live_err = run_tool(
             self.root, item, {"--path": str(target)}, [], confirmed=True
         )

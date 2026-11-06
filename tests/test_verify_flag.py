@@ -20,7 +20,7 @@ from lib.evolver import evolve_report, log_event, save_tool, verify_item, write_
 from lib.runner import _sha256_file  # noqa: E402
 
 
-def _hash_confirm(root: Path, name: str) -> None:
+def _hash_confirm(root: Path, name: str, decision: str = "confirm") -> None:
     item = discover_catalog(root)[name]
     write_state_json(
         root,
@@ -28,7 +28,7 @@ def _hash_confirm(root: Path, name: str) -> None:
         {
             "version": 1,
             "classes": {"read-only": "allow", "mutating": "confirm", "destructive": "deny"},
-            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": "confirm"}],
+            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": decision}],
         },
     )
 
@@ -81,7 +81,7 @@ class VerifyFlagTests(unittest.TestCase):
             from_cmd="printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(code, 0, err)
-        _hash_confirm(self.root, "alpha.look")
+        _hash_confirm(self.root, "alpha.look", "allow")
         path = self.root / "tools" / "alpha" / "look"
         before = path.read_text(encoding="utf-8")
         status, payload = verify_item(self.root, "alpha.look")
