@@ -228,3 +228,22 @@ OK
 ```
 decisions: isolation on the audit line is none. Not merged to main (issue #229).
 follow-ups: T2.5 keeps the one TK_TIMEOUT path.
+
+## T4.2 Migrate plan
+
+status: DONE
+branch: plan/t4.2-migrate
+baseline: plan/t2.4-lock at bb1b223
+result: `tk run tk.migrate` prints a dry-run report of the catalog (`tools/`, `chains/`) and the state path. GitHub credentials are named as `already in gh` when `gh` is on PATH, otherwise `gh not on PATH`. The report sets `copied` false and `secrets_copied` false. It does not create `TK_HOME` or the state directory, and it does not print a token.
+verify-evidence: `tk check tk.migrate` is ok. A run with `GH_TOKEN=ghp_migrate_secret_value` does not echo that value. `TK_HOME` is absent from stdout and the directory is not created.
+changes: tools/tk/migrate; tests/test_migrate_report.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_migrate_report -v
+Ran 1 test in 0.185s
+OK
+TK_NO_TELEMETRY=1 ./tk check tk.migrate --json
+{"name":"tk.migrate","ok":true,"errors":[]}
+```
+decisions: no new CLI verb and no TK_HOME. Not merged to `main` (issue #236).
+follow-ups: T4.4 suggests a tool from events and does not save it.
