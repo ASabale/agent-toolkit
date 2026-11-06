@@ -228,3 +228,20 @@ OK
 ```
 decisions: isolation on the audit line is none. Not merged to main (issue #229).
 follow-ups: T2.5 keeps the one TK_TIMEOUT path.
+
+## T3.5 Executable docs
+
+status: DONE
+branch: plan/t3.5-readme
+baseline: plan/t2.4-lock at bb1b223
+result: the test runs fenced `tk` lines from `README.md` that are already valid. `tk find wiki` and `tk run wiki.lint --path wiki` exit 0. Text fences are sample output and are skipped. Shell lines that are not `tk` are skipped. The README was not rewritten.
+verify-evidence: skipped lines include the clone, `git -C <repo> config …`, `npx skills add …`, and the text sample. The two `tk` lines exit 0.
+changes: tests/test_readme_fences.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_readme_fences -v
+Ran 1 test in 1.515s
+OK
+```
+decisions: no README edit. Not merged to `main` (issue #235).
+follow-ups: T4.2 is a dry-run migrate report and does not copy secrets.
