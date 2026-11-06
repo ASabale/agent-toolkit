@@ -33,7 +33,7 @@ flowchart LR
 | `tk save <name> ...` | Evolver | Turns a working command or script into a single-file tool in `tools/` and validates it with `tk check`. |
 | `tk evolve` | Evolver | Inspects `state/events.jsonl`. Auto-promotes an unverified read-only tool or chain only after `check_item` passes and that name has a `run_ok`. Check-passing items with no `run_ok` are reported as `awaiting_live_run` (also with `--no-promote`). `unused_tools` stays empty until 50 `run_ok`/`run_error` events; below that the report sets `unused_reason` `insufficient_telemetry`. |
 | `tk prune [<name> ...] [--unused] [--dry-run]` | Evolver | Archives named tools or chains to `state/archive/` (refusing if a kept chain still uses one); `--unused` adds the tools `tk evolve` reports as unused, skipping any a chain references. `--dry-run` previews. `--unused` and `--unused --dry-run` exit 2 with `insufficient_telemetry` when fewer than 50 `run_ok`/`run_error` events exist. Explicit `tk prune <name>` still archives that name. |
-| `tk check [name]` | Maintainer | Validates header completeness, flag parity, dry-run support, output compactness, name uniqueness (duplicate-name), and name/path layout parity. |
+| `tk check [name]` | Maintainer | Validates header completeness, flag parity, the dry-run guard, name uniqueness, and name/path layout. It does not start the tool. `--verify` is the runner path. |
 
 ### Global Modifiers (Order-Independent)
 - `--dry-run`: Prints the resolved command/pipeline without mutating state.
@@ -90,14 +90,13 @@ The toolkit evolves from real agent work rather than speculative upfront design:
    - `search_miss`: Agent searched `tk find` for an intent not yet covered.
    - `run_error`: Tool failed or rejected arguments.
    - `tool_saved`: Agent created a draft tool via `tk save` (`@tk-verified: none`).
-2. **Verify (`tk check`)** (`ASabale/agent-toolkit@9c0f0f6`, PR #79):
-   - Checks header fields, required flag coverage, and output compactness.
-   - Guard: a `mutating` or `destructive` tool with no non-comment `TK_DRY_RUN` reference fails with `<safety> tool must branch on TK_DRY_RUN` and is never executed.
-   - Smoke: a guarded non-read-only tool is run with `TK_DRY_RUN=1` in a scratch `cwd` and `HOME` (`tempfile.TemporaryDirectory()`). A read-only `tk check` dry-run also uses that scratch `cwd` and does not replace `HOME`. Every JSON-object dry-run payload must include `"dry_run": true`. `plan` stays required only for `mutating` and `destructive` tools: stdout must be `{"dry_run":true,"plan":[...]}` with a non-empty `plan`.
+2. **Verify (`tk check`)** (`ASabale/agent-toolkit@9c0f0f6`, PR #79; static check is #269):
+   - Checks header fields, required flag coverage, and the `TK_DRY_RUN` text guard. It does not start the tool or the chain.
+   - Guard: a `mutating` or `destructive` tool with no non-comment `TK_DRY_RUN` reference fails with `<safety> tool must branch on TK_DRY_RUN`.
+   - `lint:` rows that existed only because a process ran are gone. A caller that used `tk check` as a smoke run passes `--verify`.
 3. **Promote (`tk evolve` and `tk check <name> --verify`)**:
-   - **Read-only (`@tk-safety: read-only`)**: `tk check` is the verification. `tk evolve` stamps `@tk-verified: <YYYY-MM-DD>` after a passing check and a `run_ok`. `tk check <name> --verify` reports that result and does not rewrite the header.
-   - **Mutating (`@tk-safety: mutating`)**: `tk evolve` never stamps these. `tk check <name> --verify` (exactly one name) runs the tool with `TK_DRY_RUN=1` in a scratch directory and, on a non-empty `plan`, stamps `# @tk-verified: <YYYY-MM-DD>`, logs `tool_verified`, and prints `{"ok":true,"name","safety","verified","plan"}`. A second run is a no-op (exit 0, header unchanged).
-   - **Destructive (`@tk-safety: destructive`)**: `tk evolve` never stamps these. `tk check <name> --verify` exits 2 with `human_signoff_required` and leaves the file unchanged. A human opens a PR that sets `# @tk-verified: <YYYY-MM-DD>`.
+   - **Read-only (`@tk-safety: read-only`)**: `tk evolve` stamps `@tk-verified: <YYYY-MM-DD>` after a passing static check and a `run_ok`. `tk check <name> --verify` calls `run_tool` or `run_chain` on the live path and prints that JSON. It does not rewrite the header.
+   - **Mutating and destructive**: `tk evolve` never stamps these. `tk check <name> --verify` calls the runner with `dry_run=True` and `confirmed=False`, so `TK_DRY_RUN=1` is set before `Popen`. Stdout is the runner's dry-run plan JSON. The header stays unchanged.
    - `tk check --verify` and `tk check a b --verify` exit 2 with `fix` `tk check <name> --verify`. A name that fails `tk check` exits 1 with `check_failed` and the check errors in `why`.
 4. **Consolidate & Prune (`tk evolve`)**:
    - Flags zero-use or superseded tools for removal and merges overlapping tools so the catalog stays small and low-token.

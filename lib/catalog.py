@@ -627,14 +627,6 @@ def _interpreter(path: Path) -> str | None:
     return "other"
 
 
-def _dummy(typ: str) -> str:
-    if typ in {"int", "float"}:
-        return "1"
-    if typ == "bool":
-        return "true"
-    return "example"
-
-
 def _flag_present(tokens: list[str], flag: str) -> bool:
     return any(token == flag or token.startswith(flag + "=") for token in tokens)
 
@@ -740,19 +732,6 @@ def _dry_run_guard_error(path: Path) -> str | None:
     return f"{safety} tool must branch on TK_DRY_RUN"
 
 
-def _dry_run_plan_error(payload: object, safety: str) -> str | None:
-    if safety not in {"mutating", "destructive"}:
-        return None
-    if not isinstance(payload, dict):
-        return "dry-run stdout must be a JSON object with dry_run and plan"
-    if payload.get("dry_run") is not True:
-        return "dry-run stdout must set dry_run: true"
-    plan = payload.get("plan")
-    if not isinstance(plan, list) or not plan:
-        return "dry-run stdout missing non-empty plan"
-    return None
-
-
 def _schema_keys(value: str) -> list[str]:
     """Top-level names from ``@tk-schema``. Braces reuse the output-key parser."""
     text = value.strip()
@@ -772,177 +751,33 @@ def _schema_error(payload: dict, schema: list[str]) -> str | None:
     return f"dry-run missing schema key: {shown}; fix: include {shown} in the dry-run JSON object"
 
 
-def _dry_run_error(
-    path: Path,
-    args: list[dict],
-    safety: str = "",
-    root_dir: Path | None = None,
-    schema: list[str] | None = None,
-) -> str | None:
-    env = tool_subprocess_env()
-    for key in list(env):
-        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
-            env.pop(key, None)
-    env["TK_DRY_RUN"] = "1"
-    for arg in args:
-        if arg.get("required"):
-            env_var = str(arg.get("env_var") or "")
-            if env_var:
-                env[env_var] = _dummy(str(arg.get("type") or "string"))
-    env["TK_ROOT_DIR"] = str(root_dir if root_dir is not None else path.resolve().parents[2])
+def _static_schema_error(path: Path, schema: list[str]) -> str | None:
+    """Compare ``@tk-schema`` keys to a literal JSON object in the dry-run branch.
 
-    def invoke(cwd: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [str(path)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-            cwd=cwd,
-            check=False,
-        )
-
+    This does not start the tool. A branch with no JSON object literal is not a
+    schema failure; ``tk check --verify`` is the execution path.
+    """
+    if not schema:
+        return None
     try:
-        with tempfile.TemporaryDirectory() as scratch:
-            if safety in {"mutating", "destructive"}:
-                env["HOME"] = scratch
-            proc = invoke(scratch)
-    except subprocess.TimeoutExpired:
-        return "dry-run timed out"
-    except OSError as exc:
-        return f"dry-run failed: {exc}"
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        suffix = (": " + detail[0]) if detail else ""
-        return f"dry-run exited {proc.returncode}{suffix}"
-    stdout = proc.stdout.strip()
-    if not stdout:
-        return "dry-run produced empty stdout; expected JSON"
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        return f"dry-run stdout is not valid JSON: {exc.msg}"
-    plan_error = _dry_run_plan_error(payload, safety)
-    if plan_error:
-        return plan_error
-    if not isinstance(payload, dict):
-        return 'dry-run payload must be a JSON object with "dry_run": true'
-    if payload.get("dry_run") is not True:
-        return 'dry-run payload is not marked "dry_run": true'
-    if isinstance(payload.get("truncated"), bool):
-        return 'dry-run "truncated" must be an int (omitted count), not bool'
-    if schema:
-        missing = _schema_error(payload, schema)
-        if missing:
-            return missing
-    return None
-
-
-def _output_allows_raw_stdout(output: str) -> bool:
-    """True when ``@tk-output`` declares a raw contract instead of JSON."""
-    text = output.strip().lower()
-    return text == "raw" or text.startswith("raw ") or text.startswith("raw|")
-
-
-def _shell_body_after_dry_run(path: Path) -> str:
-    """Return the commands a generated tool runs when ``TK_DRY_RUN`` is unset."""
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return ""
-    index = 1 if lines and lines[0].startswith("#!") else 0
-    while index < len(lines):
-        stripped = lines[index].strip()
-        if stripped == "" or stripped.startswith("#") or stripped.startswith("set -"):
-            index += 1
-            continue
-        break
-    if index < len(lines) and "TK_DRY_RUN" in lines[index] and lines[index].lstrip().startswith("if "):
-        index += 1
-        while index < len(lines) and lines[index].strip() != "fi":
-            index += 1
-        if index < len(lines) and lines[index].strip() == "fi":
-            index += 1
-    return "\n".join(lines[index:]).strip()
-
-
-def _json_stdout_fix(name: str, summary: str, command: str) -> str:
-    """A copy-pasteable ``tk save`` that wraps command stdout as JSON."""
-    code = 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))'
-    body = command.strip() or "cat"
-    if "\n" in body:
-        body = "bash -c " + shlex.quote(body)
-    wrapped = body + " | python3 -c " + shlex.quote(code)
-    parts = ["tk", "save", name or "namespace.tool", "--summary", summary or name or "tool", "--from-cmd", wrapped]
-    return " ".join(shlex.quote(part) for part in parts)
-
-
-def _skip_live_json(body: str) -> bool:
-    """Skip the live JSON smoke when the body already emits JSON or reads args.
-
-    Arg-driven commands get dummy ``TK_ARG_*`` values, so a non-JSON exit 0 is
-    not evidence the real invocation is non-JSON. Commands such as ``wc`` never
-    build a JSON value; the dry-run stub would otherwise be the only stdout
-    ``tk check`` sees.
-    """
-    if "TK_ARG_" in body:
-        return True
-    return "json.dumps" in body or "json.dump" in body or '{"' in body or "{'" in body
-
-
-def _live_json_error(
-    path: Path,
-    args: list[dict],
-    output: str,
-    name: str,
-    summary: str,
-    root_dir: Path | None = None,
-) -> str | None:
-    """Run a read-only tool for real and require JSON stdout, unless output is raw.
-
-    A non-zero exit is not a JSON failure: dummy flag values often make a real
-    tool refuse the input. Exit 0 with non-JSON stdout is the save/check hole
-    left by the dry-run stub.
-    """
-    if _output_allows_raw_stdout(output):
         return None
-    command = _shell_body_after_dry_run(path) or str(path)
-    if _skip_live_json(command):
-        return None
-    env = tool_subprocess_env()
-    for key in list(env):
-        if key.startswith("TK_ARG_") or key == "TK_DRY_RUN":
-            env.pop(key, None)
-    env["TK_DRY_RUN"] = "0"
-    root = root_dir if root_dir is not None else path.resolve().parents[2]
-    env["TK_ROOT_DIR"] = str(root)
-    for arg in args:
-        if arg.get("required"):
-            env_var = str(arg.get("env_var") or "")
-            if env_var:
-                env[env_var] = _dummy(str(arg.get("type") or "string"))
-    try:
-        proc = subprocess.run(
-            [str(path)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-            cwd=str(root),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    stdout = proc.stdout or ""
-    if stdout.strip():
+    match = re.search(r"TK_DRY_RUN\b.*?^\s*fi\b", text, re.S | re.M)
+    region = match.group(0) if match else text
+    literals = re.findall(r"""['"](\{.*?\})['"]""", region, re.S)
+    payload = None
+    for literal in literals:
         try:
-            json.loads(stdout)
-            return None
+            parsed = json.loads(literal)
         except json.JSONDecodeError:
-            pass
-    return f"stdout is not valid JSON; fix: {_json_stdout_fix(name, summary, command)}"
+            continue
+        if isinstance(parsed, dict):
+            payload = parsed
+            break
+    if payload is None:
+        return None
+    return _schema_error(payload, schema)
 
 
 def _default_matches(typ: str, default: str) -> bool:
@@ -1236,26 +1071,6 @@ def _chain_wiring_errors(item: dict, catalog: dict) -> list[str]:
     return errors
 
 
-def _chain_dry_run_error(root_dir: Path, item: dict) -> str | None:
-    from lib.runner import run_chain
-
-    flags: dict[str, str] = {}
-    for arg in item.get("args") or []:
-        if isinstance(arg, dict) and arg.get("required") and arg.get("flag"):
-            flags[str(arg["flag"])] = _dummy(str(arg.get("type") or "string"))
-    rc, stdout, err = run_chain(root_dir, item, flags, dry_run=True)
-    if rc != 0:
-        return f"chain dry-run failed: {err}"
-    text = stdout.strip()
-    if not text:
-        return "chain dry-run produced invalid JSON"
-    try:
-        json.loads(text)
-    except json.JSONDecodeError:
-        return "chain dry-run produced invalid JSON"
-    return None
-
-
 def _file_secret_rules(path: Path) -> list[str]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -1286,7 +1101,6 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         item = preloaded if preloaded is not None else (load_chain(path) if is_chain else parse_tool_header(path))
         name = str(item.get("name") or path.stem)
         errors: list[str] = []
-        lint_hits: list[str] = []
         skipped: list[str] = []
         secret_rules = _file_secret_rules(path)
         if not is_chain and not os.access(path, os.X_OK):
@@ -1307,30 +1121,9 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                 if guard:
                     errors.append(guard)
                 else:
-                    safety = str(item.get("safety") or "")
-                    dry = _dry_run_error(
-                        path,
-                        item.get("args") or [],
-                        safety,
-                        root_dir=root_dir,
-                        schema=list(item.get("schema") or []),
-                    )
-                    if dry:
-                        errors.append(dry)
-                    elif safety == "read-only":
-                        live = _live_json_error(
-                            path,
-                            item.get("args") or [],
-                            str(item.get("output") or ""),
-                            name,
-                            str(item.get("summary") or ""),
-                            root_dir=root_dir,
-                        )
-                        if live:
-                            # Tag the read-only stdout lint. It is not enforcement.
-                            finding = f"lint: {live}"
-                            errors.append(finding)
-                            lint_hits.append(finding)
+                    schema_error = _static_schema_error(path, list(item.get("schema") or []))
+                    if schema_error:
+                        errors.append(schema_error)
         else:
             catalog = discover_catalog(root_dir)
             steps = item.get("steps") or []
@@ -1344,10 +1137,6 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                     elif tool_name not in catalog:
                         errors.append(f"step {index} tool not in catalog: {tool_name}")
                 errors.extend(_chain_wiring_errors(item, catalog))
-            if not errors and not secret_rules:
-                dry = _chain_dry_run_error(root_dir, item)
-                if dry:
-                    errors.append(dry)
         if secret_rules:
             shown = ", ".join(secret_rules)
             errors.append(
@@ -1358,8 +1147,6 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         if errors and not any("fix: tk " in str(err) for err in errors):
             errors.append(f"fix: tk check {name} --json")
         payload = {"name": name, "ok": not errors, "errors": errors}
-        if lint_hits:
-            payload["lint"] = lint_hits
         if skipped:
             payload["skipped"] = skipped
         return payload

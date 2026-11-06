@@ -234,7 +234,7 @@ class CliIntegrationTests(unittest.TestCase):
             "# @tk-output: json | Compact JSON result\n"
             "# @tk-example: tk run lab.bad\n"
             "# @tk-verified: none\n"
-            "printf 'nope\\n'\n",
+            "if [;\n",
             encoding="utf-8",
         )
         broken = self._run(
@@ -252,7 +252,7 @@ class CliIntegrationTests(unittest.TestCase):
         quarantine = self.root / "state" / "quarantine"
         drafts = list(quarantine.glob("*")) if quarantine.is_dir() else []
         self.assertTrue(drafts)
-        self.assertTrue(any("nope" in draft.read_text(encoding="utf-8") for draft in drafts))
+        self.assertTrue(any("if [;" in draft.read_text(encoding="utf-8") for draft in drafts))
 
     def test_chain_save_and_run(self) -> None:
         saved = self._run(
