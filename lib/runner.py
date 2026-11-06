@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lib.catalog import output_keys
 from lib.chainref import resolve_expr, stringify
-from lib.evolver import append_audit, log_event
+from lib.evolver import append_audit, log_event, record_feedback
 from lib.guards import tool_subprocess_env
 from lib.redact import redact_data
 
@@ -459,6 +459,7 @@ def _record_run(root_dir: Path, item: dict, code: int, stderr: str, dry_run: boo
         return
     payload["why"] = _why_from_stderr(stderr)
     log_event(root_dir, "run_error", payload)
+    record_feedback(root_dir, str(item.get("name") or ""), code, stderr)
 
 
 def _positive_float(raw: str, default: float) -> float:

@@ -697,6 +697,40 @@ class RunToolTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(reduced, separators=(",", ":")).encode()), 16)
 
 
+    def test_failed_run_feedback_is_local_and_redacted(self):
+        token = "ghp_" + ("a" * 36)
+        home = str(Path.home())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = _write_script(
+                root,
+                "fail.sh",
+                "#!/bin/sh\n"
+                f"printf '%s\\n' '{token} {home}/secret' >&2\n"
+                "exit 1\n",
+            )
+            item = _item()
+            item["path"] = str(script)
+            code, out, err = run_tool(root, item, {"--name": "ada"})
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertNotIn(token, err)
+            self.assertIn(home, err)
+            feedback = root / "state" / "feedback.jsonl"
+            row = json.loads(feedback.read_text(encoding="utf-8"))
+            self.assertEqual(row["name"], "demo.echo")
+            self.assertEqual(row["exit"], 1)
+            self.assertNotIn(token, row["stderr"])
+            self.assertNotIn(home, row["stderr"])
+            self.assertIn("***", row["stderr"])
+            self.assertIn("~/", row["stderr"])
+
+            script.write_text("#!/bin/sh\nprintf '%s\\n' '{\"ok\":true}'\n", encoding="utf-8")
+            code, _out, err = run_tool(root, item, {"--name": "ada"})
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(feedback.read_text(encoding="utf-8").splitlines()), 1)
+
+
 class RunChainTests(unittest.TestCase):
     def setUp(self) -> None:
         self._env_patcher = patch.dict(
