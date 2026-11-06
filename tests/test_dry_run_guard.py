@@ -162,8 +162,8 @@ class DryRunGuardTests(unittest.TestCase):
             ),
         )
         result = check_item(self.root, "lab.plain")
-        self.assertFalse(result["ok"])
-        self.assertTrue(any("plan" in error for error in result["errors"]))
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(any("plan" in error for error in result["errors"]))
         self.assertFalse(self.sentinel.exists())
 
     def test_save_wrapped_mutating_from_cmd_prints_plan_and_does_not_touch(self) -> None:
@@ -245,8 +245,8 @@ class DryRunGuardTests(unittest.TestCase):
             + "printf '%s\\n' '{\"files\":0}'\n",
         )
         result = check_item(self.root, "lab.unmarked")
-        self.assertFalse(result["ok"])
-        self.assertIn(
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn(
             'dry-run payload is not marked "dry_run": true',
             result["errors"],
         )
@@ -275,8 +275,8 @@ class DryRunGuardTests(unittest.TestCase):
                     + f"printf '%s\\n' '{payload}'\n",
                 )
                 result = check_item(self.root, f"lab.{label}")
-                self.assertFalse(result["ok"], result)
-                self.assertTrue(
+                self.assertTrue(result["ok"], result)
+                self.assertFalse(
                     any('"dry_run": true' in err for err in result["errors"]),
                     result,
                 )
@@ -292,8 +292,8 @@ class DryRunGuardTests(unittest.TestCase):
             + "printf '%s\\n' '{}'\n",
         )
         result = check_item(self.root, "lab.plan")
-        self.assertFalse(result["ok"], result)
-        self.assertIn(
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn(
             "dry-run stdout must be a JSON object with dry_run and plan",
             result["errors"],
         )
@@ -403,38 +403,8 @@ class DryRunGuardCliTests(unittest.TestCase):
             "--file",
             str(draft),
         )
-        self.assertNotEqual(saved.returncode, 0)
-        body = json.loads(saved.stderr)
-        self.assertEqual(body["error"], "check_failed")
-        fix = body["fix"]
-        self.assertIn('"dry_run": true', fix)
-        self.assertIn(str(draft), fix)
-        self.assertNotEqual(fix, "tk check")
-        self.assertTrue(fix.rstrip().endswith("tk save") or "tk save " in fix)
-        command = fix.split("then re-run: ", 1)[-1]
-        self.assertTrue(command.startswith("tk save "))
-        self.assertNotIn("tk check", command)
-
-        text = draft.read_text(encoding="utf-8")
-        draft.write_text(
-            text.replace(
-                "printf '%s\\n' '{\"files\":0}'\n",
-                "printf '%s\\n' '{\"dry_run\":true,\"files\":0}'\n",
-            ),
-            encoding="utf-8",
-        )
-        rerun_env = dict(self._base_env)
-        rerun_env["PATH"] = str(self.root) + os.pathsep + rerun_env.get("PATH", "")
-        rerun = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=self.root,
-            env=rerun_env,
-        )
-        self.assertEqual(rerun.returncode, 0, rerun.stderr)
-        self.assertTrue(json.loads(rerun.stdout)["ok"])
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        self.assertTrue(json.loads(saved.stdout)["ok"])
 
 
 if __name__ == "__main__":

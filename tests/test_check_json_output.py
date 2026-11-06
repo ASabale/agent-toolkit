@@ -45,7 +45,7 @@ def _tool(name: str, body: str, output: str = "json | Compact JSON result") -> s
 
 
 class CheckJsonStdoutTests(unittest.TestCase):
-    def test_save_refuses_non_json_command_with_runnable_fix(self) -> None:
+    def test_save_accepts_a_non_json_command_without_running_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with patch.dict(os.environ, {"TK_NO_TELEMETRY": "1", "TK_STATE_DIR": ""}, clear=False):
@@ -55,18 +55,11 @@ class CheckJsonStdoutTests(unittest.TestCase):
                     "Count hosts",
                     from_cmd="wc -l /etc/hosts",
                 )
-        self.assertEqual(code, 1, err)
-        self.assertEqual(out, "")
-        payload = json.loads(err)
-        self.assertEqual(payload["error"], "check_failed")
-        fix = payload["fix"]
-        self.assertTrue(fix.startswith("tk save "), fix)
-        self.assertIn("wc -l /etc/hosts", fix)
-        self.assertIn("python3 -c", fix)
-        self.assertNotIn("tk check", fix)
-        self.assertFalse((root / "tools" / "bad" / "count").exists())
+            self.assertEqual(code, 0, err)
+            self.assertTrue(json.loads(out)["ok"])
+            self.assertTrue((root / "tools" / "bad" / "count").is_file())
 
-    def test_check_fails_non_json_stdout_and_accepts_raw_contract(self) -> None:
+    def test_check_does_not_execute_non_json_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             plain = root / "tools" / "bad" / "count"
@@ -78,11 +71,8 @@ class CheckJsonStdoutTests(unittest.TestCase):
             failed = check_item(root, "bad.count")
             allowed = check_item(root, "bad.raw")
             passed = check_item(root, "bad.ok")
-        self.assertFalse(failed["ok"], failed)
-        self.assertTrue(any("not valid JSON" in err for err in failed["errors"]), failed)
-        fix = next(err for err in failed["errors"] if "fix: " in err)
-        self.assertIn("fix: tk save ", fix)
-        self.assertIn("wc -l /etc/hosts", fix)
+        self.assertTrue(failed["ok"], failed)
+        self.assertFalse(any("not valid JSON" in err for err in failed["errors"]))
         self.assertTrue(allowed["ok"], allowed)
         self.assertTrue(passed["ok"], passed)
 

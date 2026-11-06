@@ -395,11 +395,11 @@ class CheckItemTests(unittest.TestCase):
             _write(path, _bash_tool("demo.echo", "Echo a target id", body=body), executable=True)
             result = check_item(root, "demo.echo")
             blob = " ".join(result["errors"])
-            self.assertIn("lint:", blob)
+            self.assertNotIn("lint:", blob)
             self.assertNotIn("sandbox", blob.lower())
             self.assertNotIn("isolation", blob.lower())
-            self.assertTrue(result.get("lint"))
-            marker.unlink(missing_ok=True)
+            self.assertNotIn("lint", result)
+            self.assertFalse(marker.exists())
             item = parse_tool_header(path)
             code, _out, err = run_tool(root, item, {"--target": "example"})
             self.assertTrue(marker.is_file())
@@ -429,11 +429,12 @@ class CheckItemTests(unittest.TestCase):
                     os.environ["TK_NEEDS_PRESENT"] = old
         self.assertTrue(result["ok"], result)
 
-    def test_check_item_needs_still_runs_the_body(self):
+    def test_check_item_needs_missing_bin_does_not_run_the_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            marker = root / "ran"
             path = root / "tools" / "demo" / "echo"
-            body = "printf '%s\\n' 'not-json'\n"
+            body = f"printf '%s\\n' ran > {shlex.quote(str(marker))}\nprintf '%s\\n' 'not-json'\n"
             text = _bash_tool("demo.echo", "Echo a target id", body=body)
             text = text.replace(
                 "# @tk-verified: none\n",
@@ -444,7 +445,7 @@ class CheckItemTests(unittest.TestCase):
             result = check_item(root, "demo.echo")
         blob = " ".join(result["errors"])
         self.assertIn("definitely-missing-bin", blob)
-        self.assertTrue(any("json" in err.lower() for err in result["errors"]))
+        self.assertFalse(marker.exists())
 
     def test_check_item_missing_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -663,8 +664,8 @@ printf '%s\\n' '{"ok":true}'
                 executable=True,
             )
             result = check_item(root, "bad.dry")
-        self.assertFalse(result["ok"])
-        self.assertTrue(any("dry-run" in err.lower() or "json" in err.lower() for err in result["errors"]))
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(any("dry-run" in err.lower() for err in result["errors"]))
 
     def test_check_item_chain_missing_step_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -821,8 +822,8 @@ exit 2
                 body=body,
             )
             result = check_item(root, "demo.pipeline")
-        self.assertFalse(result["ok"])
-        self.assertTrue(any(err.startswith("chain dry-run failed:") for err in result["errors"]))
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(any(err.startswith("chain dry-run failed:") for err in result["errors"]))
 
     def test_check_all_aggregates(self):
         with tempfile.TemporaryDirectory() as tmp:

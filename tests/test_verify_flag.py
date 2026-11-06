@@ -1,4 +1,4 @@
-"""tk check --verify tiers: mutating stamp, destructive sign-off, evolve stays read-only."""
+"""tk check --verify uses the runner. Evolve still does not stamp writers."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class VerifyFlagTests(unittest.TestCase):
             self.assertIn("why", payload)
             self.assertEqual(proc.stdout, "")
 
-    def test_read_only_reports_without_stamping(self) -> None:
+    def test_read_only_returns_runner_json_without_stamping(self) -> None:
         code, out, err = save_tool(
             self.root,
             "alpha.look",
@@ -69,14 +69,12 @@ class VerifyFlagTests(unittest.TestCase):
         path = self.root / "tools" / "alpha" / "look"
         before = path.read_text(encoding="utf-8")
         status, payload = verify_item(self.root, "alpha.look")
-        self.assertEqual(status, 0)
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["safety"], "read-only")
-        self.assertEqual(payload["verified"], "none")
-        self.assertNotIn("plan", payload)
+        self.assertEqual(status, 0, payload)
+        self.assertIs(payload["ok"], True)
+        self.assertNotIn("verified", payload)
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
-    def test_mutating_stamps_once_and_logs_plan(self) -> None:
+    def test_mutating_returns_dry_run_plan_without_stamping(self) -> None:
         code, _, err = save_tool(
             self.root,
             "alpha.ship",
@@ -86,27 +84,18 @@ class VerifyFlagTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, err)
         path = self.root / "tools" / "alpha" / "ship"
+        before = path.read_text(encoding="utf-8")
         status, payload = verify_item(self.root, "alpha.ship")
-        today = date.today().isoformat()
         self.assertEqual(status, 0, payload)
-        self.assertEqual(payload["verified"], today)
+        self.assertIs(payload["dry_run"], True)
         self.assertTrue(payload["plan"])
-        self.assertIn(f"# @tk-verified: {today}", path.read_text(encoding="utf-8"))
-        stamped = path.read_bytes()
-        events = (self.root / "state" / "events.jsonl").read_text(encoding="utf-8")
-        record = json.loads(events.strip().splitlines()[-1])
-        self.assertEqual(record["event"], "tool_verified")
-        self.assertEqual(record["name"], "alpha.ship")
-        self.assertEqual(record["safety"], "mutating")
-        self.assertEqual(record["plan"], payload["plan"])
+        self.assertIn("# @tk-verified: none", path.read_text(encoding="utf-8"))
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        events = self.root / "state" / "events.jsonl"
+        if events.is_file():
+            self.assertNotIn("tool_verified", events.read_text(encoding="utf-8"))
 
-        again, second = verify_item(self.root, "alpha.ship")
-        self.assertEqual(again, 0, second)
-        self.assertEqual(second["verified"], today)
-        self.assertEqual(path.read_bytes(), stamped)
-        self.assertEqual(events, (self.root / "state" / "events.jsonl").read_text(encoding="utf-8"))
-
-    def test_destructive_requires_human_and_does_not_write(self) -> None:
+    def test_destructive_returns_dry_run_plan_and_does_not_write(self) -> None:
         code, _, err = save_tool(
             self.root,
             "alpha.drop",
@@ -118,11 +107,9 @@ class VerifyFlagTests(unittest.TestCase):
         path = self.root / "tools" / "alpha" / "drop"
         before = path.read_bytes()
         status, payload = verify_item(self.root, "alpha.drop")
-        self.assertEqual(status, 2)
-        self.assertEqual(payload["error"], "human_signoff_required")
-        self.assertIn("open a PR changing # @tk-verified: <YYYY-MM-DD> in ", payload["fix"])
-        self.assertIn("tools/alpha/drop", payload["fix"])
-        self.assertIn("request human review", payload["fix"])
+        self.assertEqual(status, 0, payload)
+        self.assertIs(payload["dry_run"], True)
+        self.assertTrue(payload["plan"])
         self.assertEqual(path.read_bytes(), before)
 
     def test_check_failure_is_not_a_stamp(self) -> None:

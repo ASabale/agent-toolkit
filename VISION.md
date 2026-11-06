@@ -71,7 +71,7 @@ A toolkit that rots or accumulates unverified junk becomes worse than no toolkit
 - **Automatic Evolution with Safety Gates**:
   - **Friction & Usage Capture**: Every missed `tk find` query, failed `tk run`, and repeated command pattern is appended to `state/events.jsonl`.
   - **Tiered Promotion**:
-    - `read-only` tools auto-promote to the catalog once `tk check <tool>` passes syntax, header schema, and a live or dry-run smoke check.
+    - `read-only` tools auto-promote once `tk check <tool>` passes the static header and syntax checks and a later `run_ok` is recorded.
     - `mutating` and `destructive` tools require `--dry-run` support and explicit verification before promotion.
 - **Harness-Agnostic Portability**: Zero lock-in to any single IDE or LLM provider. Tool packs are plain folders of single-file tools shared via git across any agent harness that supports shell execution and `SKILL.md`.
 
