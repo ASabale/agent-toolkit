@@ -149,7 +149,9 @@ class MigrateReportTests(unittest.TestCase):
             self.assertNotIn(secret, proc.stderr)
             payload = _payload(proc)
             self.assertTrue(payload["dry_run"])
-            self.assertFalse(payload["secrets_copied"])
+            self.assertNotIn("secrets_copied", payload)
+            self.assertIn("secret_scan", payload)
+            self.assertFalse(payload["secret_scan"]["hit_copied"])
             self.assertFalse(payload["state_copied"])
             self.assertEqual([row["kind"] for row in payload["copy"]], ["tool", "chain", "skill"])
             self.assertFalse(any("state" in row["path"] for row in payload["copy"]))
@@ -622,6 +624,80 @@ class MigrateReportTests(unittest.TestCase):
             self.assertFalse(mine.exists())
             self.assertTrue(tampered.exists())
             self.assertTrue(preexisting.exists())
+
+    def _apply_source(self, root: Path, source: Path, dest: Path, extra: dict | None = None):
+        env = {
+            "TK_ARG_ACTION": "apply",
+            "TK_ARG_SOURCE": str(source),
+            "TK_ARG_DEST": str(dest),
+            "TK_ARG_APPLY": "1",
+            "TK_STATE_DIR": str(root / "state"),
+        }
+        if extra:
+            env.update(extra)
+        return _run(_env(env))
+
+    def test_content_hits_are_not_copied_and_stdout_omits_the_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            github = "ghp_" + "a" * 24
+            assignment = "token = \"" + "b" * 24 + "\""
+            bearer = "Bearer " + "c" * 24
+            slack = "xoxb-" + "d" * 16
+            (source / "skills" / "agent-toolkit" / "SKILL.md").write_text("# skill\n" + github + "\n")
+            (source / "tools" / "bench.plain").write_text(PLAIN_TOOL + "\n" + assignment + "\n")
+            (source / "chains" / "bench.chain.json").write_text(_chain_text("0" * 64)[:-1] + f', "note": "{bearer}"}}')
+            echo = source / "tools" / "demo" / "echo"
+            echo.parent.mkdir()
+            echo.write_text(PLAIN_TOOL.replace("bench.plain", "demo.echo") + "\n" + slack + "\n")
+            echo.chmod(0o755)
+            blob = source / "tools" / "bench.bin"
+            blob.write_bytes(b"\xff\xfe not text")
+            proc = self._apply_source(root, source, dest)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            for secret in (github, assignment, bearer, slack):
+                self.assertNotIn(secret, proc.stdout)
+                self.assertNotIn(secret, proc.stderr)
+            payload = _payload(proc)
+            scan = payload["secret_scan"]
+            by_path = {row["path"]: row["rules"] for row in scan["excluded_by_content"]}
+            self.assertEqual(by_path["skills/agent-toolkit/SKILL.md"], ["github_token"])
+            self.assertEqual(by_path["tools/bench.plain"], ["assignment"])
+            self.assertIn("bearer", by_path["chains/bench.chain.json"])
+            self.assertEqual(by_path["tools/demo/echo"], ["slack_token"])
+            self.assertIn("tools/bench.bin", scan["unscannable"])
+            self.assertIn("tools/gh_credentials.json", scan["excluded_by_path"])
+            self.assertNotIn("tools/bench.bin", scan["scanned_clean"])
+            self.assertNotIn("tools/gh_credentials.json", scan["scanned_clean"])
+            for rel in by_path:
+                self.assertNotIn(rel, payload["copied"])
+                self.assertFalse((dest / rel).exists())
+            self.assertFalse((dest / "tools" / "bench.bin").exists())
+            self.assertIn("tools/bench.dated", scan["scanned_clean"])
+            self.assertIn("tools/bench.dated", payload["copied"])
+            self.assertNotIn("secrets_copied", payload)
+
+    def test_allow_secret_scan_copies_only_the_named_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            github = "ghp_" + "e" * 24
+            (source / "skills" / "agent-toolkit" / "SKILL.md").write_text("# skill\n" + github + "\n")
+            proc = self._apply_source(
+                root,
+                source,
+                dest,
+                {"TK_ARG_ALLOW_SECRET_SCAN": "skills/agent-toolkit/SKILL.md"},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn(github, proc.stdout)
+            payload = _payload(proc)
+            self.assertIn("skills/agent-toolkit/SKILL.md", payload["copied"])
+            self.assertEqual(payload["secret_scan"]["overrides"], [{"path": "skills/agent-toolkit/SKILL.md", "rules": ["github_token"]}])
+            self.assertTrue(payload["secret_scan"]["hit_copied"])
 
     def test_unknown_action_is_rejected(self):
         proc = _run(_env({"TK_ARG_ACTION": "copy"}))

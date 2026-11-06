@@ -2,7 +2,7 @@
 
 `tk` runs tools on the machine where you invoke it. There is no account, registry, or remote tool download.
 
-- Do not put secrets, tokens, or credentials in a tool file, a chain file, `stdout`, `stderr`, or `state/events.jsonl`.
+- Do not put secrets, tokens, or credentials in a tool file, a chain file, `stdout`, `stderr`, or `state/events.jsonl`. `tk.migrate` scans capability text with the `lib/redact.py` rules (`github_token`, `aws_access_key`, `bearer`, `private_key`, `slack_token`, `assignment`). A hit is not copied unless `--allow-secret-scan` names that relative path. The scan misses secrets outside those patterns. Binary and non-UTF-8 files are reported unscannable, not clean.
 - Leave credentials in the caller environment. A GitHub tool uses the existing `gh` login. It does not store a token in the catalog.
 - A mutating `tk run` returns `plan` until `--yes` or a matching `--confirm`. `--yes` satisfies only a class-level mutating confirm, writes a deprecation warning, and is not standing authorization. It does not satisfy a hash or name confirm.
 - A destructive `tk run` needs an exact-hash allow or confirm for these bytes and a matching `--confirm <plan_id>` on this invocation. `--yes` does not run it. Class deny stays deny. The printed `apply` hint is `--confirm`, not `--yes`.
