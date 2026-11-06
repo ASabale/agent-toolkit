@@ -1038,6 +1038,8 @@ def _trace_finish(
     code: int,
     started: float,
     parent_run_id: str | None = None,
+    step_index: int | None = None,
+    step_count: int | None = None,
 ) -> None:
     outcome = facts.get("outcome")
     if outcome not in {"dry_run", "preflight", "ok", "failed", "partial"}:
@@ -1054,6 +1056,8 @@ def _trace_finish(
             "process_exit": facts.get("process_exit"),
             "toolkit_exit": code,
             "duration_ms": int((time.monotonic() - started) * 1000),
+            "step_index": step_index,
+            "step_count": step_count,
         },
     )
 
@@ -1089,6 +1093,8 @@ def run_tool(
     audit_via: str | None = None,
     parent_run_id: str | None = None,
     bound_sha256: str | None = None,
+    step_index: int | None = None,
+    step_count: int | None = None,
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
@@ -1120,6 +1126,8 @@ def run_tool(
             "parent_run_id": parent_run_id,
             "name": str(item.get("name") or ""),
             "kind": str(item.get("kind") or "tool"),
+            "step_index": step_index,
+            "step_count": step_count,
         },
     )
     try:
@@ -1138,6 +1146,8 @@ def run_tool(
             facts,
             parent_run_id,
             bound_sha256,
+            step_index,
+            step_count,
         )
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         code, stdout, stderr = _failure(
@@ -1148,7 +1158,9 @@ def run_tool(
             stderr = _with_audit_incomplete(stderr)
     if facts.get("yes_deprecated") and not stderr.strip():
         stderr = _YES_DEPRECATED
-    _trace_finish(root_dir, item, run_id, facts, code, started, parent_run_id)
+    _trace_finish(
+        root_dir, item, run_id, facts, code, started, parent_run_id, step_index, step_count
+    )
     return code, stdout, stderr
 
 
@@ -1160,6 +1172,8 @@ def _confirm_required(
     stdin_data: str | None,
     raw: bool,
     parent_run_id: str | None,
+    step_index: int | None = None,
+    step_count: int | None = None,
 ) -> tuple[int, str, str]:
     """``--yes`` is not an exact-hash or destructive grant. Return the plan fix."""
     code, out, _err = run_tool(
@@ -1173,6 +1187,8 @@ def _confirm_required(
         raw=raw,
         confirm_id=None,
         parent_run_id=parent_run_id,
+        step_index=step_index,
+        step_count=step_count,
     )
     plan_id = ""
     if code == 0:
@@ -1212,6 +1228,8 @@ def _execute_tool(
     facts: dict,
     parent_run_id: str | None = None,
     bound_sha256: str | None = None,
+    step_index: int | None = None,
+    step_count: int | None = None,
 ) -> tuple[int, str, str]:
     def finish(
         result: tuple[int, str, str],
@@ -1291,7 +1309,20 @@ def _execute_tool(
         accepted = (decision, rank)
         planned = audit_via == "confirm"
         if needs_plan and confirmed is True and not confirm_id and not planned:
-            return finish(_confirm_required(root_dir, item, flags, positional, stdin_data, raw, parent_run_id), outcome="failed")
+            return finish(
+                _confirm_required(
+                    root_dir,
+                    item,
+                    flags,
+                    positional,
+                    stdin_data,
+                    raw,
+                    parent_run_id,
+                    step_index,
+                    step_count,
+                ),
+                outcome="failed",
+            )
         if needs_plan and confirm_id is not None and not planned:
             confirmed = False
         elif decision == "allow" and not dry_run and not destructive:
@@ -1322,6 +1353,8 @@ def _execute_tool(
                 raw=raw,
                 confirm_id=None,
                 parent_run_id=parent_run_id,
+                step_index=step_index,
+                step_count=step_count,
             )
             if code != 0:
                 facts["outcome"] = "failed"
@@ -2062,6 +2095,8 @@ def run_chain(
                 audit_via=audit_via,
                 parent_run_id=run_id,
                 bound_sha256=None if bound_steps is None else bound_steps[index - 1],
+                step_index=index,
+                step_count=step_count,
             )
             if code != 0:
                 stderr = _annotate_step_stop(
