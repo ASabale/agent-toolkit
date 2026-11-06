@@ -125,6 +125,20 @@ class BenchTests(unittest.TestCase):
                 )
                 // 4,
             )
+            self.assertEqual(row["client"], "scripted")
+            for side in ("mcp", "tk"):
+                measured = row["productivity"][side]
+                self.assertIsNone(measured["first_attempt_success"])
+                self.assertIsNone(measured["recovery"])
+                self.assertIsNone(measured["reliability"])
+                self.assertIsNone(measured["policy_violations"])
+                self.assertIsNone(measured["adapt_time_s"])
+                self.assertEqual(
+                    measured["tool_calls_per_success"],
+                    row[side]["tool_call_count"],
+                )
+            self.assertIsNone(row["productivity"]["mcp"]["discovery_turns"])
+            self.assertEqual(row["productivity"]["tk"]["discovery_turns"], 1)
 
     def test_tk_results_match_across_tmpdir_and_checkout(self) -> None:
         # Different lengths: equal-length absolute paths can hide the leak.
