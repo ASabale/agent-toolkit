@@ -10,6 +10,7 @@ Public seam (CODING_STANDARDS.md §2.3):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -17,12 +18,13 @@ import shlex
 import stat
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys
+from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys, trust_label
 from lib.guards import tool_subprocess_env
-from lib.redact import redact_data
+from lib.redact import redact, redact_data
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -85,13 +87,34 @@ def _state_dir(root: Path) -> Path:
     return root / "state"
 
 
+@contextmanager
+def _state_lock(state: Path, name: str):
+    """Exclusive advisory lock on a sibling file. Local to one filesystem."""
+    state.mkdir(parents=True, exist_ok=True)
+    handle = (state / name).open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _append_line(state: Path, filename: str, lock_name: str, line: str) -> None:
+    with _state_lock(state, lock_name):
+        with (state / filename).open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+
+
 def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
     """Append one JSONL telemetry record. Swallows every I/O or encoding failure."""
     if _telemetry_disabled():
         return
     try:
         state = _state_dir(Path(root_dir))
-        state.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event_type,
@@ -102,10 +125,58 @@ def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
                     record[key] = value
         record = redact_data(record)
         line = json.dumps(record, separators=(",", ":"), default=str)
-        with (state / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        _append_line(state, "events.jsonl", "events.lock", line)
     except Exception:
         return
+
+
+def record_feedback(root_dir: Path, name: str, code: int, stderr: str) -> None:
+    """Store the failed-run stderr line locally. No network. Swallows write errors."""
+    if _telemetry_disabled():
+        return
+    try:
+        text = redact(stderr or "")
+        home = str(Path.home())
+        if home and home not in {"/", ""}:
+            text = text.replace(home, "~")
+        record = {"name": name, "exit": code, "stderr": text}
+        line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
+        _append_line(_state_dir(Path(root_dir)), "feedback.jsonl", "feedback.lock", line)
+    except Exception:
+        return
+
+
+def append_audit(root_dir: Path, record: dict) -> bool:
+    """Append one audit line under ``audit.lock``. False when the lock or write fails.
+
+    ``O_APPEND`` is not the lock. The flock is advisory and local to one filesystem.
+    """
+    try:
+        state = _state_dir(Path(root_dir))
+        payload = dict(record)
+        payload.setdefault("ts", datetime.now(timezone.utc).isoformat())
+        payload["lock"] = "flock"
+        redacted = redact_data(payload)
+        if not isinstance(redacted, dict):
+            return False
+        line = json.dumps(redacted, separators=(",", ":"), default=str)
+        _append_line(state, "audit.jsonl", "audit.lock", line)
+        return True
+    except Exception:
+        return False
+
+
+def write_state_json(root_dir: Path, filename: str, document: dict) -> None:
+    """Replace one JSON file in the state directory while ``state.lock`` is held."""
+    if "/" in filename or filename.startswith("."):
+        raise ValueError(filename)
+    state = _state_dir(Path(root_dir))
+    text = json.dumps(redact_data(document), indent=2) + "\n"
+    with _state_lock(state, "state.lock"):
+        dest = state / filename
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, dest)
 
 
 def save_tool(
@@ -274,6 +345,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         "unused_tools": [],
         "overlap_candidates": [],
         "chain_candidates": [],
+        "tool_candidates": [],
         "telemetry": {"events": 0, "run_events": 0, "first_ts": None},
         "unused_reason": "insufficient_telemetry",
     }
@@ -284,6 +356,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         used, failed_runs, misses = _summarize_events(events)
         live_runs = _live_run_names(events)
         today = date.today().isoformat()
+        core_tools = _core_tool_paths(root)
         promoted: list[str] = []
         awaiting_live_run: list[str] = []
         failing: list[dict] = []
@@ -309,9 +382,21 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
             if name not in live_runs:
                 awaiting_live_run.append(name)
                 continue
+            path = Path(str(item.get("path") or ""))
+            try:
+                if path.resolve() in core_tools:
+                    continue
+            except OSError:
+                continue
+            try:
+                label = trust_label(str(item.get("verified") or ""), check_passed=True)
+            except Exception:
+                failing.append({"name": name, "errors": ["trust computation failed"]})
+                continue
+            if label != "check_passed":
+                continue
             if not auto_promote:
                 continue
-            path = Path(str(item.get("path") or ""))
             kind = item.get("kind")
             if kind == "tool" and path.is_file() and _promote_tool(path, today):
                 promoted.append(name)
@@ -326,6 +411,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
             "unused_tools": unused,
             "overlap_candidates": _overlap_candidates(catalog),
             "chain_candidates": _chain_candidates(catalog, events),
+            "tool_candidates": _tool_candidates(catalog, events),
             "telemetry": telemetry,
         }
         if unused_reason:
@@ -1160,6 +1246,35 @@ def _event_name(record: dict) -> str | None:
     return None
 
 
+def _core_tool_paths(root: Path) -> set[Path]:
+    """Git-tracked tools are core. D3 default: do not edit those files.
+
+    A checkout with no git metadata has no core set, so a saved tool can
+    still be promoted. Git must not walk up to a parent repository.
+    """
+    try:
+        if not (root / ".git").exists():
+            return set()
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", "tools"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    if proc.returncode != 0:
+        return set()
+    found: set[Path] = set()
+    for rel in proc.stdout.split(b"\0"):
+        if not rel:
+            continue
+        try:
+            found.add((root / rel.decode("utf-8")).resolve())
+        except (OSError, UnicodeError):
+            continue
+    return found
+
+
 def _is_unverified(verified: object) -> bool:
     if not isinstance(verified, str):
         return True
@@ -1342,6 +1457,41 @@ def _chain_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict
         )
     candidates.sort(key=lambda row: (-row["count"], row["steps"][0], row["steps"][1]))
     return candidates
+
+
+def _tool_slug(query: str) -> str | None:
+    slug = re.sub(r"[^A-Za-z0-9]+", ".", query.strip().lower()).strip(".")
+    if not slug or not _NAME_RE.fullmatch(slug):
+        return None
+    return slug
+
+
+def _tool_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict]:
+    """Repeated search misses that are not already tools. Does not save."""
+    counts: dict[str, int] = {}
+    for record in events:
+        if record.get("event") not in _MISS_EVENTS:
+            continue
+        query = record.get("query") or record.get("q") or ""
+        if isinstance(query, str) and query.strip():
+            counts[query] = counts.get(query, 0) + 1
+    rows: list[dict] = []
+    for query, count in counts.items():
+        if count < 2:
+            continue
+        slug = _tool_slug(query)
+        if not slug or slug in catalog:
+            continue
+        rows.append(
+            {
+                "query": query,
+                "count": count,
+                "name": slug,
+                "suggested_save": f"tk save {shlex.quote(slug)} --summary {shlex.quote(query)}",
+            }
+        )
+    rows.sort(key=lambda row: (-row["count"], row["query"]))
+    return rows
 
 
 def _chain_prefixes(catalog: dict[str, dict]) -> set[tuple[str, str]]:
