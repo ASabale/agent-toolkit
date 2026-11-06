@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.catalog import _header_errors  # noqa: E402
-from lib.runner import confirm_id_from_argv, parse_cli_flags, run_tool  # noqa: E402
+from lib.runner import confirm_id_from_argv, parse_cli_flags, run_chain, run_tool  # noqa: E402
 
 _SCRIPT = """#!/usr/bin/env bash
 # @tk-name: lab.planid
@@ -93,7 +93,8 @@ class PlanIdTests(unittest.TestCase):
         first = self._unconfirmed(self.root / "a")
         second = self._unconfirmed(self.root / "b")
         self.assertNotEqual(first["plan_id"], second["plan_id"])
-        self.assertEqual(len(first["plan_id"]), 8)
+        self.assertEqual(len(first["plan_id"]), 64)
+        self.assertTrue(all(char in "0123456789abcdef" for char in first["plan_id"]))
         for payload in (first, second):
             self.assertIs(payload["dry_run"], True)
             self.assertEqual(payload["plan"], ["touch"])
@@ -222,3 +223,101 @@ class PlanIdTests(unittest.TestCase):
         self.assertEqual(payload["why"], "--confirm needs a plan_id")
         self.assertNotIn("authorized", payload["why"])
         self.assertFalse(target.exists())
+
+    def test_same_bytes_and_flags_keep_the_id_and_a_byte_change_does_not(self) -> None:
+        target = self.root / "a"
+        first = self._unconfirmed(target)
+        second = self._unconfirmed(target)
+        self.assertEqual(first["plan_id"], second["plan_id"])
+        self.tool.write_text(_SCRIPT + "\n", encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        changed = self._unconfirmed(target)
+        self.assertEqual(changed["plan"], first["plan"])
+        self.assertNotEqual(changed["plan_id"], first["plan_id"])
+
+    def test_chain_and_child_bytes_change_the_id(self) -> None:
+        from unittest.mock import patch
+
+        child = self.root / "tools" / "lab" / "child"
+        child.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${TK_DRY_RUN:-0}\" = 1 ]; then printf '%s\\n' '{\"dry_run\":true,\"plan\":[\"child\"]}'; exit 0; fi\n"
+            "printf '%s\\n' '{}'\n",
+            encoding="utf-8",
+        )
+        child.chmod(child.stat().st_mode | stat.S_IXUSR)
+        chain_path = self.root / "chains" / "lab.plan.json"
+        chain_path.parent.mkdir()
+        body = (
+            '{"name":"lab.plan","summary":"one","safety":"read-only","steps":'
+            '[{"tool":"lab.child","args":{}}]}\n'
+        )
+        chain_path.write_text(body, encoding="utf-8")
+        catalog = {
+            "lab.child": {
+                "name": "lab.child",
+                "kind": "tool",
+                "path": str(child),
+                "safety": "mutating",
+                "args": [],
+                "example": "tk run lab.child",
+            }
+        }
+        chain = {
+            "kind": "chain",
+            "name": "lab.plan",
+            "path": str(chain_path),
+            "safety": "read-only",
+            "example": "tk run lab.plan",
+            "args": [],
+            "steps": [{"tool": "lab.child", "args": {}}],
+        }
+        with patch("lib.catalog.discover_catalog", return_value=catalog):
+            code, out, err = run_chain(self.root, chain, {}, confirmed=False)
+        self.assertEqual(code, 0, err)
+        first = json.loads(out)["plan_id"]
+        self.assertEqual(len(first), 64)
+        chain_path.write_text(body.replace("one", "two"), encoding="utf-8")
+        with patch("lib.catalog.discover_catalog", return_value=catalog):
+            code, out, err = run_chain(self.root, chain, {}, confirmed=False)
+        self.assertEqual(code, 0, err)
+        renamed = json.loads(out)["plan_id"]
+        self.assertNotEqual(renamed, first)
+        child.write_text(child.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        child.chmod(child.stat().st_mode | stat.S_IXUSR)
+        with patch("lib.catalog.discover_catalog", return_value=catalog):
+            code, out, err = run_chain(self.root, chain, {}, confirmed=False)
+        self.assertEqual(code, 0, err)
+        touched = json.loads(out)
+        self.assertEqual(touched["plan"], ["child"])
+        self.assertNotEqual(touched["plan_id"], renamed)
+
+    def test_secret_flag_is_not_stored_or_printed(self) -> None:
+        secret = "ghp_" + ("a" * 36)
+        target = self.root / "touched"
+        item = _item(self.tool)
+        item["args"] = item["args"] + [
+            {
+                "flag": "--token",
+                "env_var": "TK_ARG_TOKEN",
+                "required": False,
+                "type": "string",
+                "description": "token",
+            }
+        ]
+        code, out, err = run_tool(
+            self.root,
+            item,
+            {"--path": str(target), "--token": secret},
+            confirmed=False,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(secret, out)
+        self.assertIn("<redacted>", out)
+        blob = ""
+        for name in ("audit.jsonl", "trace.jsonl"):
+            path = Path(self.state) / name
+            if path.is_file():
+                blob += path.read_text(encoding="utf-8")
+        self.assertNotIn(secret, blob)
+        self.assertNotIn(secret, err)

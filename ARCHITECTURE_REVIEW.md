@@ -78,12 +78,12 @@ plan integrity → authorization → enforcement → audit
 
 ### 3.1 Plan integrity
 
-`plan_id` is the first 8 hex characters of SHA-256 over a canonical JSON object: tool or chain name, sorted flag pairs, and the dry-run `plan` list. No timestamps, no host paths.
+`plan_id` is the full SHA-256 hex digest of canonical JSON (`schema` 1). A tool hashes its name, the executable file bytes, normalized args, and the dry-run `plan`. A chain hashes the chain file bytes, ordered step names, each step executable's bytes, normalized chain args, and the aggregate plan. No timestamps and no absolute paths. The hash is integrity, not authorization and not a person's identity. A secret-shaped flag value is `<redacted>` in `apply` and `confirm`; the caller supplies that value again. The id still hashes the real value.
 
 The unconfirmed response gains two fields and keeps the current ones so existing agents still see `plan` and `apply`:
 
 ```json
-{"dry_run":true,"plan":["…"],"plan_id":"ab12cd34","apply":"tk run name --flag value --yes","confirm":"tk run name --flag value --confirm ab12cd34"}
+{"dry_run":true,"plan":["…"],"plan_id":"<64 hex chars>","apply":"tk run name --flag value --yes","confirm":"tk run name --flag value --confirm <64 hex chars>"}
 ```
 
 `--confirm <plan_id>` recomputes the hash and runs only on an exact match. A mismatch exits 2 with `error` `plan_mismatch`, a `why` that names the id, and a `fix` of the current unconfirmed command. The hash is integrity. The in-process `confirmed=True` default stays, so unit tests that execute tools do not all become dry-runs.
