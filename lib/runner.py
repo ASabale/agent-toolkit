@@ -14,11 +14,13 @@ import os
 import shlex
 import signal
 import subprocess
+import time
+import uuid
 from pathlib import Path
 
 from lib.catalog import _needs_errors, _requires_report, output_keys
 from lib.chainref import resolve_expr, stringify
-from lib.evolver import append_audit, log_event, record_feedback
+from lib.evolver import append_audit, append_trace, log_event, record_feedback
 from lib.guards import tool_subprocess_env
 from lib.redact import redact_data
 
@@ -479,6 +481,7 @@ def _audit_or_deny(
     plan_id: str,
     exit_code: int | None,
     audit_via: str | None,
+    run_id: str | None = None,
 ) -> tuple[int, str, str] | None:
     """Record a gateway decision. A writer with no record does not run."""
     if not _needs_audit(item):
@@ -487,6 +490,7 @@ def _audit_or_deny(
         root_dir,
         {
             "plan_id": plan_id,
+            "run_id": run_id,
             "name": str(item.get("name") or ""),
             "decision": "dry_run" if dry_run else "allow",
             "via": _audit_via(confirmed, audit_via),
@@ -727,6 +731,58 @@ def _chain_writes(root_dir: Path, chain_item: dict) -> bool:
     return False
 
 
+def _with_audit_incomplete(stderr: str) -> str:
+    """Keep the process result and mark the terminal audit as missing."""
+    text = (stderr or "").strip()
+    if not text:
+        return _compact({"audit_incomplete": True})
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        payload["audit_incomplete"] = True
+        return _compact(payload)
+    return _compact({"audit_incomplete": True})
+
+
+def _trace_finish(root_dir: Path, item: dict, run_id: str, facts: dict, code: int, started: float) -> None:
+    outcome = facts.get("outcome")
+    if outcome not in {"dry_run", "preflight", "ok", "failed", "partial"}:
+        outcome = "failed"
+    append_trace(
+        root_dir,
+        {
+            "phase": "finish",
+            "run_id": run_id,
+            "name": str(item.get("name") or ""),
+            "kind": str(item.get("kind") or "tool"),
+            "outcome": outcome,
+            "process_exit": facts.get("process_exit"),
+            "toolkit_exit": code,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        },
+    )
+
+
+def _terminal_audit(root_dir: Path, item: dict, run_id: str, facts: dict, code: int) -> bool:
+    return append_audit(
+        root_dir,
+        {
+            "plan_id": facts.get("plan_id") or "",
+            "run_id": run_id,
+            "name": str(item.get("name") or ""),
+            "decision": "finish",
+            "via": facts.get("via") or "unconfirmed",
+            "enforced": ["env_allowlist", "timeout", "output_cap"],
+            "isolation": "none",
+            "exit": code,
+            "process_exit": facts.get("process_exit"),
+            "toolkit_exit": code,
+        },
+    )
+
+
 def run_tool(
     root_dir: Path,
     item: dict,
@@ -746,20 +802,91 @@ def run_tool(
     destructive tool then runs as a dry-run and returns ``plan`` plus ``apply``.
     ``confirm_id`` reruns that dry-run and executes only when the id matches.
     ``--yes`` (``confirmed`` true) ignores ``confirm_id``.
+
+    Each call writes one trace start and one trace finish. A trace failure
+    does not change the result. A writer records authorization before the
+    process and a terminal line after the outcome is known. A failed terminal
+    line sets ``audit_incomplete`` and keeps the process result.
     """
+    run_id = str(uuid.uuid4())
+    started = time.monotonic()
+    facts: dict = {
+        "process_exit": None,
+        "outcome": "failed",
+        "authorized": False,
+        "via": _audit_via(confirmed, audit_via),
+        "plan_id": str(confirm_id or ""),
+    }
+    append_trace(
+        root_dir,
+        {
+            "phase": "start",
+            "run_id": run_id,
+            "name": str(item.get("name") or ""),
+            "kind": str(item.get("kind") or "tool"),
+        },
+    )
+    try:
+        code, stdout, stderr = _execute_tool(
+            root_dir,
+            item,
+            flags,
+            positional,
+            dry_run,
+            stdin_data,
+            confirmed,
+            raw,
+            confirm_id,
+            audit_via,
+            run_id,
+            facts,
+        )
+    except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
+        code, stdout, stderr = _failure(
+            1, {"error": "internal_error", "why": str(exc), "fix": "tk check"}
+        )
+    if facts.get("authorized") and _writes(item):
+        if not _terminal_audit(root_dir, item, run_id, facts, code):
+            stderr = _with_audit_incomplete(stderr)
+    _trace_finish(root_dir, item, run_id, facts, code, started)
+    return code, stdout, stderr
+
+
+def _execute_tool(
+    root_dir: Path,
+    item: dict,
+    flags: dict[str, str],
+    positional: list[str] | None,
+    dry_run: bool,
+    stdin_data: str | None,
+    confirmed: bool,
+    raw: bool,
+    confirm_id: str | None,
+    audit_via: str | None,
+    run_id: str,
+    facts: dict,
+) -> tuple[int, str, str]:
+    def finish(
+        result: tuple[int, str, str],
+        *,
+        process_exit: int | None = None,
+        outcome: str,
+    ) -> tuple[int, str, str]:
+        facts["process_exit"] = process_exit
+        facts["outcome"] = outcome
+        return _record_and_return(root_dir, item, dry_run, result)
+
     try:
         duplicate = _duplicate_claim(root_dir, str(item.get("name") or ""))
         if duplicate is not None:
-            return duplicate
+            return finish(duplicate, outcome="failed")
         user_dry_run = dry_run
         writer = _writes(item)
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
             if confirm_id == "":
-                return _record_and_return(
-                    root_dir,
-                    item,
-                    False,
+                return finish(
                     _plan_mismatch(item, flags, "--confirm needs a plan_id"),
+                    outcome="failed",
                 )
             code, out, err = run_tool(
                 root_dir,
@@ -773,6 +900,7 @@ def run_tool(
                 confirm_id=None,
             )
             if code != 0:
+                facts["outcome"] = "failed"
                 return code, out, err
             try:
                 probed = json.loads(out)
@@ -781,13 +909,11 @@ def run_tool(
             expected = probed.get("plan_id") if isinstance(probed, dict) else None
             if not isinstance(expected, str) or expected != confirm_id:
                 shown = expected if isinstance(expected, str) else ""
-                return _record_and_return(
-                    root_dir,
-                    item,
-                    False,
+                return finish(
                     _plan_mismatch(item, flags, f"plan_id is {shown}, got {confirm_id}"),
+                    outcome="failed",
                 )
-            return run_tool(
+            result = run_tool(
                 root_dir,
                 item,
                 flags,
@@ -799,6 +925,8 @@ def run_tool(
                 confirm_id=None,
                 audit_via="confirm",
             )
+            facts["outcome"] = "ok" if result[0] == 0 else "failed"
+            return result
         gated = (not confirmed) and writer
         if gated:
             dry_run = True
@@ -806,9 +934,9 @@ def run_tool(
             item, flags, list(positional or []), dry_run
         )
         if not ok:
-            return _record_and_return(
-                root_dir, item, dry_run,
+            return finish(
                 _failure(1, err or {"error": "internal_error", "why": "validation failed", "fix": "tk check"}),
+                outcome="failed",
             )
 
         if dry_run:
@@ -818,10 +946,7 @@ def run_tool(
             guard = _dry_run_guard_error(Path(str(item.get("path") or "")))
             if guard:
                 name = str(item.get("name") or "")
-                return _record_and_return(
-                    root_dir,
-                    item,
-                    dry_run,
+                return finish(
                     _failure(
                         1,
                         {
@@ -830,6 +955,7 @@ def run_tool(
                             "fix": f"tk check {name}".rstrip(),
                         },
                     ),
+                    outcome="failed",
                 )
 
         denied = _audit_or_deny(
@@ -840,15 +966,18 @@ def run_tool(
             str(confirm_id or ""),
             None,
             audit_via,
+            run_id,
         )
+        if denied is None and writer:
+            facts["authorized"] = True
         if denied is not None:
-            return _record_and_return(root_dir, item, dry_run, denied)
+            return finish(denied, outcome="failed")
 
         env = tool_subprocess_env(built)
         env["TK_ROOT_DIR"] = str(root_dir)
         missing = _declared_dependency_failure(root_dir, item, env)
         if missing is not None:
-            return _record_and_return(root_dir, item, dry_run, missing)
+            return finish(missing, outcome="preflight")
         timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)
         proc = subprocess.Popen(
             [str(item["path"])],
@@ -868,8 +997,7 @@ def run_tool(
                 proc.communicate(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
-            return _record_and_return(
-                root_dir, item, dry_run,
+            return finish(
                 _failure(
                     1,
                     {
@@ -878,30 +1006,33 @@ def run_tool(
                         "fix": _timeout_fix(item, flags, timeout),
                     },
                 ),
+                process_exit=proc.returncode,
+                outcome="failed",
             )
         stdout = stdout or ""
         stderr = stderr or ""
         if proc.returncode != 0:
-            return _record_and_return(
-                root_dir, item, dry_run,
+            return finish(
                 _failure(proc.returncode, _tool_failure(item, proc.returncode, stderr)),
+                process_exit=proc.returncode,
+                outcome="failed",
             )
         try:
             parsed = json.loads(stdout)
         except json.JSONDecodeError:
-            return _record_and_return(
-                root_dir, item, dry_run,
+            return finish(
                 _failure(
                     1,
                     {"error": "invalid_output", "why": "stdout is not valid JSON", "fix": "tk check"},
                 ),
+                process_exit=proc.returncode,
+                outcome="failed",
             )
         compact_out = _compact(parsed)
         max_bytes = _positive_int(os.environ.get("TK_MAX_OUTPUT_BYTES", ""), 65536)
         size = len(compact_out.encode("utf-8"))
         if size > max_bytes and not raw:
-            return _record_and_return(
-                root_dir, item, dry_run,
+            return finish(
                 _failure(
                     1,
                     {
@@ -910,15 +1041,21 @@ def run_tool(
                         "fix": _output_too_large_fix(item, flags, parsed, size, max_bytes),
                     },
                 ),
+                process_exit=proc.returncode,
+                outcome="failed",
             )
         hinted = _maybe_next_payload(item, flags, parsed)
         if gated:
             hinted = _safe_write_result(item, flags, hinted)
-        return _record_and_return(root_dir, item, dry_run, (0, _compact(hinted), ""))
+        return finish(
+            (0, _compact(hinted), ""),
+            process_exit=proc.returncode,
+            outcome="dry_run" if dry_run else "ok",
+        )
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
-        return _record_and_return(
-            root_dir, item, dry_run,
+        return finish(
             _failure(1, {"error": "internal_error", "why": str(exc), "fix": "tk check"}),
+            outcome="failed",
         )
 
 
