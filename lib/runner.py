@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lib.catalog import output_keys
 from lib.chainref import resolve_expr, stringify
-from lib.evolver import log_event
+from lib.evolver import append_audit, log_event, record_feedback
 from lib.guards import tool_subprocess_env
 from lib.redact import redact_data
 
@@ -398,6 +398,54 @@ def _why_from_stderr(stderr: str) -> str:
     return text
 
 
+def _needs_audit(item: dict) -> bool:
+    if _writes(item):
+        return True
+    return bool(os.environ.get("TK_ISOLATION", "").strip())
+
+
+def _audit_via(confirmed: bool, audit_via: str | None) -> str:
+    if audit_via in {"policy", "confirm", "yes", "unconfirmed"}:
+        return audit_via
+    return "yes" if confirmed else "unconfirmed"
+
+
+def _audit_or_deny(
+    root_dir: Path,
+    item: dict,
+    dry_run: bool,
+    confirmed: bool,
+    plan_id: str,
+    exit_code: int | None,
+    audit_via: str | None,
+) -> tuple[int, str, str] | None:
+    """Record a gateway decision. A writer with no record does not run."""
+    if not _needs_audit(item):
+        return None
+    wrote = append_audit(
+        root_dir,
+        {
+            "plan_id": plan_id,
+            "name": str(item.get("name") or ""),
+            "decision": "dry_run" if dry_run else "allow",
+            "via": _audit_via(confirmed, audit_via),
+            "enforced": ["env_allowlist", "timeout", "output_cap"],
+            "isolation": "none",
+            "exit": exit_code,
+        },
+    )
+    if wrote or not _writes(item):
+        return None
+    return _failure(
+        1,
+        {
+            "error": "audit_failed",
+            "why": "the audit record was not written",
+            "fix": "make the state directory writable on this filesystem",
+        },
+    )
+
+
 def _record_run(root_dir: Path, item: dict, code: int, stderr: str, dry_run: bool) -> None:
     """Log real executions only. Dry-run must not count as use."""
     if dry_run:
@@ -411,6 +459,7 @@ def _record_run(root_dir: Path, item: dict, code: int, stderr: str, dry_run: boo
         return
     payload["why"] = _why_from_stderr(stderr)
     log_event(root_dir, "run_error", payload)
+    record_feedback(root_dir, str(item.get("name") or ""), code, stderr)
 
 
 def _positive_float(raw: str, default: float) -> float:
@@ -627,6 +676,7 @@ def run_tool(
     confirmed: bool = True,
     raw: bool = False,
     confirm_id: str | None = None,
+    audit_via: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
@@ -683,6 +733,7 @@ def run_tool(
                 confirmed=True,
                 raw=raw,
                 confirm_id=None,
+                audit_via="confirm",
             )
         gated = (not confirmed) and writer
         if gated:
@@ -716,6 +767,18 @@ def run_tool(
                         },
                     ),
                 )
+
+        denied = _audit_or_deny(
+            root_dir,
+            item,
+            dry_run,
+            confirmed,
+            str(confirm_id or ""),
+            None,
+            audit_via,
+        )
+        if denied is not None:
+            return _record_and_return(root_dir, item, dry_run, denied)
 
         env = tool_subprocess_env(built)
         env["TK_ROOT_DIR"] = str(root_dir)
@@ -819,6 +882,39 @@ def _annotate_step_stop(stderr: str, chain_name: str, index: int, total: int, to
     return _compact(payload)
 
 
+def _unquoted_command_sub(text: str) -> bool:
+    """True when ``$(`` appears outside single or double quotes."""
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if text.startswith("$(", index):
+            return True
+        index += 1
+    return False
+
+
+def _rejected_tool_fix(fix: str) -> bool:
+    """A tool-supplied fix may not add a second command."""
+    if "\n" in fix or "\r" in fix or ";" in fix:
+        return True
+    return _unquoted_command_sub(fix)
+
+
 def _tool_failure(item: dict, code: int, stderr: str) -> dict:
     text = stderr.strip()
     if text:
@@ -827,6 +923,10 @@ def _tool_failure(item: dict, code: int, stderr: str) -> dict:
         except json.JSONDecodeError:
             payload = None
         if isinstance(payload, dict) and {"error", "why", "fix"} <= payload.keys():
+            fix = payload.get("fix")
+            if isinstance(fix, str) and _rejected_tool_fix(fix):
+                payload = dict(payload)
+                payload["fix"] = _example(item)
             return payload
     return {
         "error": "tool_failed",
@@ -843,6 +943,7 @@ def run_chain(
     dry_run: bool = False,
     confirmed: bool = True,
     confirm_id: str | None = None,
+    audit_via: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate chain flags, resolve step references, and stop on the first error.
 
@@ -895,6 +996,7 @@ def run_chain(
                 False,
                 confirmed=True,
                 confirm_id=None,
+                audit_via="confirm",
             )
         gated = (not confirmed) and writer
         if gated:
@@ -908,6 +1010,18 @@ def run_chain(
                 root_dir, chain_item, dry_run,
                 _failure(1, err or {"error": "internal_error", "why": "validation failed", "fix": "tk check"}),
             )
+
+        denied = _audit_or_deny(
+            root_dir,
+            chain_item,
+            dry_run,
+            confirmed,
+            str(confirm_id or ""),
+            None,
+            audit_via,
+        )
+        if denied is not None:
+            return _record_and_return(root_dir, chain_item, dry_run, denied)
 
         steps = chain_item.get("steps") or []
         if not steps:

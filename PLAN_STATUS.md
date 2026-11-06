@@ -177,6 +177,129 @@ trust: draft
 decisions: a header date is not `check_passed`. `check_passed` is only when the caller passes that flag after check exited 0. `signed` never wins. Not merged to `main` (issue #224).
 follow-ups: rebase onto `plan/t1.5-lint` once that commit exists. T1.7 is the narrow fix filter.
 
+## T1.5 Lint is not a sandbox
+
+status: DONE
+branch: plan/t1.5-lint
+baseline: unittest 471 OK; tk check 41/41 (T1.4)
+result: a read-only stdout finding is tagged `lint:`. `tk run` still executes the tool. `SECURITY.md` says the lint is not a sandbox and tools run as the user.
+verify-evidence: the fixture prints plain text after a JSON dry-run. `tk check` reports `lint:` and does not say `sandbox` or `isolation`. Deleting the marker and calling `run_tool` creates it again. Real catalog check JSON does not contain `sandbox`.
+changes: lib/catalog.py tags the read-only live JSON finding and adds a `lint` list; SECURITY.md one sentence; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.CheckItemTests.test_read_only_lint_is_not_a_sandbox_and_run_still_executes tests.test_catalog.CheckItemTests.test_check_item_accepts_valid_tool -q
+Ran 2 tests in 0.321s
+OK
+
+TK_NO_TELEMETRY=1 ./tk check --json
+ok true, checked 41, errors [], sandbox False
+```
+decisions: only the read-only live JSON finding is tagged `lint`. Header and dry-run failures stay enforcement errors. The tag is not a sandbox and the field is not named isolation. Not merged to `main` (issue #223).
+follow-ups: T1.6 trust label is next and does not share these lines.
+
+## T1.7 Narrow fix filter
+
+status: DONE
+branch: plan/t1.7-fix-filter
+baseline: unittest 472 OK on plan/t1.5-lint (380c1ca)
+result: a tool stderr `fix` with a newline, `;`, or unquoted `$()` is replaced by the tool example. `&&` and `|` stay. Pinned repair strings are not edited.
+verify-evidence: `tk run demo.echo; rm -rf /` does not appear in the failure payload. `gh auth login`, `git status && tk run git.sync`, `install it`, the prose verify hint, `TK_TIMEOUT=…`, and `TK_MAX_OUTPUT_BYTES=… | tk run json.pick` are unchanged. A quoted `'$(not expanded)'` stays.
+changes: lib/runner.py `_tool_failure`; tests/test_tool_fix_filter.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 TK_STATE_DIR=$(mktemp -d) python3 -m unittest tests.test_tool_fix_filter tests.test_error_hints tests.test_git_sync tests.test_runner tests.test_verify_flag tests.test_gh_write_tools tests.test_tool_sdk -q
+Ran 86 tests in 18.082s
+OK
+```
+decisions: only the tool-supplied `fix` is filtered. Runner-built fixes are untouched. Not merged to `main` (issue #225).
+follow-ups: T1.6 is already on main and does not share these lines.
+
+## T2.1 `@tk-schema`
+
+status: DONE
+branch: plan/t2.1-schema
+baseline: unittest 472 OK on plan/t1.5-lint (380c1ca); tk check 41/41
+result: optional header. Dry-run JSON objects must contain each declared top-level key. No schema package. Tools with no header are unchanged.
+verify-evidence: `@tk-schema: ok` passes when the object has `ok`. `@tk-schema: {ok, count}` fails and names `count` plus a `fix`.
+changes: lib/catalog.py parses `@tk-schema` and checks keys after the existing dry-run smoke; CODING_STANDARDS.md; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.CheckItemTests.test_schema_keys_are_required_on_dry_run_object tests.test_catalog.CheckItemTests.test_schema_reports_a_missing_dry_run_key tests.test_catalog.CheckItemTests.test_check_item_accepts_valid_tool -v
+Ran 3 tests in 0.427s
+OK
+```
+decisions: keys are presence checks only. Braces reuse `output_keys`. Not merged to `main` (issue #226).
+follow-ups: T2.2 `@tk-requires` depends on T1.4 and does not share the dry-run key check.
+
+## T2.2 `@tk-requires`
+
+status: DONE
+branch: plan/t2.2-requires
+baseline: plan/t2.1-schema at e32875c
+result: optional header. `env:`, `bin:`, and `file:` (relative, inside the repo) are reads. Any other token is skipped and named under `skipped`. A skip is not a failure. No shell.
+verify-evidence: `env:PATH, bin:python3, file:tools/demo/echo` passes. A missing file fails and includes `fix:`. `rm <marker>` is skipped, the marker is not created, and `ok` stays true.
+changes: lib/catalog.py; CODING_STANDARDS.md; tests/test_catalog.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_catalog.CheckItemTests.test_requires_file_inside_repo_passes tests.test_catalog.CheckItemTests.test_requires_missing_file_fails tests.test_catalog.CheckItemTests.test_requires_shell_is_skipped_not_run tests.test_catalog.CheckItemTests.test_check_item_accepts_valid_tool -v
+Ran 4 tests in 0.612s
+OK
+TK_NO_TELEMETRY=1 ./tk check --json
+ok true, checked 41, errors 0
+```
+decisions: a skip is recorded, not turned into a lint or a sandbox. Not merged to `main` (issue #227).
+follow-ups: T2.3 fixtures depend on T2.1.
+
+## T2.3 Fixtures
+
+status: DONE
+branch: plan/t2.3-fixtures
+baseline: plan/t2.1-schema at e32875c
+result: schema fixtures live in tests/fixtures, not tools/. schema_ok passes check. schema_missing names the absent key `count` and includes `fix:`.
+verify-evidence: both files are executable and their paths contain `tests/fixtures`, not `tools/`.
+changes: tests/fixtures/schema_ok; tests/fixtures/schema_missing; tests/test_schema_fixtures.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_schema_fixtures -v
+Ran 3 tests in 0.300s
+OK
+```
+decisions: fixtures are not catalog tools. Not merged to `main` (issue #228).
+follow-ups: T2.4 locks state writes and does not move these fixtures.
+
+## T2.4 State locking
+
+status: DONE
+branch: plan/t2.4-lock
+baseline: plan/t2.2-requires at 4c35be6
+result: telemetry and audit appends take an advisory flock on a sibling lock. JSON state is written to a temp file and replaced while state.lock is held. The lock is local to one filesystem. O_APPEND is not the lock. Telemetry still swallows errors. A mutating run with no audit line is denied with audit_failed and does not start.
+verify-evidence: two processes wrote 60 JSON lines with none torn. tk find env exited 0 when TK_STATE_DIR was a file. A mutating tool did not create its marker when the audit write failed. policy.json replace left no temp file.
+changes: lib/evolver.py; lib/runner.py; SECURITY.md; tests/test_state_lock.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_state_lock tests.test_runner tests.test_git_sync -v
+Ran 51 tests in 11.950s
+OK
+```
+decisions: isolation on the audit line is none. Not merged to main (issue #229).
+follow-ups: T2.5 keeps the one TK_TIMEOUT path.
+
+## T2.5 Timeout
+
+status: DONE
+branch: plan/t2.5-timeout
+baseline: plan/t2.2-requires at 4c35be6
+result: one tool timer. `lib/runner.py` reads `TK_TIMEOUT` once, default 60s, and `tool_timeout` returns exit 1. `tk` has no `--timeout` flag. D6 is unanswered, so exit 124 was not added.
+verify-evidence: `os.environ.get("TK_TIMEOUT"` occurs once in `lib/runner.py`. A 1s timeout returns code 1 and `error` `tool_timeout`.
+changes: tests/test_timeout_path.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_timeout_path tests.test_runner.RunToolTests.test_tool_timeout_kills_descendants_and_logs_unless_dry_run -v
+Ran 3 tests in 5.049s
+OK
+```
+decisions: no second timer. Not merged to `main` (issue #230).
+follow-ups: T3.2 deprecation depends on T1.6.
 ## T3.2 Deprecation
 
 status: DONE
@@ -193,3 +316,35 @@ OK
 ```
 decisions: no second catalog. Not merged to `main` (issue #232).
 follow-ups: T3.3 `@tk-keep` depends on T2.4.
+
+## T4.4 Suggest a tool
+
+status: DONE
+branch: plan/t4.4-suggest
+baseline: plan/t2.4-lock at bb1b223
+result: `tk evolve` adds `tool_candidates` when the same search miss is already in the event log at least twice and the slug is not an existing tool. The line is a `tk save` command. Nothing is written. One miss stays out. An existing tool name stays out.
+verify-evidence: repeated `deploy the app` suggests `tk save deploy.the.app`. `once` and existing `env.check` are absent. The tools directory is unchanged.
+changes: lib/evolver.py; tests/test_evolver.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_evolver.EvolverTests.test_evolve_report_empty_state tests.test_evolver.EvolverTests.test_tool_candidates_suggest_repeated_misses_without_saving -v
+Ran 2 tests in 0.356s
+OK
+```
+decisions: proposals come from captured search misses only. The shell history file is not read. The agent still runs `tk save`. Not merged to main (issue #238).
+follow-ups: none in this slice.
+
+## T5.3 Evolve trust gate
+
+status: DONE
+branch: plan/t5.3-evolve-gate
+baseline: plan/t1.6-trust at 11fc971
+result: `tk evolve` promotes only when `trust_label` returns `check_passed` after check and a live run. A trust exception is recorded and does not stamp the file. Destructive tools stay unverified. Git-tracked files under `tools/` are not edited. A tree with no `.git` has no core set.
+verify-evidence: a patched trust failure leaves `alpha.keep` unchanged and lists it in `failing_tools`. A patched core path is not promoted. `alpha.drop` stays `# @tk-verified: none`.
+changes: lib/evolver.py; tests/test_evolver.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 TK_STATE_DIR= python3 -m unittest tests.test_evolver.EvolverTests.test_evolve_skips_failed_trust_destructive_and_core tests.test_evolver.EvolverTests.test_evolve_report_promotes_and_summarizes tests.test_cli_integration.CliIntegrationTests.test_evolve_uses_runs_misses_and_promotes_read_only_tools -q
+```
+decisions: D3 default is no directory move. Core means git-tracked `tools/` in this checkout, not every file under a copied `tools/` tree. Not merged to main (issue #243).
+follow-ups: none in this slice.
