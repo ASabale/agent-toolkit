@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys
+from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys, trust_label
 from lib.guards import tool_subprocess_env
 from lib.redact import redact, redact_data
 
@@ -356,6 +356,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         used, failed_runs, misses = _summarize_events(events)
         live_runs = _live_run_names(events)
         today = date.today().isoformat()
+        core_tools = _core_tool_paths(root)
         promoted: list[str] = []
         awaiting_live_run: list[str] = []
         failing: list[dict] = []
@@ -381,9 +382,21 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
             if name not in live_runs:
                 awaiting_live_run.append(name)
                 continue
+            path = Path(str(item.get("path") or ""))
+            try:
+                if path.resolve() in core_tools:
+                    continue
+            except OSError:
+                continue
+            try:
+                label = trust_label(str(item.get("verified") or ""), check_passed=True)
+            except Exception:
+                failing.append({"name": name, "errors": ["trust computation failed"]})
+                continue
+            if label != "check_passed":
+                continue
             if not auto_promote:
                 continue
-            path = Path(str(item.get("path") or ""))
             kind = item.get("kind")
             if kind == "tool" and path.is_file() and _promote_tool(path, today):
                 promoted.append(name)
@@ -1231,6 +1244,35 @@ def _event_name(record: dict) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _core_tool_paths(root: Path) -> set[Path]:
+    """Git-tracked tools are core. D3 default: do not edit those files.
+
+    A checkout with no git metadata has no core set, so a saved tool can
+    still be promoted. Git must not walk up to a parent repository.
+    """
+    try:
+        if not (root / ".git").exists():
+            return set()
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", "tools"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    if proc.returncode != 0:
+        return set()
+    found: set[Path] = set()
+    for rel in proc.stdout.split(b"\0"):
+        if not rel:
+            continue
+        try:
+            found.add((root / rel.decode("utf-8")).resolve())
+        except (OSError, UnicodeError):
+            continue
+    return found
 
 
 def _is_unverified(verified: object) -> bool:

@@ -266,3 +266,18 @@ OK
 ```
 decisions: proposals come from captured search misses only. The shell history file is not read. The agent still runs `tk save`. Not merged to main (issue #238).
 follow-ups: none in this slice.
+
+## T5.3 Evolve trust gate
+
+status: DONE
+branch: plan/t5.3-evolve-gate
+baseline: plan/t1.6-trust at 11fc971
+result: `tk evolve` promotes only when `trust_label` returns `check_passed` after check and a live run. A trust exception is recorded and does not stamp the file. Destructive tools stay unverified. Git-tracked files under `tools/` are not edited. A tree with no `.git` has no core set.
+verify-evidence: a patched trust failure leaves `alpha.keep` unchanged and lists it in `failing_tools`. A patched core path is not promoted. `alpha.drop` stays `# @tk-verified: none`.
+changes: lib/evolver.py; tests/test_evolver.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 TK_STATE_DIR= python3 -m unittest tests.test_evolver.EvolverTests.test_evolve_skips_failed_trust_destructive_and_core tests.test_evolver.EvolverTests.test_evolve_report_promotes_and_summarizes tests.test_cli_integration.CliIntegrationTests.test_evolve_uses_runs_misses_and_promotes_read_only_tools -q
+```
+decisions: D3 default is no directory move. Core means git-tracked `tools/` in this checkout, not every file under a copied `tools/` tree. Not merged to main (issue #243).
+follow-ups: none in this slice.
