@@ -677,6 +677,15 @@ def _writes(item: dict) -> bool:
     return str(item.get("safety") or "") in {"mutating", "destructive"}
 
 
+def _item_draft(root_dir: Path, item: dict) -> bool:
+    """Evidence and headers decide. A caller cannot clear a draft with ``draft: false``."""
+    if item.get("draft") is True:
+        return True
+    from lib.evolver import execution_draft
+
+    return execution_draft(root_dir, item)
+
+
 _POLICY_CLASSES = {
     "read-only": "allow",
     "mutating": "confirm",
@@ -1092,7 +1101,7 @@ def _execute_tool(
             sha256=_sha256_file(item.get("path")),
             name=str(item.get("name") or ""),
             safety=safety,
-            draft=bool(item.get("draft")),
+            draft=_item_draft(root_dir, item),
         )
         if decision == "policy_conflict":
             return finish(
@@ -1613,7 +1622,7 @@ def _chain_policy_block(
             sha256=_sha256_file(tool.get("path")),
             name=str(tool.get("name") or ""),
             safety=safety,
-            draft=bool(tool.get("draft")),
+            draft=_item_draft(root_dir, tool),
         )
         if decision == "policy_conflict":
             return _failure(

@@ -245,21 +245,40 @@ def _content_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _evidence_document(root_dir: Path) -> dict:
+def _read_evidence(root_dir: Path) -> tuple[dict | None, str]:
+    """Return ``(document, "")`` or ``(None, missing|invalid)``.
+
+    A missing file is not approval. Invalid JSON or a version other than 1
+    is not an empty trusted document.
+    """
     path = _state_dir(Path(root_dir)) / "evidence.json"
     if not path.is_file():
-        return {"version": 1, "items": {}}
-    parsed = json.loads(path.read_text(encoding="utf-8"))
+        return None, "missing"
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None, "invalid"
     if not isinstance(parsed, dict) or parsed.get("version") != 1:
-        return {"version": 1, "items": {}}
+        return None, "invalid"
     items = parsed.get("items")
     if not isinstance(items, dict):
-        items = {}
-    return {"version": 1, "items": items}
+        return None, "invalid"
+    return {"version": 1, "items": items}, ""
 
 
-def _kept_provenance(current: object) -> str:
-    if isinstance(current, dict) and current.get("provenance") == "local":
+def _evidence_document(root_dir: Path) -> dict:
+    document, _error = _read_evidence(root_dir)
+    if document is None:
+        return {"version": 1, "items": {}}
+    return document
+
+
+def _kept_provenance(current: object, digest: str) -> str:
+    """Keep ``local`` only for the hash that was approved."""
+    if not isinstance(current, dict) or current.get("provenance") != "local":
+        return "draft"
+    approved = current.get("approved_sha256")
+    if isinstance(approved, str) and approved and approved == digest:
         return "local"
     return "draft"
 
@@ -294,12 +313,22 @@ def evidence_view(root_dir: Path, item: dict) -> dict:
             content = ""
     stored: dict = {}
     try:
-        found = _evidence_document(root_dir)["items"].get(str(item.get("name") or ""))
-        if isinstance(found, dict):
-            stored = found
+        document, error = _read_evidence(root_dir)
+        if error != "invalid" and document is not None:
+            found = document["items"].get(str(item.get("name") or ""))
+            if isinstance(found, dict):
+                stored = found
     except (OSError, json.JSONDecodeError):
         stored = {}
-    provenance = "local" if item.get("provenance") == "local" or stored.get("provenance") == "local" else "draft"
+    approved = stored.get("approved_sha256")
+    provenance = (
+        "local"
+        if stored.get("provenance") == "local"
+        and isinstance(approved, str)
+        and approved
+        and approved == content
+        else "draft"
+    )
     return {
         "content_sha256": content,
         "validation_sha256": str(stored.get("validation") or ""),
@@ -321,9 +350,75 @@ def _record_evidence(root_dir: Path, names: list[str], field: str) -> None:
         current = items.get(name)
         updated = dict(current) if isinstance(current, dict) else {}
         updated[field] = digest
-        updated["provenance"] = _kept_provenance(current)
+        updated["provenance"] = _kept_provenance(current, digest)
+        if updated["provenance"] != "local":
+            updated["approved_sha256"] = ""
+            if isinstance(current, dict) and current.get("provenance") == "local":
+                updated["blocked"] = True
         items[name] = updated
     write_state_json(root_dir, "evidence.json", document)
+
+
+def mark_execution_draft(root_dir: Path, name: str) -> None:
+    """Record that this name is an unapproved draft. Does not grant a hash."""
+    if not name:
+        return
+    document = _evidence_document(root_dir)
+    current = document["items"].get(name)
+    updated = dict(current) if isinstance(current, dict) else {}
+    updated["provenance"] = "draft"
+    updated["approved_sha256"] = ""
+    updated["blocked"] = True
+    document["items"][name] = updated
+    write_state_json(root_dir, "evidence.json", document)
+
+
+def execution_draft(root_dir: Path, item: dict) -> bool:
+    """True when this exact file must not inherit a class-level allow.
+
+    Header ``@tk-provenance`` is not approval. A missing evidence file is not
+    approval either, and it does not by itself block a capability that was
+    never marked a draft. Invalid evidence blocks. ``blocked`` marks saves
+    and imports. A ``local`` provenance applies only to ``approved_sha256``.
+    """
+    content = ""
+    path = item.get("path")
+    if path:
+        try:
+            content = _content_sha256(Path(str(path)))
+        except OSError:
+            path = None
+    try:
+        document, error = _read_evidence(root_dir)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return True
+    if error == "invalid":
+        return True
+    name = str(item.get("name") or "")
+    record = {}
+    if document is not None:
+        found = document["items"].get(name)
+        if isinstance(found, dict):
+            record = found
+    approved = record.get("approved_sha256")
+    if (
+        record.get("provenance") == "local"
+        and isinstance(approved, str)
+        and approved
+        and approved == content
+    ):
+        return False
+    if isinstance(approved, str) and approved and approved != content:
+        return True
+    if record.get("blocked") is True:
+        return True
+    if path:
+        from lib.catalog import parse_tool_header
+
+        header = parse_tool_header(Path(str(path)))
+        if header.get("provenance") == "local":
+            return True
+    return False
 
 
 def write_state_json(root_dir: Path, filename: str, document: dict) -> None:
@@ -1141,6 +1236,17 @@ def _commit_draft(
             )
         return _failure("check_failed", why, fix)
     log_event(root, saved_event, saved_payload)
+    try:
+        mark_execution_draft(root, str(success.get("name") or ""))
+    except (OSError, ValueError, TypeError) as exc:
+        if previous is None:
+            dest.unlink(missing_ok=True)
+            _prune_empty_dirs(dest.parent, catalog_root)
+        else:
+            dest.write_bytes(previous)
+            if executable:
+                dest.chmod(0o755)
+        return _failure("draft_unrecorded", str(exc), "make the state directory writable")
     return 0, json.dumps(success, separators=(",", ":")), ""
 
 

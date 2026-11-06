@@ -15,7 +15,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lib.evolver import evolve_report, log_event, save_tool, verify_item  # noqa: E402
+from lib.catalog import discover_catalog  # noqa: E402
+from lib.evolver import evolve_report, log_event, save_tool, verify_item, write_state_json  # noqa: E402
+from lib.runner import _sha256_file  # noqa: E402
+
+
+def _hash_confirm(root: Path, name: str) -> None:
+    item = discover_catalog(root)[name]
+    write_state_json(
+        root,
+        "policy.json",
+        {
+            "version": 1,
+            "classes": {"read-only": "allow", "mutating": "confirm", "destructive": "deny"},
+            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": "confirm"}],
+        },
+    )
 
 TK = ROOT / "tk"
 
@@ -66,6 +81,7 @@ class VerifyFlagTests(unittest.TestCase):
             from_cmd="printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(code, 0, err)
+        _hash_confirm(self.root, "alpha.look")
         path = self.root / "tools" / "alpha" / "look"
         before = path.read_text(encoding="utf-8")
         status, payload = verify_item(self.root, "alpha.look")
@@ -83,6 +99,7 @@ class VerifyFlagTests(unittest.TestCase):
             from_cmd="printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(code, 0, err)
+        _hash_confirm(self.root, "alpha.ship")
         path = self.root / "tools" / "alpha" / "ship"
         before = path.read_text(encoding="utf-8")
         status, payload = verify_item(self.root, "alpha.ship")
@@ -104,6 +121,7 @@ class VerifyFlagTests(unittest.TestCase):
             from_cmd="printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(code, 0, err)
+        _hash_confirm(self.root, "alpha.drop")
         path = self.root / "tools" / "alpha" / "drop"
         before = path.read_bytes()
         status, payload = verify_item(self.root, "alpha.drop")
