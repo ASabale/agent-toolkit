@@ -13,16 +13,23 @@ import os
 import py_compile
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 from lib.chainref import bare_arg_name, static_ref_error
 from lib.guards import tool_subprocess_env
+from lib.redact import secret_hits
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _TYPES = {"string", "int", "float", "bool"}
 _DEFAULT_RE = re.compile(r"\(default:\s*([^)]*)\)", re.IGNORECASE)
+_NEED_ENV = re.compile(r"env:([A-Za-z_][A-Za-z0-9_]*)\Z")
+_NEED_BIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,64}\Z")
+_REQUIRE_ENV = re.compile(r"env:([A-Za-z_][A-Za-z0-9_]*)\Z")
+_REQUIRE_BIN = re.compile(r"bin:([A-Za-z0-9][A-Za-z0-9._+-]{0,64})\Z")
+_REQUIRE_FILE = re.compile(r"file:([A-Za-z0-9][A-Za-z0-9._+/-]{0,180})\Z")
 
 
 def _empty_tool(path: Path) -> dict:
@@ -39,6 +46,9 @@ def _empty_tool(path: Path) -> dict:
         "output": "",
         "example": "",
         "verified": "",
+        "needs": [],
+        "schema": [],
+        "requires": [],
         "path": resolved,
     }
 
@@ -132,6 +142,12 @@ def parse_tool_header(path: Path) -> dict:
                 item["example"] = value
             elif key == "@tk-verified":
                 item["verified"] = value
+            elif key == "@tk-needs":
+                item["needs"].extend(part for part in re.split(r"[\s,]+", value) if part)
+            elif key == "@tk-schema":
+                item["schema"].extend(_schema_keys(value))
+            elif key == "@tk-requires":
+                item["requires"].extend(part for part in re.split(r"[\s,]+", value) if part)
     except Exception:
         return item
     return item
@@ -689,11 +705,31 @@ def _dry_run_plan_error(payload: object, safety: str) -> str | None:
     return None
 
 
+def _schema_keys(value: str) -> list[str]:
+    """Top-level names from ``@tk-schema``. Braces reuse the output-key parser."""
+    text = value.strip()
+    if not text:
+        return []
+    if "{" in text:
+        keys = output_keys(text)
+        return list(keys or [])
+    return [part for part in re.split(r"[\s,]+", text) if part]
+
+
+def _schema_error(payload: dict, schema: list[str]) -> str | None:
+    missing = [key for key in schema if key not in payload]
+    if not missing:
+        return None
+    shown = ", ".join(missing)
+    return f"dry-run missing schema key: {shown}; fix: include {shown} in the dry-run JSON object"
+
+
 def _dry_run_error(
     path: Path,
     args: list[dict],
     safety: str = "",
     root_dir: Path | None = None,
+    schema: list[str] | None = None,
 ) -> str | None:
     env = tool_subprocess_env()
     for key in list(env):
@@ -747,6 +783,10 @@ def _dry_run_error(
         return 'dry-run payload is not marked "dry_run": true'
     if isinstance(payload.get("truncated"), bool):
         return 'dry-run "truncated" must be an int (omitted count), not bool'
+    if schema:
+        missing = _schema_error(payload, schema)
+        if missing:
+            return missing
     return None
 
 
@@ -885,6 +925,8 @@ def _header_errors(item: dict) -> list[str]:
             errors.append(f"invalid arg flag: {flag or '(empty)'}")
         elif flag == "--yes":
             errors.append("reserved flag: --yes; fix: drop @tk-arg --yes")
+        elif flag == "--confirm":
+            errors.append("reserved flag: --confirm; fix: drop @tk-arg --confirm")
         elif flag in {"--raw", "--dry-run"}:
             errors.append(f"reserved flag: {flag}")
         elif flag in seen_flags:
@@ -899,6 +941,70 @@ def _header_errors(item: dict) -> list[str]:
             label = flag if flag.startswith("--") else f"--{flag.lstrip('-') or 'empty'}"
             errors.append(f"invalid default for {label}: {default} is not {typ}")
     return errors
+
+
+def _needs_errors(item: dict) -> list[str]:
+    """Name a missing executable or env var. Does not install or confine."""
+    errors: list[str] = []
+    for raw in item.get("needs") or []:
+        token = str(raw).strip()
+        env_match = _NEED_ENV.fullmatch(token)
+        if env_match:
+            name = env_match.group(1)
+            if not os.environ.get(name):
+                errors.append(f"missing env: {name}; fix: export {name}=<value>")
+            continue
+        if not _NEED_BIN.fullmatch(token):
+            errors.append(
+                f"invalid @tk-needs: {token}; fix: use a command name or env:NAME"
+            )
+            continue
+        if shutil.which(token) is None:
+            errors.append(f"missing executable: {token}; fix: install {token}")
+    return errors
+
+
+def _requires_report(item: dict, root_dir: Path) -> tuple[list[str], list[str]]:
+    """Evaluate @tk-requires without a write and without a shell.
+
+    env:, bin:, and file: (a relative path inside the repo) are reads.
+    Anything else is skipped and the reason is returned. The tool still runs.
+    """
+    errors: list[str] = []
+    skipped: list[str] = []
+    root = Path(root_dir).resolve()
+    for raw in item.get("requires") or []:
+        token = str(raw).strip()
+        env_match = _REQUIRE_ENV.fullmatch(token)
+        if env_match:
+            name = env_match.group(1)
+            if not os.environ.get(name):
+                errors.append(f"missing env: {name}; fix: export {name}=<value>")
+            continue
+        bin_match = _REQUIRE_BIN.fullmatch(token)
+        if bin_match:
+            name = bin_match.group(1)
+            if shutil.which(name) is None:
+                errors.append(f"missing executable: {name}; fix: install {name}")
+            continue
+        file_match = _REQUIRE_FILE.fullmatch(token)
+        if file_match:
+            rel = file_match.group(1)
+            candidate = (root / rel).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                skipped.append(
+                    f"skipped @tk-requires: {token}; why: path leaves the repo; not evaluated"
+                )
+                continue
+            if not candidate.is_file():
+                errors.append(f"missing file: {rel}; fix: create {rel}")
+            continue
+        skipped.append(
+            f"skipped @tk-requires: {token}; why: only env:, bin:, and file: are evaluated without a write or a shell"
+        )
+    return errors, skipped
 
 
 def _resolve(root_dir: Path, name_or_path: str | Path) -> tuple[Path | None, dict | None, str | None]:
@@ -1093,6 +1199,14 @@ def _chain_dry_run_error(root_dir: Path, item: dict) -> str | None:
     return None
 
 
+def _file_secret_rules(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return secret_hits(text)
+
+
 def _is_chain_path(root_dir: Path, path: Path) -> bool:
     if path.suffix.lower() != ".json":
         return False
@@ -1115,16 +1229,23 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         item = preloaded if preloaded is not None else (load_chain(path) if is_chain else parse_tool_header(path))
         name = str(item.get("name") or path.stem)
         errors: list[str] = []
+        lint_hits: list[str] = []
+        skipped: list[str] = []
+        secret_rules = _file_secret_rules(path)
         if not is_chain and not os.access(path, os.X_OK):
             errors.append(f"not executable: {path}")
         errors.extend(_header_errors(item))
+        if not is_chain:
+            errors.extend(_needs_errors(item))
+            require_errors, skipped = _requires_report(item, root_dir)
+            errors.extend(require_errors)
         errors.extend(_example_ok(str(item.get("name") or ""), str(item.get("example") or ""), item.get("args") or []))
         if not is_chain:
             errors.extend(_undeclared_arg_env_errors(path, item))
             syntax = _syntax_error(path)
             if syntax:
                 errors.append(syntax)
-            elif os.access(path, os.X_OK):
+            elif os.access(path, os.X_OK) and not secret_rules:
                 guard = _dry_run_guard_error(path)
                 if guard:
                     errors.append(guard)
@@ -1135,6 +1256,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                         item.get("args") or [],
                         safety,
                         root_dir=root_dir,
+                        schema=list(item.get("schema") or []),
                     )
                     if dry:
                         errors.append(dry)
@@ -1148,7 +1270,10 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                             root_dir=root_dir,
                         )
                         if live:
-                            errors.append(live)
+                            # Tag the read-only stdout lint. It is not enforcement.
+                            finding = f"lint: {live}"
+                            errors.append(finding)
+                            lint_hits.append(finding)
         else:
             catalog = discover_catalog(root_dir)
             steps = item.get("steps") or []
@@ -1162,15 +1287,25 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                     elif tool_name not in catalog:
                         errors.append(f"step {index} tool not in catalog: {tool_name}")
                 errors.extend(_chain_wiring_errors(item, catalog))
-            if not errors:
+            if not errors and not secret_rules:
                 dry = _chain_dry_run_error(root_dir, item)
                 if dry:
                     errors.append(dry)
+        if secret_rules:
+            shown = ", ".join(secret_rules)
+            errors.append(
+                f"secret in file ({shown}); remove the credential from the file; fix: tk check {name}"
+            )
         errors.extend(_layout_errors(root_dir, path, item, is_chain))
         errors.extend(_duplicate_name_errors(root_dir, str(item.get("name") or "")))
         if errors and not any("fix: tk " in str(err) for err in errors):
             errors.append(f"fix: tk check {name} --json")
-        return {"name": name, "ok": not errors, "errors": errors}
+        payload = {"name": name, "ok": not errors, "errors": errors}
+        if lint_hits:
+            payload["lint"] = lint_hits
+        if skipped:
+            payload["skipped"] = skipped
+        return payload
     except Exception as exc:
         return {"name": label, "ok": False, "errors": [f"internal_error: {exc}"]}
 

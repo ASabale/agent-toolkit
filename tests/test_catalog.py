@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import stat
 import sys
 import tempfile
@@ -287,6 +288,108 @@ class CheckItemTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["name"], "demo.echo")
 
+    def test_check_item_needs_missing_executable_names_a_fix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: definitely-missing-bin\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertFalse(result["ok"])
+        blob = " ".join(result["errors"])
+        self.assertIn("definitely-missing-bin", blob)
+        self.assertIn("fix:", blob)
+        self.assertNotIn("sandbox", blob.lower())
+
+    def test_check_item_needs_missing_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: env:TK_NEEDS_ABSENT_FOR_TEST\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            os.environ.pop("TK_NEEDS_ABSENT_FOR_TEST", None)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("missing env: TK_NEEDS_ABSENT_FOR_TEST", blob)
+        self.assertIn("fix:", blob)
+
+    def test_read_only_lint_is_not_a_sandbox_and_run_still_executes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "ran"
+            path = root / "tools" / "demo" / "echo"
+            body = (
+                "if [[ \"${TK_DRY_RUN:-0}\" == \"1\" ]]; then\n"
+                "  printf '%s\\n' '{\"dry_run\":true}'\n"
+                "  exit 0\n"
+                "fi\n"
+                f"printf '%s\\n' ran > {shlex.quote(str(marker))}\n"
+                "printf '%s\\n' 'plain-text'\n"
+            )
+            _write(path, _bash_tool("demo.echo", "Echo a target id", body=body), executable=True)
+            result = check_item(root, "demo.echo")
+            blob = " ".join(result["errors"])
+            self.assertIn("lint:", blob)
+            self.assertNotIn("sandbox", blob.lower())
+            self.assertNotIn("isolation", blob.lower())
+            self.assertTrue(result.get("lint"))
+            marker.unlink(missing_ok=True)
+            item = parse_tool_header(path)
+            code, _out, err = run_tool(root, item, {"--target": "example"})
+            self.assertTrue(marker.is_file())
+            self.assertNotEqual(code, 0)
+            self.assertNotIn("sandbox", err.lower())
+            self.assertNotIn("isolation", err.lower())
+
+    def test_check_item_needs_present_bin_and_env_stay_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: sh env:TK_NEEDS_PRESENT\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            old = os.environ.get("TK_NEEDS_PRESENT")
+            os.environ["TK_NEEDS_PRESENT"] = "1"
+            try:
+                result = check_item(root, "demo.echo")
+            finally:
+                if old is None:
+                    os.environ.pop("TK_NEEDS_PRESENT", None)
+                else:
+                    os.environ["TK_NEEDS_PRESENT"] = old
+        self.assertTrue(result["ok"], result)
+
+    def test_check_item_needs_still_runs_the_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            body = "printf '%s\\n' 'not-json'\n"
+            text = _bash_tool("demo.echo", "Echo a target id", body=body)
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-needs: definitely-missing-bin\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("definitely-missing-bin", blob)
+        self.assertTrue(any("json" in err.lower() for err in result["errors"]))
+
     def test_check_item_missing_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -297,6 +400,98 @@ class CheckItemTests(unittest.TestCase):
         blob = " ".join(result["errors"]).lower()
         for field in ("summary", "safety", "output", "example", "verified"):
             self.assertIn(field, blob)
+
+    def test_requires_file_inside_repo_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-requires: env:PATH, bin:python3, file:tools/demo/echo\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("skipped", result)
+
+    def test_requires_missing_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-requires: file:tools/demo/missing\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("tools/demo/missing", blob)
+        self.assertIn("fix:", blob)
+
+    def test_requires_shell_is_skipped_not_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-requires: not-a-predicate\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        self.assertTrue(result["ok"], result)
+        skipped = " ".join(result.get("skipped") or [])
+        self.assertIn("not-a-predicate", skipped)
+        self.assertIn("shell", skipped)
+        self.assertNotIn("sandbox", skipped.lower())
+
+    def test_schema_keys_are_required_on_dry_run_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id")
+            text = text.replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-schema: ok\n",
+                1,
+            )
+            body = """if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\\n' '{"dry_run":true,"ok":true}'
+  exit 0
+fi
+printf '%s\\n' '{"ok":true}'
+"""
+            text = text.replace(
+                """if [[ "${TK_DRY_RUN:-0}" == "1" ]]; then
+  printf '%s\\n' '{"dry_run":true}'
+  exit 0
+fi
+printf '%s\\n' '{"ok":true}'
+""",
+                body,
+                1,
+            )
+            _write(path, text, executable=True)
+            ok = check_item(root, "demo.echo")
+        self.assertTrue(ok["ok"], ok)
+
+    def test_schema_reports_a_missing_dry_run_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-schema: {ok, count}\n",
+                1,
+            )
+            _write(path, text, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertIn("count", blob)
+        self.assertIn("fix:", blob)
+        self.assertNotIn("sandbox", blob.lower())
 
     def test_check_item_non_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
