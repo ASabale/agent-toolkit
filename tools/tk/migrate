@@ -27,7 +27,7 @@ from lib.tool_sdk import arg_str, emit, fail
 
 FIX = "tk run tk.migrate --action report"
 _MANIFEST_VERSION = 1
-_SKIP_PARTS = {"state", ".git"}
+_SKIP_PARTS = {"state", ".git", "__pycache__"}
 _SKIP_NAMES = {
     "policy.json",
     "audit.jsonl",
@@ -85,7 +85,9 @@ def _skipped(rel: Path) -> bool:
 
 def _kind(rel: Path) -> str | None:
     parts = rel.parts
-    if any(part.startswith(".") for part in parts):
+    if any(part.startswith(".") or part in _SKIP_PARTS for part in parts):
+        return None
+    if rel.suffix.lower() in (".pyc", ".pyo"):
         return None
     if parts[0] == "tools":
         return "tool"
@@ -304,7 +306,7 @@ def _apply(source: Path, dest: Path, files: list[dict], write: bool) -> dict:
         created.append((target, digest))
         copied.append(row["path"])
     checks = [
-        check_item(dest, row["path"])
+        check_item(dest, dest / row["path"])
         for row in files
         if row["kind"] in {"tool", "chain"} and row["path"] in copied
     ]

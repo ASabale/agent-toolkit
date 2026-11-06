@@ -100,9 +100,9 @@ def _env(extra: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _run(env: dict[str, str]) -> subprocess.CompletedProcess:
+def _run(env: dict[str, str], cwd: Path = ROOT) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [str(TOOL)], cwd=str(ROOT), env=env, capture_output=True, text=True, check=False
+        [str(TOOL)], cwd=str(cwd), env=env, capture_output=True, text=True, check=False
     )
 
 
@@ -254,6 +254,56 @@ class MigrateReportTests(unittest.TestCase):
             self.assertFalse((dest / "state").exists())
             self.assertFalse((dest / "tools" / "gh_credentials.json").exists())
             self.assertTrue((source / "VERSION").is_file())
+
+    def test_apply_checks_the_written_destination_files_not_the_cwd(self):
+        """Static checks read the destination bytes, never a cwd-relative lookalike."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            proc = _run(
+                _env(
+                    {
+                        "TK_ARG_ACTION": "apply",
+                        "TK_ARG_SOURCE": str(source),
+                        "TK_ARG_DEST": str(dest),
+                        "TK_ARG_APPLY": "1",
+                        "TK_STATE_DIR": str(root / "state"),
+                    }
+                ),
+                cwd=source,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = _payload(proc)
+            self.assertEqual([row["name"] for row in payload["checks"]], ["bench.chain", "bench.dated", "bench.plain"])
+            self.assertTrue(all(row["ok"] for row in payload["checks"]))
+            self.assertTrue((dest / "chains" / "bench.chain.json").is_file())
+
+    def test_compiled_cache_files_are_neither_exported_nor_applied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            cache = source / "tools" / "tk" / "__pycache__"
+            cache.mkdir(parents=True)
+            (cache / "migratecpython-314.pyc").write_bytes(b"\x00not a tool\n")
+            dest = _make_dest(root / "dest")
+            proc = _run(_env({"TK_ARG_ACTION": "export", "TK_ARG_SOURCE": str(source)}))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            paths = [row["path"] for row in _payload(proc)["files"]]
+            self.assertFalse(any("__pycache__" in path or path.endswith(".pyc") for path in paths))
+            proc = _run(
+                _env(
+                    {
+                        "TK_ARG_ACTION": "apply",
+                        "TK_ARG_SOURCE": str(source),
+                        "TK_ARG_DEST": str(dest),
+                        "TK_ARG_APPLY": "1",
+                        "TK_STATE_DIR": str(root / "state"),
+                    }
+                )
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse((dest / "tools" / "tk" / "__pycache__").exists())
 
     def test_same_content_destination_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
