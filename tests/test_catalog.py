@@ -21,6 +21,7 @@ from lib.catalog import (  # noqa: E402
     format_info_output,
     load_chain,
     output_keys,
+    _score,
     parse_tool_header,
     suggest_closest_item,
 )
@@ -194,6 +195,21 @@ class DiscoverAndFindTests(unittest.TestCase):
             # gh.pr-checks does not contain "view". notes.list matches neither.
             ranked = [item["name"] for item in find_items(root, "pr view")]
         self.assertEqual(ranked, ["pr.view", "gh.pr-checks"])
+
+    def test_score_weights_name_summary_and_args(self):
+        item = {
+            "name": "pr.view",
+            "summary": "Show one record",
+            "args": [{"flag": "--repo", "description": "Repository name"}],
+        }
+        self.assertEqual(_score(item, ""), 0)
+        self.assertEqual(_score(item, "pr.view"), 5)
+        self.assertEqual(_score(item, "pr"), 5)
+        self.assertEqual(_score(item, "vie"), 3)
+        self.assertEqual(_score(item, "record"), 2)
+        self.assertEqual(_score(item, "repository"), 1)
+        self.assertEqual(_score(item, "show"), 0)
+        self.assertEqual(_score(item, "repo"), 0)
 
     def test_find_items_positive_limit_slices_sorted_results(self):
         with tempfile.TemporaryDirectory() as tmp:
