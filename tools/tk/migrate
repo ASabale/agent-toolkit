@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # @tk-name: tk.migrate
-# @tk-summary: Export or copy tools, chains, and the skill between toolkit checkouts
+# @tk-summary: Export or copy tools, chains, and the skill between toolkit checkouts. Secret scan is the redact rules only
 # @tk-safety: destructive
 # @tk-arg: --action | optional | string | report, export, or apply (default: report)
 # @tk-arg: --source | optional | string | Source Agent Toolkit checkout
 # @tk-arg: --dest | optional | string | Destination Agent Toolkit checkout
 # @tk-arg: --apply | optional | bool | Write files during apply; dry-run is the default
 # @tk-arg: --manifest | optional | string | Manifest JSON to apply; a hash mismatch aborts the copy
+# @tk-arg: --allow-secret-scan | optional | string | Copy this relative path even when the secret scan hits
 # @tk-output: json | object
 # @tk-example: tk run tk.migrate --action report
 # @tk-verified: none
@@ -23,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from lib.catalog import check_item
+from lib.redact import secret_hits
 from lib.tool_sdk import arg_str, emit, fail
 
 FIX = "tk run tk.migrate --action report"
@@ -98,22 +100,62 @@ def _kind(rel: Path) -> str | None:
     return None
 
 
-def _scan(source: Path) -> tuple[list[dict], str | None]:
+def _override_paths() -> tuple[set[str], str | None]:
+    raw = arg_str("--allow-secret-scan").strip()
+    if not raw:
+        return set(), None
+    if raw.startswith("/") or ".." in Path(raw).parts:
+        return set(), "allow-secret-scan path refused"
+    return {raw}, None
+
+
+def _secret_scan() -> dict:
+    return {
+        "excluded_by_path": [],
+        "excluded_by_content": [],
+        "unscannable": [],
+        "scanned_clean": [],
+        "overrides": [],
+        "hit_copied": False,
+    }
+
+
+def _classify(rel: str, data: bytes, overrides: set[str], scan: dict) -> bool:
+    """Return whether the file may be copied. Never store matched text."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeError:
+        scan["unscannable"].append(rel)
+        return False
+    hits = secret_hits(text)
+    if hits and rel in overrides:
+        scan["overrides"].append({"path": rel, "rules": hits})
+        return True
+    if hits:
+        scan["excluded_by_content"].append({"path": rel, "rules": hits})
+        return False
+    scan["scanned_clean"].append(rel)
+    return True
+
+
+def _scan(source: Path, overrides: set[str] | None = None) -> tuple[list[dict], dict, str | None]:
     roots = [source / "tools", source / "chains", source / "skills" / "agent-toolkit"]
     version = _version_string(source)
+    allow = overrides or set()
+    scan = _secret_scan()
     files: list[dict] = []
     for base in roots:
         if not base.exists():
             continue
         if base.is_symlink() and not _inside(source, base):
-            return [], f"symlink leaves source: {base}"
+            return [], scan, f"symlink leaves source: {base}"
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
             current = Path(dirpath)
             kept = []
             for dirname in dirnames:
                 child = current / dirname
                 if child.is_symlink() and not _inside(source, child):
-                    return [], f"symlink leaves source: {child}"
+                    return [], scan, f"symlink leaves source: {child}"
                 kept.append(dirname)
             dirnames[:] = kept
             for name in filenames:
@@ -121,17 +163,23 @@ def _scan(source: Path) -> tuple[list[dict], str | None]:
                 rel = path.relative_to(source)
                 if path.is_symlink():
                     if not _inside(source, path):
-                        return [], f"symlink leaves source: {path}"
+                        return [], scan, f"symlink leaves source: {path}"
                     continue
-                if not path.is_file() or _skipped(rel):
+                if not path.is_file():
+                    continue
+                if _skipped(rel):
+                    scan["excluded_by_path"].append(rel.as_posix())
                     continue
                 kind = _kind(rel)
                 if kind is None:
                     continue
                 data = path.read_bytes()
+                rel_text = rel.as_posix()
+                if not _classify(rel_text, data, allow, scan):
+                    continue
                 files.append(
                     {
-                        "path": rel.as_posix(),
+                        "path": rel_text,
                         "kind": kind,
                         "sha256": _sha256(data),
                         "size": len(data),
@@ -140,14 +188,21 @@ def _scan(source: Path) -> tuple[list[dict], str | None]:
                     }
                 )
     files.sort(key=lambda row: row["path"])
-    return files, None
+    for key in ("excluded_by_path", "excluded_by_content", "unscannable", "scanned_clean", "overrides"):
+        scan[key].sort(key=lambda item: item["path"] if isinstance(item, dict) else item)
+    return files, scan, None
 
 
-def _manifest(source: Path) -> tuple[dict | None, str | None]:
-    files, error = _scan(source)
+def _manifest(source: Path, overrides: set[str] | None = None) -> tuple[dict | None, str | None]:
+    files, scan, error = _scan(source, overrides)
     if error:
         return None, error
-    return {"version": _MANIFEST_VERSION, "source_version": _version_string(source), "files": files}, None
+    return {
+        "version": _MANIFEST_VERSION,
+        "source_version": _version_string(source),
+        "files": files,
+        "secret_scan": scan,
+    }, None
 
 
 def _listed_bytes(source: Path, rel: str) -> tuple[bytes | None, bool | None, str | None]:
@@ -319,7 +374,6 @@ def _failure(error: str, why: str, removed: list[str]) -> dict:
         "why": why,
         "fix": FIX,
         "removed": removed,
-        "secrets_copied": False,
     }
 
 
@@ -357,10 +411,29 @@ def _mark_drafts(dest: Path, files: list[dict], copied: list[str]) -> str:
     return ""
 
 
-def _apply(source: Path, dest: Path, files: list[dict], write: bool) -> dict:
+def _screen(source: Path, files: list[dict], overrides: set[str]) -> tuple[list[dict], dict]:
+    """Re-scan the apply set. A content hit or undecodable file is not copied."""
+    scan = _secret_scan()
+    kept: list[dict] = []
+    for row in files:
+        rel = str(row.get("path") or "")
+        if _skipped(Path(rel)):
+            scan["excluded_by_path"].append(rel)
+            continue
+        data = _read(source / rel)
+        if data is None:
+            continue
+        if not _classify(rel, data, overrides, scan):
+            continue
+        kept.append(row)
+    return kept, scan
+
+
+def _apply(source: Path, dest: Path, files: list[dict], write: bool, scan: dict | None = None) -> dict:
+    report = scan or _secret_scan()
     plan = [row["path"] for row in files]
     if not write or os.environ.get("TK_DRY_RUN", "0") == "1":
-        return {"dry_run": True, "plan": plan, "copied": [], "skipped": [], "secrets_copied": False}
+        return {"dry_run": True, "plan": plan, "copied": [], "skipped": [], "secret_scan": report}
     for row in files:
         if not _dest_stays(dest, Path(row["path"])):
             return _failure("dest_escape", f"destination path leaves the checkout: {row['path']}", [])
@@ -414,7 +487,10 @@ def _apply(source: Path, dest: Path, files: list[dict], write: bool) -> dict:
         "skipped": skipped,
         "created": [{"path": path.relative_to(dest).as_posix(), "sha256": digest} for path, digest in created],
         "checks": checks,
-        "secrets_copied": False,
+        "secret_scan": {
+            **report,
+            "hit_copied": any(item["path"] in copied for item in report["overrides"]),
+        },
     }
 
 
@@ -433,7 +509,7 @@ def _report(root: Path) -> dict:
                 "copied": False,
             }
         ],
-        "secrets_copied": False,
+        "secret_scan": _secret_scan(),
         "state_copied": False,
     }
 
@@ -452,12 +528,14 @@ def main() -> int:
     source = Path(arg_str("--source"))
     if not source.is_dir():
         return fail("not_a_checkout", "source is not a directory", FIX, 2)
+    overrides, refused = _override_paths()
+    if refused:
+        return fail("refused", refused, FIX)
     if action == "export":
-        manifest, error = _manifest(source)
+        manifest, error = _manifest(source, overrides)
         if error or manifest is None:
             return fail("refused", error or "scan failed", FIX)
         manifest["dry_run"] = True
-        manifest["secrets_copied"] = False
         return emit(manifest)
     reason = _reject_user_path("dest", arg_str("--dest"))
     if reason:
@@ -467,14 +545,18 @@ def main() -> int:
         return fail("not_a_checkout", "dest is not a directory", FIX, 2)
     manifest_raw = arg_str("--manifest")
     # No manifest: scan is allowed and is not a reviewed import.
-    manifest, error = _load_manifest(manifest_raw, source) if manifest_raw else _manifest(source)
+    manifest, error = _load_manifest(manifest_raw, source) if manifest_raw else _manifest(source, overrides)
     if error or manifest is None:
         return fail("refused", error or "scan failed", FIX)
     if manifest_raw:
         manifest, error = _load_manifest(manifest_raw, source)
         if error or manifest is None:
             return fail("refused", error or "scan failed", FIX)
-    result = _apply(source, dest, list(manifest["files"]), _truthy(arg_str("--apply")))
+        kept, scan = _screen(source, list(manifest["files"]), overrides)
+    else:
+        kept = list(manifest["files"])
+        scan = manifest.get("secret_scan") or _secret_scan()
+    result = _apply(source, dest, kept, _truthy(arg_str("--apply")), scan)
     return emit(result, 1 if result.get("error") else 0)
 
 
