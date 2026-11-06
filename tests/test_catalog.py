@@ -291,6 +291,8 @@ class DiscoverAndFindTests(unittest.TestCase):
         self.assertIn("output: json | Distilled object", text)
         self.assertIn("example: tk run demo.echo --target example", text)
         self.assertIn("verified: none", text)
+        self.assertEqual(text.splitlines()[0], "contract: 1")
+        self.assertEqual(sum(line.startswith("contract:") for line in text.splitlines()), 1)
 
 
 class CheckItemTests(unittest.TestCase):
