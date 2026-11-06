@@ -961,14 +961,10 @@ class RunChainTests(unittest.TestCase):
         with patch("lib.catalog.discover_catalog", return_value={}):
             code, out, err = run_chain(root, chain, {"--id": "a9"})
         self.assertEqual(code, 1)
-        self.assertEqual(
-            json.loads(err),
-            {
-                "error": "unknown_tool",
-                "why": "unknown tool: missing.tool",
-                "fix": "tk run demo.pipe --id example",
-            },
-        )
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "chain_preflight_failed")
+        self.assertIn("missing.tool", payload["why"])
+        self.assertEqual(out, "")
 
     def test_whole_object_prev_and_step_refs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1074,7 +1070,7 @@ class RunChainTests(unittest.TestCase):
                 code, out, err = run_chain(root, chain, {"--id": "a9"})
         self.assertEqual(code, 1)
         payload = json.loads(err)
-        self.assertEqual(payload["error"], "unresolved_reference")
+        self.assertEqual(payload["error"], "chain_preflight_failed")
         self.assertIn("$input.missing", payload["why"])
 
     def test_chain_logs_its_own_outcome_and_dry_run_skips_run_ok(self):
@@ -1152,8 +1148,12 @@ class DuplicateNameRunTests(unittest.TestCase):
                 "example": "tk run dup.local",
             }
             code, _out, err = run_chain(root, chain_same, {})
-            self.assertEqual(code, 2, err)
-            self.assertEqual(json.loads(err)["error"], "duplicate_name")
+            self.assertEqual(code, 1, err)
+            payload = json.loads(err)
+            self.assertEqual(payload["error"], "chain_preflight_failed")
+            self.assertIn("tools/aaa/local", payload["why"])
+            self.assertIn("tools/gh/local", payload["why"])
+            self.assertEqual(payload["why"].count("duplicate_name:"), 1)
             self.assertFalse(sentinel.exists())
 
             chain_step = {
@@ -1167,9 +1167,11 @@ class DuplicateNameRunTests(unittest.TestCase):
                 "example": "tk run wrap.pipeline",
             }
             code, _out, err = run_chain(root, chain_step, {})
-            self.assertEqual(code, 2, err)
-            self.assertIn("tools/aaa/local", json.loads(err)["why"])
-            self.assertIn("tools/gh/local", json.loads(err)["why"])
+            self.assertEqual(code, 1, err)
+            payload = json.loads(err)
+            self.assertEqual(payload["error"], "chain_preflight_failed")
+            self.assertIn("tools/aaa/local", payload["why"])
+            self.assertIn("tools/gh/local", payload["why"])
             self.assertFalse(sentinel.exists())
 
 

@@ -18,7 +18,13 @@ import time
 import uuid
 from pathlib import Path
 
-from lib.catalog import _needs_errors, _requires_report, output_keys
+from lib.catalog import (
+    _chain_wiring_errors,
+    _duplicate_name_errors,
+    _needs_errors,
+    _requires_report,
+    output_keys,
+)
 from lib.chainref import resolve_expr, stringify
 from lib.evolver import append_audit, append_trace, log_event, record_feedback
 from lib.guards import tool_subprocess_env
@@ -746,7 +752,15 @@ def _with_audit_incomplete(stderr: str) -> str:
     return _compact({"audit_incomplete": True})
 
 
-def _trace_finish(root_dir: Path, item: dict, run_id: str, facts: dict, code: int, started: float) -> None:
+def _trace_finish(
+    root_dir: Path,
+    item: dict,
+    run_id: str,
+    facts: dict,
+    code: int,
+    started: float,
+    parent_run_id: str | None = None,
+) -> None:
     outcome = facts.get("outcome")
     if outcome not in {"dry_run", "preflight", "ok", "failed", "partial"}:
         outcome = "failed"
@@ -755,6 +769,7 @@ def _trace_finish(root_dir: Path, item: dict, run_id: str, facts: dict, code: in
         {
             "phase": "finish",
             "run_id": run_id,
+            "parent_run_id": parent_run_id,
             "name": str(item.get("name") or ""),
             "kind": str(item.get("kind") or "tool"),
             "outcome": outcome,
@@ -794,6 +809,7 @@ def run_tool(
     raw: bool = False,
     confirm_id: str | None = None,
     audit_via: str | None = None,
+    parent_run_id: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
@@ -822,6 +838,7 @@ def run_tool(
         {
             "phase": "start",
             "run_id": run_id,
+            "parent_run_id": parent_run_id,
             "name": str(item.get("name") or ""),
             "kind": str(item.get("kind") or "tool"),
         },
@@ -840,6 +857,7 @@ def run_tool(
             audit_via,
             run_id,
             facts,
+            parent_run_id,
         )
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         code, stdout, stderr = _failure(
@@ -848,7 +866,7 @@ def run_tool(
     if facts.get("authorized") and _writes(item):
         if not _terminal_audit(root_dir, item, run_id, facts, code):
             stderr = _with_audit_incomplete(stderr)
-    _trace_finish(root_dir, item, run_id, facts, code, started)
+    _trace_finish(root_dir, item, run_id, facts, code, started, parent_run_id)
     return code, stdout, stderr
 
 
@@ -865,6 +883,7 @@ def _execute_tool(
     audit_via: str | None,
     run_id: str,
     facts: dict,
+    parent_run_id: str | None = None,
 ) -> tuple[int, str, str]:
     def finish(
         result: tuple[int, str, str],
@@ -898,6 +917,7 @@ def _execute_tool(
                 confirmed=False,
                 raw=raw,
                 confirm_id=None,
+                parent_run_id=parent_run_id,
             )
             if code != 0:
                 facts["outcome"] = "failed"
@@ -924,6 +944,7 @@ def _execute_tool(
                 raw=raw,
                 confirm_id=None,
                 audit_via="confirm",
+                parent_run_id=parent_run_id,
             )
             facts["outcome"] = "ok" if result[0] == 0 else "failed"
             return result
@@ -1139,6 +1160,159 @@ def _tool_failure(item: dict, code: int, stderr: str) -> dict:
     }
 
 
+def _chain_trace_start(root_dir: Path, chain_item: dict, run_id: str, step_count: int) -> None:
+    append_trace(
+        root_dir,
+        {
+            "phase": "start",
+            "run_id": run_id,
+            "name": str(chain_item.get("name") or ""),
+            "kind": "chain",
+            "step_count": step_count,
+        },
+    )
+
+
+def _chain_trace_finish(
+    root_dir: Path,
+    chain_item: dict,
+    run_id: str,
+    outcome: str,
+    code: int,
+    started: float,
+    step_count: int,
+) -> None:
+    append_trace(
+        root_dir,
+        {
+            "phase": "finish",
+            "run_id": run_id,
+            "name": str(chain_item.get("name") or ""),
+            "kind": "chain",
+            "outcome": outcome,
+            "toolkit_exit": code,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "step_count": step_count,
+        },
+    )
+
+
+def _step_trace_failed(
+    root_dir: Path, name: str, parent_run_id: str, step_index: int, step_count: int
+) -> None:
+    """Record a step that failed before its process. No stdout and no later steps."""
+    child = str(uuid.uuid4())
+    append_trace(
+        root_dir,
+        {
+            "phase": "start",
+            "run_id": child,
+            "parent_run_id": parent_run_id,
+            "name": name,
+            "kind": "tool",
+            "step_index": step_index,
+            "step_count": step_count,
+        },
+    )
+    append_trace(
+        root_dir,
+        {
+            "phase": "finish",
+            "run_id": child,
+            "parent_run_id": parent_run_id,
+            "name": name,
+            "kind": "tool",
+            "outcome": "failed",
+            "toolkit_exit": 1,
+            "duration_ms": 0,
+            "step_index": step_index,
+            "step_count": step_count,
+        },
+    )
+
+
+def _chain_preflight(
+    root_dir: Path,
+    chain_item: dict,
+    catalog: dict,
+    env: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    """Static chain checks plus declared dependencies. Skips are not failures."""
+    errors: list[str] = []
+    skipped: list[str] = []
+    steps = chain_item.get("steps")
+    if not isinstance(steps, list) or not steps:
+        errors.append("chain has no steps")
+    else:
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict) or not str(step.get("tool") or "").strip():
+                errors.append(f"step {index} missing tool")
+                continue
+            name = str(step.get("tool"))
+            errors.extend(_duplicate_name_errors(root_dir, name))
+            tool = catalog.get(name)
+            if tool is None:
+                errors.append(f"step {index} tool not in catalog: {name}")
+                continue
+            errors.extend(_needs_errors(tool, env))
+            require_errors, require_skipped = _requires_report(tool, root_dir, env)
+            errors.extend(require_errors)
+            skipped.extend(require_skipped)
+        errors.extend(_chain_wiring_errors(chain_item, catalog))
+    errors.extend(_duplicate_name_errors(root_dir, str(chain_item.get("name") or "")))
+    require_errors, require_skipped = _requires_report(chain_item, root_dir, env)
+    errors.extend(require_errors)
+    skipped.extend(require_skipped)
+    unique: list[str] = []
+    for error in errors:
+        if error not in unique:
+            unique.append(error)
+    return unique, skipped
+
+
+def _chain_preflight_failure(
+    root_dir: Path,
+    chain_item: dict,
+    run_id: str,
+    confirmed: bool,
+    audit_via: str | None,
+    writer: bool,
+    problems: list[str],
+    skipped: list[str],
+) -> tuple[int, str, str]:
+    if writer:
+        wrote = append_audit(
+            root_dir,
+            {
+                "plan_id": "",
+                "run_id": run_id,
+                "name": str(chain_item.get("name") or ""),
+                "decision": "preflight",
+                "via": _audit_via(confirmed, audit_via),
+                "enforced": ["env_allowlist", "timeout", "output_cap"],
+                "isolation": "none",
+                "exit": 1,
+            },
+        )
+        if not wrote:
+            return _failure(
+                1,
+                {
+                    "error": "audit_failed",
+                    "why": "the audit record was not written",
+                    "fix": "make the state directory writable on this filesystem",
+                },
+            )
+    payload: dict = {
+        "error": "chain_preflight_failed",
+        "why": "; ".join(problems),
+        "fix": _example(chain_item),
+    }
+    if skipped:
+        payload["skipped"] = skipped
+    return _failure(1, payload)
+
+
 def run_chain(
     root_dir: Path,
     chain_item: dict,
@@ -1155,10 +1329,11 @@ def run_chain(
     the same ``--yes`` rule as ``run_tool`` when ``confirmed`` is false.
     ``confirm_id`` executes that chain only when it matches the dry-run id.
     """
+    chain_open = False
+    run_id = ""
+    started = time.monotonic()
+    step_count = 0
     try:
-        duplicate = _duplicate_claim(root_dir, str(chain_item.get("name") or ""))
-        if duplicate is not None:
-            return duplicate
         user_dry_run = dry_run
         writer = _chain_writes(root_dir, chain_item)
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
@@ -1218,6 +1393,23 @@ def run_chain(
                 _failure(1, err or {"error": "internal_error", "why": "validation failed", "fix": "tk check"}),
             )
 
+        from lib.catalog import discover_catalog
+
+        catalog = discover_catalog(root_dir)
+        child_env = tool_subprocess_env(env)
+        steps = chain_item.get("steps")
+        step_count = len(steps) if isinstance(steps, list) else 0
+        run_id = str(uuid.uuid4())
+        started = time.monotonic()
+        chain_open = True
+        _chain_trace_start(root_dir, chain_item, run_id, step_count)
+        problems, skipped = _chain_preflight(root_dir, chain_item, catalog, child_env)
+        if problems:
+            result = _chain_preflight_failure(root_dir, chain_item, run_id, confirmed, audit_via, writer, problems, skipped)
+            _chain_trace_finish(root_dir, chain_item, run_id, "preflight", result[0], started, step_count)
+            chain_open = False
+            return _record_and_return(root_dir, chain_item, dry_run, result)
+
         denied = _audit_or_deny(
             root_dir,
             chain_item,
@@ -1226,51 +1418,28 @@ def run_chain(
             str(confirm_id or ""),
             None,
             audit_via,
+            run_id,
         )
         if denied is not None:
+            _chain_trace_finish(root_dir, chain_item, run_id, "failed", denied[0], started, step_count)
+            chain_open = False
             return _record_and_return(root_dir, chain_item, dry_run, denied)
 
-        steps = chain_item.get("steps") or []
-        if not steps:
-            return _record_and_return(
-                root_dir, chain_item, dry_run,
-                _failure(
-                    1,
-                    {"error": "invalid_chain", "why": "chain has no steps", "fix": _example(chain_item)},
-                ),
-            )
-
-        from lib.catalog import discover_catalog
-
-        catalog = discover_catalog(root_dir)
         prev: object = None
         outputs: list[object] = []
         last_stdout = ""
+        any_ok = False
         for index, step in enumerate(steps, start=1):
             tool_name = step.get("tool") if isinstance(step, dict) else None
-            step_dup = _duplicate_claim(root_dir, str(tool_name or ""))
-            if step_dup is not None:
-                return step_dup
             tool = catalog.get(tool_name) if tool_name else None
-            if tool is None:
-                return _record_and_return(
-                    root_dir, chain_item, dry_run,
-                    _failure(
-                        1,
-                        {
-                            "error": "unknown_tool",
-                            "why": f"unknown tool: {tool_name}",
-                            "fix": _example(chain_item),
-                        },
-                    ),
-                )
             step_flags: dict[str, str] = {}
-            raw_args = step.get("args") or {}
+            raw_args = step.get("args") or {} if isinstance(step, dict) else {}
             flag_types = {
                 str(arg.get("flag")): str(arg.get("type") or "string")
                 for arg in (tool.get("args") or [])
                 if isinstance(arg, dict) and arg.get("flag")
             }
+            unresolved: tuple[int, str, str] | None = None
             for key, value in raw_args.items():
                 flag = key if str(key).startswith("--") else f"--{key}"
                 if not isinstance(value, str):
@@ -1286,18 +1455,22 @@ def run_chain(
                     flag_types.get(flag, "string"),
                 )
                 if bad is not None or resolved is None:
-                    return _record_and_return(
-                        root_dir, chain_item, dry_run,
-                        _failure(
-                            1,
-                            {
-                                "error": "unresolved_reference",
-                                "why": f"could not resolve {bad or value}",
-                                "fix": _example(chain_item),
-                            },
-                        ),
+                    unresolved = _failure(
+                        1,
+                        {
+                            "error": "unresolved_reference",
+                            "why": f"could not resolve {bad or value}",
+                            "fix": _example(chain_item),
+                        },
                     )
+                    break
                 step_flags[flag] = resolved
+            if unresolved is not None:
+                _step_trace_failed(root_dir, str(tool_name or ""), run_id, index, step_count)
+                outcome = "partial" if any_ok else "failed"
+                _chain_trace_finish(root_dir, chain_item, run_id, outcome, unresolved[0], started, step_count)
+                chain_open = False
+                return _record_and_return(root_dir, chain_item, dry_run, unresolved)
 
             code, stdout, stderr = run_tool(
                 root_dir,
@@ -1305,6 +1478,7 @@ def run_chain(
                 step_flags,
                 dry_run=dry_run,
                 stdin_data=None if prev is None else last_stdout,
+                parent_run_id=run_id,
             )
             if code != 0:
                 stderr = _annotate_step_stop(
@@ -1314,7 +1488,11 @@ def run_chain(
                     len(steps),
                     str(tool_name),
                 )
+                outcome = "partial" if any_ok else "failed"
+                _chain_trace_finish(root_dir, chain_item, run_id, outcome, code, started, step_count)
+                chain_open = False
                 return _record_and_return(root_dir, chain_item, dry_run, (code, stdout, stderr))
+            any_ok = True
             prev = json.loads(stdout)
             outputs.append(prev)
             if isinstance(prev, dict) and isinstance(prev.get("plan"), list):
@@ -1331,8 +1509,13 @@ def run_chain(
                     "confirm": _confirm_command(chain_item, flags, plan_id),
                 }
             )
+        outcome = "dry_run" if dry_run else "ok"
+        _chain_trace_finish(root_dir, chain_item, run_id, outcome, 0, started, step_count)
+        chain_open = False
         return _record_and_return(root_dir, chain_item, dry_run, (0, last_stdout, ""))
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
+        if chain_open:
+            _chain_trace_finish(root_dir, chain_item, run_id, "failed", 1, started, step_count)
         return _record_and_return(
             root_dir, chain_item, dry_run,
             _failure(1, {"error": "internal_error", "why": str(exc), "fix": "tk check"}),
