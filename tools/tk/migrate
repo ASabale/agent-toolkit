@@ -150,7 +150,74 @@ def _manifest(source: Path) -> tuple[dict | None, str | None]:
     return {"version": _MANIFEST_VERSION, "source_version": _version_string(source), "files": files}, None
 
 
+def _listed_bytes(source: Path, rel: str) -> tuple[bytes | None, bool | None, str | None]:
+    """Read one listed source file. Symlinks and paths outside the checkout fail."""
+    probe = source
+    for part in Path(rel).parts:
+        probe = probe / part
+        try:
+            linked = probe.is_symlink()
+        except OSError:
+            return None, None, f"manifest path missing: {rel}"
+        if linked and not _inside(source, probe):
+            return None, None, f"symlink leaves source: {probe}"
+        if linked:
+            return None, None, f"manifest path refused: {rel}"
+    data = _read(probe)
+    if data is None:
+        return None, None, f"manifest path missing: {rel}"
+    try:
+        executable = bool(probe.stat().st_mode & stat.S_IXUSR)
+    except OSError:
+        return None, None, f"manifest path missing: {rel}"
+    return data, executable, None
+
+
+def _checked_files(rows: object, source: Path) -> tuple[list[dict] | None, str | None]:
+    """Validate the supplied entries. Never widens them with a tree scan."""
+    if not isinstance(rows, list):
+        return None, "manifest files must be a list"
+    seen: set[str] = set()
+    checked: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None, "manifest entry is not an object"
+        rel = row.get("path")
+        if not isinstance(rel, str) or not rel or rel.startswith("/") or Path(rel).is_absolute() or ".." in Path(rel).parts:
+            return None, f"manifest path refused: {rel}"
+        if rel in seen:
+            return None, f"manifest duplicate path: {rel}"
+        seen.add(rel)
+        kind = _kind(Path(rel))
+        if kind not in {"tool", "chain", "skill"}:
+            return None, f"manifest path refused: {rel}"
+        data, executable, error = _listed_bytes(source, rel)
+        if error or data is None or executable is None:
+            return None, error or f"manifest path missing: {rel}"
+        digest = _sha256(data)
+        if row.get("sha256") != digest or row.get("size") != len(data):
+            return None, f"manifest hash mismatch: {rel}"
+        if row.get("kind") != kind or row.get("executable") is not executable:
+            return None, f"manifest entry mismatch: {rel}"
+        checked.append(
+            {
+                "path": rel,
+                "kind": kind,
+                "sha256": digest,
+                "size": len(data),
+                "executable": executable,
+                "source_version": row.get("source_version"),
+            }
+        )
+    return checked, None
+
+
 def _load_manifest(raw: str, source: Path) -> tuple[dict | None, str | None]:
+    """Return the supplied manifest's files after they match the source bytes.
+
+    Apply uses this list as the allowlist. A file present in the tree but absent
+    here is not imported. Export still scans; this function does not.
+    """
     reason = _reject_user_path("manifest", raw)
     if reason:
         return None, reason
@@ -163,22 +230,11 @@ def _load_manifest(raw: str, source: Path) -> tuple[dict | None, str | None]:
         return None, f"manifest is not json: {exc}"
     if not isinstance(parsed, dict) or parsed.get("version") != _MANIFEST_VERSION:
         return None, "manifest version must be 1"
-    rows = parsed.get("files")
-    if not isinstance(rows, list):
-        return None, "manifest files must be a list"
-    built, error = _manifest(source)
-    if error or built is None:
+    checked, error = _checked_files(parsed.get("files"), source)
+    if error or checked is None:
         return None, error
-    by_path = {row["path"]: row for row in built["files"]}
-    for row in rows:
-        if not isinstance(row, dict):
-            return None, "manifest entry is not an object"
-        rel = str(row.get("path") or "")
-        if rel.startswith("/") or ".." in Path(rel).parts or rel not in by_path:
-            return None, f"manifest path refused: {rel}"
-        if str(row.get("sha256") or "") != by_path[rel]["sha256"]:
-            return None, f"manifest hash mismatch: {rel}"
-    return built, None
+    parsed["files"] = checked
+    return parsed, None
 
 
 def _dest_stays(dest: Path, rel: Path) -> bool:
@@ -383,6 +439,7 @@ def _report(root: Path) -> dict:
 
 
 def main() -> int:
+    """Apply without --manifest still scans the source. That scan is not a reviewed import."""
     action = (arg_str("--action") or "report").strip().lower()
     if action not in {"report", "export", "apply"}:
         return fail("unknown_action", f"action must be report, export, or apply: {action}", FIX, 2)
@@ -409,9 +466,14 @@ def main() -> int:
     if not dest.is_dir():
         return fail("not_a_checkout", "dest is not a directory", FIX, 2)
     manifest_raw = arg_str("--manifest")
+    # No manifest: scan is allowed and is not a reviewed import.
     manifest, error = _load_manifest(manifest_raw, source) if manifest_raw else _manifest(source)
     if error or manifest is None:
         return fail("refused", error or "scan failed", FIX)
+    if manifest_raw:
+        manifest, error = _load_manifest(manifest_raw, source)
+        if error or manifest is None:
+            return fail("refused", error or "scan failed", FIX)
     result = _apply(source, dest, list(manifest["files"]), _truthy(arg_str("--apply")))
     return emit(result, 1 if result.get("error") else 0)
 
