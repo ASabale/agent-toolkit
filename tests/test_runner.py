@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -1170,6 +1171,134 @@ class DuplicateNameRunTests(unittest.TestCase):
             self.assertIn("tools/aaa/local", json.loads(err)["why"])
             self.assertIn("tools/gh/local", json.loads(err)["why"])
             self.assertFalse(sentinel.exists())
+
+
+class DeclaredDependencyRunTests(unittest.TestCase):
+    def _script(self, sentinel: Path, header: str) -> str:
+        return (
+            "#!/usr/bin/env bash\n"
+            "# @tk-name: demo.dep\n"
+            "# @tk-summary: Dependency fixture\n"
+            "# @tk-safety: read-only\n"
+            "# @tk-output: json | object\n"
+            "# @tk-example: tk run demo.dep\n"
+            "# @tk-verified: none\n"
+            f"{header}"
+            "\n"
+            f"touch {str(sentinel)!r}\n"
+            "printf '%s\\n' '{\"ok\":true}'\n"
+        )
+
+    def _item(self, root: Path, sentinel: Path, header: str) -> dict:
+        from lib.catalog import parse_tool_header
+
+        path = root / "tools" / "demo" / "dep"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._script(sentinel, header), encoding="utf-8")
+        path.chmod(0o755)
+        return parse_tool_header(path)
+
+    def test_headerless_tool_still_runs_and_skip_only_stdout_is_tool_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sentinel = root / "ran-headerless"
+            path = root / "tools" / "demo" / "bare"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "#!/usr/bin/env bash\nprintf '%s\\n' '{\"ok\":true}'\n"
+                f"touch {str(sentinel)!r}\n",
+                encoding="utf-8",
+            )
+            path.chmod(0o755)
+            item = {
+                "kind": "tool",
+                "name": "demo.bare",
+                "summary": "bare",
+                "safety": "read-only",
+                "args": [],
+                "path": str(path),
+                "example": "tk run demo.bare",
+            }
+            code, out, err = run_tool(root, item, {})
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out), {"ok": True})
+            self.assertTrue(sentinel.is_file())
+
+            sentinel2 = root / "ran-skip"
+            item2 = self._item(root, sentinel2, "# @tk-requires: not-a-predicate\n")
+            code, out, err = run_tool(root, item2, {})
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out), {"ok": True})
+            self.assertNotIn("skipped", out)
+            self.assertTrue(sentinel2.is_file())
+
+    def test_missing_declared_dependencies_do_not_start_the_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret = "hunter2-should-not-leak"
+            os.environ["NOT_COPIED_DEP"] = secret
+            try:
+                cases = [
+                    "# @tk-needs: definitely-missing-bin\n",
+                    "# @tk-needs: env:NOT_COPIED_DEP\n",
+                    "# @tk-requires: file:tools/demo/missing\n",
+                    "# @tk-requires: not-a-predicate, file:tools/demo/missing\n",
+                ]
+                for header in cases:
+                    sentinel = root / f"ran-{abs(hash(header))}"
+                    item = self._item(root, sentinel, header)
+                    with patch("lib.runner.subprocess.Popen") as popen:
+                        code, out, err = run_tool(root, item, {})
+                    self.assertEqual(code, 1, err)
+                    self.assertEqual(out, "")
+                    payload = json.loads(err)
+                    self.assertEqual(payload["error"], "declared_dependency_missing")
+                    self.assertIs(payload["declared"], True)
+                    self.assertNotIn(secret, err)
+                    for banned in ("sandbox", "denied", "enforced"):
+                        self.assertNotIn(banned, err)
+                    self.assertFalse(sentinel.exists())
+                    popen.assert_not_called()
+                    if "not-a-predicate" in header:
+                        self.assertTrue(any("not-a-predicate" in row for row in payload["skipped"]))
+            finally:
+                os.environ.pop("NOT_COPIED_DEP", None)
+
+    def test_bin_removed_before_popen_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bindir = root / "bin"
+            bindir.mkdir()
+            exe = bindir / "fakegit"
+            exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            exe.chmod(0o755)
+            sentinel = root / "ran-recheck"
+            item = self._item(root, sentinel, "# @tk-needs: fakegit\n")
+            real_which = shutil.which
+
+            def which(name, mode=os.F_OK | os.X_OK, path=None):
+                found = real_which(name, mode=mode, path=path)
+                if name == "fakegit" and found and os.path.exists(found):
+                    os.remove(found)
+                return found
+
+            old_path = os.environ.get("PATH")
+            os.environ["PATH"] = str(bindir) + os.pathsep + (old_path or "")
+            try:
+                with patch("lib.catalog.shutil.which", side_effect=which):
+                    with patch("lib.runner.subprocess.Popen") as popen:
+                        code, _out, err = run_tool(root, item, {})
+            finally:
+                if old_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = old_path
+            self.assertEqual(code, 1, err)
+            payload = json.loads(err)
+            self.assertEqual(payload["error"], "declared_dependency_missing")
+            self.assertIn("fakegit", payload["why"])
+            self.assertFalse(sentinel.exists())
+            popen.assert_not_called()
 
 
 if __name__ == "__main__":

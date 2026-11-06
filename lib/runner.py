@@ -16,7 +16,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from lib.catalog import output_keys
+from lib.catalog import _needs_errors, _requires_report, output_keys
 from lib.chainref import resolve_expr, stringify
 from lib.evolver import append_audit, log_event, record_feedback
 from lib.guards import tool_subprocess_env
@@ -385,6 +385,47 @@ def validate_and_build_env(
 
 def _failure(code: int, payload: dict) -> tuple[int, str, str]:
     return code, "", _compact(redact_data(payload))
+
+
+def _split_declared_message(text: str) -> tuple[str, str]:
+    marker = "; fix:"
+    if marker in text:
+        why, fix = text.split(marker, 1)
+        return why.strip(), fix.strip()
+    return text.strip(), "tk check"
+
+
+def _declared_dependency_failure(root_dir: Path, item: dict, env: dict[str, str]):
+    """Recheck declared needs immediately before the child is created.
+
+    The second pass is the one that gates ``Popen``. A binary that disappears
+    between the two reads is a hard miss. Skips do not fail the run.
+    """
+    def read() -> tuple[list[str], list[str]]:
+        errors = list(_needs_errors(item, env))
+        require_errors, skipped = _requires_report(item, root_dir, env)
+        errors.extend(require_errors)
+        return errors, skipped
+
+    read()
+    errors, skipped = read()
+    if not errors:
+        return None
+    whys: list[str] = []
+    fixes: list[str] = []
+    for text in errors:
+        why, fix = _split_declared_message(text)
+        whys.append(why)
+        fixes.append(fix)
+    payload: dict = {
+        "error": "declared_dependency_missing",
+        "declared": True,
+        "why": "; ".join(whys),
+        "fix": fixes[0],
+    }
+    if skipped:
+        payload["skipped"] = skipped
+    return _failure(1, payload)
 
 
 def _duplicate_claim(root_dir: Path, name: str) -> tuple[int, str, str] | None:
@@ -805,6 +846,9 @@ def run_tool(
 
         env = tool_subprocess_env(built)
         env["TK_ROOT_DIR"] = str(root_dir)
+        missing = _declared_dependency_failure(root_dir, item, env)
+        if missing is not None:
+            return _record_and_return(root_dir, item, dry_run, missing)
         timeout = _positive_float(os.environ.get("TK_TIMEOUT", ""), 60.0)
         proc = subprocess.Popen(
             [str(item["path"])],
