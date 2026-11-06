@@ -213,7 +213,9 @@ def _cmd_info(catalog, evolver, argv: list[str]) -> int:
         why, fix = _suggest_fix(catalog, name)
         _err("not_found", why, fix)
         return 2
-    _write_text(catalog.format_info_output(item))
+    shown = dict(item)
+    shown.update(evolver.evidence_view(ROOT, item))
+    _write_text(catalog.format_info_output(shown))
     return 0
 
 
@@ -640,6 +642,13 @@ def _cmd_check(catalog, argv: list[str]) -> int:
     else:
         payload = catalog.check_all(ROOT)
     sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    ok_names = [
+        str(item.get("name") or "")
+        for item in (payload.get("results") or [payload])
+        if isinstance(item, dict) and item.get("ok") and item.get("name")
+    ]
+    if ok_names:
+        _load("lib.evolver").record_validation(ROOT, ok_names)
     if not payload.get("ok"):
         return 1
     return 0
