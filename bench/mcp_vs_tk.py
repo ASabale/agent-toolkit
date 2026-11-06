@@ -54,6 +54,19 @@ def _est_tokens(idle: int, discovery: int, output: int) -> int:
     return (idle + discovery + output) // 4
 
 
+def _productivity(discovery_turns: int | None, tool_calls: int | None) -> dict:
+    """Scripted stand-ins only. Unmeasured review fields stay null."""
+    return {
+        "first_attempt_success": None,
+        "discovery_turns": discovery_turns,
+        "tool_calls_per_success": tool_calls,
+        "recovery": None,
+        "reliability": None,
+        "policy_violations": None,
+        "adapt_time_s": None,
+    }
+
+
 def _side(idle: int, discovery: int, output: int, tool_call_count: int) -> dict:
     return {
         "idle_bytes": idle,
@@ -240,14 +253,21 @@ def run_bench(root: Path, fixtures_dir: Path) -> list[dict]:
             fixture = load_fixture(path)
             task_dir = work / str(index)
             task_dir.mkdir()
+            mcp_side = measure_mcp(fixture)
+            tk_side = measure_tk(root, fixture, task_dir, fixtures_dir)
             reports.append(
                 {
                     "task": fixture.get("task") or path.stem,
                     "source": fixture["source"],
                     "server_version": fixture["server_version"],
                     "captured_on": fixture["captured_on"],
-                    "mcp": measure_mcp(fixture),
-                    "tk": measure_tk(root, fixture, task_dir, fixtures_dir),
+                    "client": "scripted",
+                    "mcp": mcp_side,
+                    "tk": tk_side,
+                    "productivity": {
+                        "mcp": _productivity(None, mcp_side["tool_call_count"]),
+                        "tk": _productivity(1, tk_side["tool_call_count"]),
+                    },
                 }
             )
     return reports

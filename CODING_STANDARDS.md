@@ -53,6 +53,8 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
       "path": str,            # str(path.resolve())
   }
   `@tk-needs` is optional and repeatable. `tk check` reports a missing executable (`shutil.which`) or an unset `env:NAME`. It does not install the dependency and does not skip the tool body. A lint hit here is not a sandbox.
+  `@tk-schema` is optional. Names are comma-separated or `{key, key}`. When dry-run stdout is a JSON object, each name must be present. No schema library. A tool with no `@tk-schema` line is unchanged.
+  `@tk-requires` is optional. `tk check` evaluates `env:NAME`, `bin:NAME`, and `file:relative/path` inside the repo. Those are reads. Any other token is skipped and recorded under `skipped` with the reason. The check does not shell out and does not write. A skip is not a failure.
   ```
 - **`load_chain(path: Path) -> dict`**
   Reads `chains/<name>.json` and returns a normalized dict with `"kind": "chain"`, `"name"`, `"summary"`, `"safety"`, `"args"`, `"steps"`, `"output"`, `"example"`, `"verified"`, `"path"`.
