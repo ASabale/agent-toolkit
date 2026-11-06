@@ -51,6 +51,7 @@ def _empty_tool(path: Path) -> dict:
         "schema": [],
         "requires": [],
         "deprecated": "",
+        "keep": False,
         "path": resolved,
     }
 
@@ -152,6 +153,8 @@ def parse_tool_header(path: Path) -> dict:
                 item["requires"].extend(part for part in re.split(r"[\s,]+", value) if part)
             elif key == "@tk-deprecated":
                 item["deprecated"] = value
+            elif key == "@tk-keep":
+                item["keep"] = True
     except Exception:
         return item
     return item

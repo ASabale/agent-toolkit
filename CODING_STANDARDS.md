@@ -56,6 +56,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
   `@tk-schema` is optional. Names are comma-separated or `{key, key}`. When dry-run stdout is a JSON object, each name must be present. No schema library. A tool with no `@tk-schema` line is unchanged.
   `@tk-requires` is optional. `tk check` evaluates `env:NAME`, `bin:NAME`, and `file:relative/path` inside the repo. Those are reads. Any other token is skipped and recorded under `skipped` with the reason. The check does not shell out and does not write. A skip is not a failure.
   `@tk-deprecated` is optional. The tool stays in the one catalog and in `tk find`. `tk find` and `tk info` add one line naming the replacement (`tk run <name>`, or the `tk …` text already in the header). No second catalog.
+  `@tk-keep` is optional. `tk prune --unused` skips that name. A tool with no `@tk-keep` line still follows the 50-event, chain-reference, and newer-than-first-run rules.
   ```
 - **`load_chain(path: Path) -> dict`**
   Reads `chains/<name>.json` and returns a normalized dict with `"kind": "chain"`, `"name"`, `"summary"`, `"safety"`, `"args"`, `"steps"`, `"output"`, `"example"`, `"verified"`, `"path"`.
