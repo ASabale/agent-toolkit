@@ -53,6 +53,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
       "path": str,            # str(path.resolve())
   }
   `@tk-needs` is optional and repeatable. `tk check` reports a missing executable (`shutil.which`) or an unset `env:NAME`. It does not install the dependency and does not skip the tool body. A lint hit here is not a sandbox.
+  `@tk-deprecated` is optional. The tool stays in the one catalog and in `tk find`. `tk find` and `tk info` add one line naming the replacement (`tk run <name>`, or the `tk …` text already in the header). No second catalog.
   ```
 - **`load_chain(path: Path) -> dict`**
   Reads `chains/<name>.json` and returns a normalized dict with `"kind": "chain"`, `"name"`, `"summary"`, `"safety"`, `"args"`, `"steps"`, `"output"`, `"example"`, `"verified"`, `"path"`.
