@@ -804,6 +804,78 @@ def _yes_satisfies(decision: str, rank: str, safety: str, confirmed: bool | None
     )
 
 
+def _launch_policy_block(
+    root_dir: Path,
+    item: dict,
+    accepted: tuple[str, str],
+) -> tuple[tuple[int, str, str] | None, tuple[str, str]]:
+    """Re-read policy after the plan is built and again before ``Popen``.
+
+    A deny, a destructive decision without a hash grant, or a confirm that
+    was not the decision already accepted for this launch stops the process.
+    The same confirm the first gate already allowed does not.
+    """
+    policy, policy_error = _policy_document(root_dir)
+    if policy_error or policy is None:
+        return (
+            _failure(
+                1,
+                {
+                    "error": "invalid_policy",
+                    "why": "state/policy.json is not version 1",
+                    "fix": "replace state/policy.json with version 1",
+                },
+            ),
+            ("", ""),
+        )
+    safety = str(item.get("safety") or "")
+    decision, rank = _policy_decision(
+        policy,
+        sha256=_sha256_file(item.get("path")),
+        name=str(item.get("name") or ""),
+        safety=safety,
+        draft=_item_draft(root_dir, item),
+    )
+    fresh = (decision, rank)
+    if decision == "policy_conflict":
+        return (
+            _failure(
+                1,
+                {
+                    "error": "policy_conflict",
+                    "why": "two rules of the same rank disagree",
+                    "fix": "keep one decision for that hash or name",
+                },
+            ),
+            fresh,
+        )
+    if decision == "deny" or (safety == "destructive" and not _hash_grant(decision, rank)):
+        return (
+            _failure(
+                2,
+                {
+                    "error": "policy_denied",
+                    "why": f"{item.get('name') or 'tool'} is denied",
+                    "fix": _example(item),
+                },
+            ),
+            fresh,
+        )
+    if decision == "confirm" and fresh != accepted:
+        return (
+            _failure(
+                2,
+                {
+                    "error": "confirm_required",
+                    "why": "this invocation needs --confirm with the current plan_id",
+                    "fix": _example(item) + " --confirm <plan_id>",
+                },
+            ),
+            fresh,
+        )
+    return None, fresh
+
+
 _SECRET_FLAG = "<redacted>"
 
 
@@ -832,6 +904,16 @@ def _sha256_file(path: object) -> str:
     except OSError:
         data = b""
     return hashlib.sha256(data).hexdigest()
+
+
+def _launch_sha256(path: object) -> str:
+    """Hash immediately before ``Popen``.
+
+    The plan id uses ``_sha256_file``. This is the last check in this process.
+    A same-user writer can still change the file after this returns and before
+    the kernel maps it. Tests may wrap this function.
+    """
+    return _sha256_file(path)
 
 
 def _canonical_id(body: dict) -> str:
@@ -1006,6 +1088,7 @@ def run_tool(
     confirm_id: str | None = None,
     audit_via: str | None = None,
     parent_run_id: str | None = None,
+    bound_sha256: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
@@ -1054,6 +1137,7 @@ def run_tool(
             run_id,
             facts,
             parent_run_id,
+            bound_sha256,
         )
     except Exception as exc:  # noqa: BLE001 — trust invariant: no raw traceback
         code, stdout, stderr = _failure(
@@ -1127,6 +1211,7 @@ def _execute_tool(
     run_id: str,
     facts: dict,
     parent_run_id: str | None = None,
+    bound_sha256: str | None = None,
 ) -> tuple[int, str, str]:
     def finish(
         result: tuple[int, str, str],
@@ -1203,6 +1288,7 @@ def _execute_tool(
                 outcome="failed",
             )
         needs_plan = (not dry_run) and ((decision == "confirm" and not yes_ok) or (destructive and granted))
+        accepted = (decision, rank)
         planned = audit_via == "confirm"
         if needs_plan and confirmed is True and not confirm_id and not planned:
             return finish(_confirm_required(root_dir, item, flags, positional, stdin_data, raw, parent_run_id), outcome="failed")
@@ -1251,21 +1337,21 @@ def _execute_tool(
                     _plan_mismatch(item, flags, f"plan_id is {shown}, got {confirm_id}"),
                     outcome="failed",
                 )
-            result = run_tool(
-                root_dir,
-                item,
-                flags,
-                positional,
-                False,
-                stdin_data,
-                confirmed=True,
-                raw=raw,
-                confirm_id=None,
-                audit_via="confirm",
-                parent_run_id=parent_run_id,
-            )
-            facts["outcome"] = "ok" if result[0] == 0 else "failed"
-            return result
+            plan = probed.get("plan") if isinstance(probed, dict) else None
+            rebuilt = _tool_plan_id(item, flags, plan if isinstance(plan, list) else [])
+            if rebuilt != confirm_id:
+                return finish(
+                    _plan_mismatch(item, flags, f"plan_id is {rebuilt}, got {confirm_id}"),
+                    outcome="failed",
+                )
+            confirmed = True
+            audit_via = "confirm"
+            facts["via"] = "confirm"
+            facts["plan_id"] = confirm_id
+            bound_sha256 = _sha256_file(item.get("path"))
+            blocked, accepted = _launch_policy_block(root_dir, item, accepted)
+            if blocked is not None:
+                return finish(blocked, outcome="failed")
         gated = (not confirmed) and writer
         if gated:
             dry_run = True
@@ -1297,6 +1383,15 @@ def _execute_tool(
                     outcome="failed",
                 )
 
+        if not dry_run:
+            if bound_sha256 is not None and _launch_sha256(item.get("path")) != bound_sha256:
+                return finish(
+                    _plan_mismatch(item, flags, "executable bytes changed"),
+                    outcome="failed",
+                )
+            blocked, accepted = _launch_policy_block(root_dir, item, accepted)
+            if blocked is not None:
+                return finish(blocked, outcome="failed")
         denied = _audit_or_deny(
             root_dir,
             item,
@@ -1759,6 +1854,8 @@ def run_chain(
     try:
         user_dry_run = dry_run
         writer = _chain_writes(root_dir, chain_item)
+        bound_chain: str | None = None
+        bound_steps: list[str] | None = None
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
             if confirm_id == "":
                 return _record_and_return(
@@ -1793,16 +1890,39 @@ def run_chain(
                         chain_item, flags, f"plan_id is {shown}, got {confirm_id}"
                     ),
                 )
-            return run_chain(
-                root_dir,
-                chain_item,
-                flags,
-                positional,
-                False,
-                confirmed=True,
-                confirm_id=None,
-                audit_via="confirm",
+            from lib.catalog import discover_catalog
+
+            catalog_now = discover_catalog(root_dir)
+            plan = probed.get("plan") if isinstance(probed, dict) else None
+            rebuilt = _chain_plan_id(
+                chain_item, flags, plan if isinstance(plan, list) else [], catalog_now
             )
+            if rebuilt != confirm_id:
+                return _record_and_return(
+                    root_dir,
+                    chain_item,
+                    False,
+                    _plan_mismatch(
+                        chain_item, flags, f"plan_id is {rebuilt}, got {confirm_id}"
+                    ),
+                )
+            confirmed = True
+            audit_via = "confirm"
+            bound_chain = _sha256_file(chain_item.get("path"))
+            bound_steps = []
+            for step in chain_item.get("steps") or []:
+                name = str(step.get("tool") or "") if isinstance(step, dict) else ""
+                tool = catalog_now.get(name) if name else None
+                bound_steps.append(_sha256_file((tool or {}).get("path") if isinstance(tool, dict) else ""))
+            fresh_block = _chain_policy_block(
+                root_dir,
+                list(chain_item.get("steps") or []),
+                catalog_now,
+                confirmed,
+                confirm_id,
+            )
+            if fresh_block is not None:
+                return _record_and_return(root_dir, chain_item, False, fresh_block)
         gated = (not confirmed) and writer
         if gated:
             dry_run = True
@@ -1912,6 +2032,18 @@ def run_chain(
                 _chain_trace_finish(root_dir, chain_item, run_id, outcome, unresolved[0], started, step_count)
                 chain_open = False
                 return _record_and_return(root_dir, chain_item, dry_run, unresolved)
+            if bound_steps is not None:
+                chain_now = _launch_sha256(chain_item.get("path"))
+                tool_path = tool.get("path") if isinstance(tool, dict) else ""
+                tool_now = _launch_sha256(tool_path)
+                expected = bound_steps[index - 1] if index - 1 < len(bound_steps) else ""
+                if chain_now != bound_chain or tool_now != expected:
+                    _step_trace_failed(root_dir, str(tool_name or ""), run_id, index, step_count)
+                    outcome = "partial" if any_ok else "failed"
+                    changed_now = _failure(1, _dependency_changed(index, str(tool_name or ""), any_ok))
+                    _chain_trace_finish(root_dir, chain_item, run_id, outcome, changed_now[0], started, step_count)
+                    chain_open = False
+                    return _record_and_return(root_dir, chain_item, dry_run, changed_now)
             if isinstance(step, dict) and _pin_changed(step, tool if isinstance(tool, dict) else None):
                 _step_trace_failed(root_dir, str(tool_name or ""), run_id, index, step_count)
                 outcome = "partial" if any_ok else "failed"
@@ -1929,6 +2061,7 @@ def run_chain(
                 confirmed=confirmed,
                 audit_via=audit_via,
                 parent_run_id=run_id,
+                bound_sha256=None if bound_steps is None else bound_steps[index - 1],
             )
             if code != 0:
                 stderr = _annotate_step_stop(

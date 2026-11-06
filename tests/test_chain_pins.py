@@ -180,3 +180,78 @@ class ChainPinTests(unittest.TestCase):
             if json.loads(row).get("kind") == "chain" and json.loads(row).get("phase") == "finish"
         ]
         self.assertEqual(json.loads(finish[-1])["outcome"], "partial")
+
+    def test_confirm_stops_when_step_one_rewrites_step_two(self) -> None:
+        from unittest.mock import patch
+
+        first = self.root / "first"
+        second = self.root / "second"
+        step2 = self.root / "step2.sh"
+        step1 = self.root / "step1.sh"
+        step2.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${TK_DRY_RUN:-0}\" = 1 ]; then\n"
+            "  printf '%s\\n' '{\"dry_run\":true,\"plan\":[\"two\"]}'\n"
+            "  exit 0\n"
+            "fi\n"
+            f"touch {second}\n"
+            "printf '%s\\n' '{}'\n",
+            encoding="utf-8",
+        )
+        step1.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${TK_DRY_RUN:-0}\" = 1 ]; then\n"
+            "  printf '%s\\n' '{\"dry_run\":true,\"plan\":[\"one\"]}'\n"
+            "  exit 0\n"
+            "fi\n"
+            f"printf '%s\\n' '#!/bin/sh' > {step2}\n"
+            f"touch {first}\n"
+            "printf '%s\\n' '{}'\n",
+            encoding="utf-8",
+        )
+        step1.chmod(0o755)
+        step2.chmod(0o755)
+        chain_path = self.root / "chain.json"
+        chain_path.write_text("{}\n", encoding="utf-8")
+        catalog = {
+            "lab.one": {
+                "name": "lab.one",
+                "kind": "tool",
+                "path": str(step1),
+                "safety": "mutating",
+                "args": [],
+                "example": "tk run lab.one",
+            },
+            "lab.two": {
+                "name": "lab.two",
+                "kind": "tool",
+                "path": str(step2),
+                "safety": "mutating",
+                "args": [],
+                "example": "tk run lab.two",
+            },
+        }
+        chain = {
+            "kind": "chain",
+            "name": "lab.swap",
+            "path": str(chain_path),
+            "safety": "read-only",
+            "example": "tk run lab.swap",
+            "args": [],
+            "steps": [
+                {"tool": "lab.one", "args": {}},
+                {"tool": "lab.two", "args": {}},
+            ],
+        }
+        with patch("lib.catalog.discover_catalog", return_value=catalog):
+            code, out, err = run_chain(self.root, chain, {}, confirmed=False)
+        self.assertEqual(code, 0, err)
+        plan_id = json.loads(out)["plan_id"]
+        with patch("lib.catalog.discover_catalog", return_value=catalog):
+            code, out, err = run_chain(self.root, chain, {}, confirm_id=plan_id)
+        self.assertEqual(code, 1, err)
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "chain_dependency_changed")
+        self.assertEqual(payload["outcome"], "partial")
+        self.assertTrue(first.exists())
+        self.assertFalse(second.exists())

@@ -321,3 +321,79 @@ class PlanIdTests(unittest.TestCase):
                 blob += path.read_text(encoding="utf-8")
         self.assertNotIn(secret, blob)
         self.assertNotIn(secret, err)
+
+    def test_replaced_executable_does_not_run_under_the_old_confirm(self) -> None:
+        target = self.root / "touched"
+        preview = self._unconfirmed(target)
+        replacement = """#!/bin/sh
+if [ "${TK_DRY_RUN:-0}" = 1 ]; then
+  printf '%s\\n' '{"dry_run":true,"plan":["other"]}'
+  exit 0
+fi
+touch "$TK_ARG_PATH"
+printf '%s\\n' '{}'
+"""
+        self.tool.write_text(replacement, encoding="utf-8")
+        self.tool.chmod(self.tool.stat().st_mode | stat.S_IXUSR)
+        code, out, err = run_tool(
+            self.root,
+            _item(self.tool),
+            {"--path": str(target)},
+            confirm_id=preview["plan_id"],
+        )
+        self.assertEqual(code, 2, err)
+        self.assertEqual(out, "")
+        self.assertEqual(json.loads(err)["error"], "plan_mismatch")
+        self.assertFalse(target.exists())
+        audit = Path(self.state) / "audit.jsonl"
+        if audit.is_file():
+            decisions = [json.loads(line).get("decision") for line in audit.read_text(encoding="utf-8").splitlines()]
+            self.assertNotIn("allow", decisions)
+
+    def test_hooked_pre_popen_hash_does_not_start(self) -> None:
+        from unittest.mock import patch
+
+        target = self.root / "touched"
+        preview = self._unconfirmed(target)
+
+        def wrong(_path: object) -> str:
+            return "0" * 64
+
+        with patch("lib.runner._launch_sha256", wrong):
+            code, out, err = run_tool(
+                self.root,
+                _item(self.tool),
+                {"--path": str(target)},
+                confirm_id=preview["plan_id"],
+            )
+        self.assertEqual(code, 2, err)
+        self.assertEqual(json.loads(err)["error"], "plan_mismatch")
+        self.assertIn("executable bytes changed", err)
+        self.assertFalse(target.exists())
+        audit = Path(self.state) / "audit.jsonl"
+        decisions = [json.loads(line).get("decision") for line in audit.read_text(encoding="utf-8").splitlines()]
+        self.assertNotIn("allow", decisions)
+
+    def test_matching_confirm_audits_the_plan_id(self) -> None:
+        target = self.root / "touched"
+        preview = self._unconfirmed(target)
+        code, out, err = run_tool(
+            self.root,
+            _item(self.tool),
+            {"--path": str(target)},
+            confirm_id=preview["plan_id"],
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out), {})
+        self.assertTrue(target.is_file())
+        rows = [
+            json.loads(line)
+            for line in (Path(self.state) / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        allows = [row for row in rows if row.get("decision") == "allow"]
+        self.assertEqual(len(allows), 1)
+        self.assertEqual(allows[0]["plan_id"], preview["plan_id"])
+        self.assertEqual(allows[0]["via"], "confirm")
+        self.assertNotEqual(allows[0]["plan_id"], "")
+        finishes = [row for row in rows if row.get("decision") == "finish"]
+        self.assertEqual(finishes[-1]["plan_id"], preview["plan_id"])
