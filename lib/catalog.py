@@ -537,10 +537,16 @@ def format_find_output(items: list[dict]) -> str:
         return ""
 
 
+# Gateway fields an agent can rely on. Bump only when one of those
+# stdout fields changes meaning, not when a header or a lint line is added.
+CONTRACT_VERSION = 1
+
+
 def format_info_output(item: dict) -> str:
     """Compact multi-line contract: name, kind, safety, summary, args, output, example, verified."""
     try:
         lines = [
+            f"contract: {CONTRACT_VERSION}",
             f"name: {item.get('name') or ''}",
             f"kind: {item.get('kind') or ''}",
             f"safety: {item.get('safety') or ''}",
