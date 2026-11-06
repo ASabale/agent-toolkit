@@ -2,6 +2,7 @@
 
 Public seam (CODING_STANDARDS.md §2.3):
 - log_event: append-only telemetry; never raises
+- append_trace: best-effort execution trace; not telemetry and not the audit log
 - save_tool / save_chain: write a draft, validate with check_item, roll back on failure
 - evolve_report: promote verified-passing read-only tools and chains and summarize friction
 - verify_item: after a static check, call the runner; writers stay on the dry-run path
@@ -17,6 +18,7 @@ import re
 import shlex
 import stat
 import subprocess
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -162,6 +164,80 @@ def append_audit(root_dir: Path, record: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+_TRACE_FIELDS = (
+    "schema_version",
+    "event_id",
+    "ts",
+    "run_id",
+    "parent_run_id",
+    "name",
+    "kind",
+    "phase",
+    "outcome",
+    "step_index",
+    "step_count",
+    "process_exit",
+    "toolkit_exit",
+    "duration_ms",
+)
+_TRACE_PHASES = {"start", "finish"}
+_TRACE_OUTCOMES = {"dry_run", "preflight", "ok", "failed", "partial"}
+
+
+def _trace_uuid(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+def _trace_int(value: object) -> int | None:
+    if type(value) is int:
+        return value
+    return None
+
+
+def append_trace(root_dir: Path, record: dict) -> None:
+    """Append one execution-trace line under ``trace.lock``.
+
+    Not tamper-proof and not a completeness guarantee. Telemetry being off
+    does not skip this write. A failed write is swallowed. Flag values, raw
+    arguments, environment values, stdout, stderr, credentials, and command
+    text are not stored; keys outside the trace schema are dropped.
+    """
+    try:
+        incoming = record if isinstance(record, dict) else {}
+        phase = incoming.get("phase") if incoming.get("phase") in _TRACE_PHASES else None
+        outcome = None
+        if phase == "finish" and incoming.get("outcome") in _TRACE_OUTCOMES:
+            outcome = incoming.get("outcome")
+        payload = {
+            "schema_version": 1,
+            "event_id": str(uuid.uuid4()),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "run_id": _trace_uuid(incoming.get("run_id")) or str(uuid.uuid4()),
+            "parent_run_id": _trace_uuid(incoming.get("parent_run_id")),
+            "name": incoming.get("name") if isinstance(incoming.get("name"), str) else None,
+            "kind": incoming.get("kind") if isinstance(incoming.get("kind"), str) else None,
+            "phase": phase,
+            "outcome": outcome,
+            "step_index": _trace_int(incoming.get("step_index")),
+            "step_count": _trace_int(incoming.get("step_count")),
+            "process_exit": _trace_int(incoming.get("process_exit")),
+            "toolkit_exit": _trace_int(incoming.get("toolkit_exit")),
+            "duration_ms": _trace_int(incoming.get("duration_ms")),
+        }
+        redacted = redact_data(payload)
+        if not isinstance(redacted, dict) or set(redacted) != set(_TRACE_FIELDS):
+            return
+        line = json.dumps(redacted, separators=(",", ":"), default=str)
+        _append_line(_state_dir(Path(root_dir)), "trace.jsonl", "trace.lock", line)
+    except Exception:
+        return
 
 
 def write_state_json(root_dir: Path, filename: str, document: dict) -> None:
