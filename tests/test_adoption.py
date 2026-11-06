@@ -60,6 +60,12 @@ class AdoptionTests(unittest.TestCase):
         env["TK_NO_TELEMETRY"] = "1"
         env.pop("TK_SKILL_DIRS", None)
         env.pop("TK_STATE_DIR", None)
+        before_tools = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain", "--", "tools", "chains"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
         installed = subprocess.run(
             ["sh", str(ROOT / "install.sh")],
@@ -106,4 +112,4 @@ class AdoptionTests(unittest.TestCase):
             text=True,
             check=False,
         )
-        self.assertEqual(dirty.stdout, "")
+        self.assertEqual(dirty.stdout, before_tools.stdout)

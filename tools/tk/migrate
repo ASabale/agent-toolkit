@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+# @tk-name: tk.migrate
+# @tk-summary: Report what a move would copy, without copying secrets
+# @tk-safety: read-only
+# @tk-output: json | object
+# @tk-example: tk run tk.migrate
+# @tk-verified: none
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.tool_sdk import emit, fail
+
+FIX = "tk run tk.migrate"
+
+
+def main() -> int:
+    root = Path(os.environ.get("TK_ROOT_DIR") or Path(__file__).resolve().parents[2])
+    state = os.environ.get("TK_STATE_DIR", "").strip() or str(root / "state")
+    where = "already in gh" if shutil.which("gh") else "gh not on PATH"
+    return emit(
+        {
+            "dry_run": True,
+            "copy": [
+                {"kind": "catalog", "path": str(root / "tools")},
+                {"kind": "catalog", "path": str(root / "chains")},
+                {"kind": "state", "path": state},
+            ],
+            "credentials": [{"name": "gh", "where": where, "copied": False}],
+            "secrets_copied": False,
+        }
+    )
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(fail("internal_error", str(exc), FIX))
