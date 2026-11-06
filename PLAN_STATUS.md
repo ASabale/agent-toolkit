@@ -228,3 +228,20 @@ OK
 ```
 decisions: isolation on the audit line is none. Not merged to main (issue #229).
 follow-ups: T2.5 keeps the one TK_TIMEOUT path.
+
+## T4.4 Suggest a tool
+
+status: DONE
+branch: plan/t4.4-suggest
+baseline: plan/t2.4-lock at bb1b223
+result: `tk evolve` adds `tool_candidates` when the same search miss is already in the event log at least twice and the slug is not an existing tool. The line is a `tk save` command. Nothing is written. One miss stays out. An existing tool name stays out.
+verify-evidence: repeated `deploy the app` suggests `tk save deploy.the.app`. `once` and existing `env.check` are absent. The tools directory is unchanged.
+changes: lib/evolver.py; tests/test_evolver.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_evolver.EvolverTests.test_evolve_report_empty_state tests.test_evolver.EvolverTests.test_tool_candidates_suggest_repeated_misses_without_saving -v
+Ran 2 tests in 0.356s
+OK
+```
+decisions: proposals come from captured search misses only. The shell history file is not read. The agent still runs `tk save`. Not merged to main (issue #238).
+follow-ups: none in this slice.

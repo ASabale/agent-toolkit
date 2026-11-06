@@ -329,6 +329,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
         "unused_tools": [],
         "overlap_candidates": [],
         "chain_candidates": [],
+        "tool_candidates": [],
         "telemetry": {"events": 0, "run_events": 0, "first_ts": None},
         "unused_reason": "insufficient_telemetry",
     }
@@ -381,6 +382,7 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
             "unused_tools": unused,
             "overlap_candidates": _overlap_candidates(catalog),
             "chain_candidates": _chain_candidates(catalog, events),
+            "tool_candidates": _tool_candidates(catalog, events),
             "telemetry": telemetry,
         }
         if unused_reason:
@@ -1397,6 +1399,41 @@ def _chain_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict
         )
     candidates.sort(key=lambda row: (-row["count"], row["steps"][0], row["steps"][1]))
     return candidates
+
+
+def _tool_slug(query: str) -> str | None:
+    slug = re.sub(r"[^A-Za-z0-9]+", ".", query.strip().lower()).strip(".")
+    if not slug or not _NAME_RE.fullmatch(slug):
+        return None
+    return slug
+
+
+def _tool_candidates(catalog: dict[str, dict], events: list[dict]) -> list[dict]:
+    """Repeated search misses that are not already tools. Does not save."""
+    counts: dict[str, int] = {}
+    for record in events:
+        if record.get("event") not in _MISS_EVENTS:
+            continue
+        query = record.get("query") or record.get("q") or ""
+        if isinstance(query, str) and query.strip():
+            counts[query] = counts.get(query, 0) + 1
+    rows: list[dict] = []
+    for query, count in counts.items():
+        if count < 2:
+            continue
+        slug = _tool_slug(query)
+        if not slug or slug in catalog:
+            continue
+        rows.append(
+            {
+                "query": query,
+                "count": count,
+                "name": slug,
+                "suggested_save": f"tk save {shlex.quote(slug)} --summary {shlex.quote(query)}",
+            }
+        )
+    rows.sort(key=lambda row: (-row["count"], row["query"]))
+    return rows
 
 
 def _chain_prefixes(catalog: dict[str, dict]) -> set[tuple[str, str]]:
