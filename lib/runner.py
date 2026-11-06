@@ -1544,6 +1544,44 @@ def _chain_preflight_failure(
     return _failure(1, payload)
 
 
+def _chain_pin_mismatch(chain_item: dict, catalog: dict) -> tuple[int, str] | None:
+    """Return the first pinned step whose file bytes no longer match."""
+    steps = chain_item.get("steps")
+    if not isinstance(steps, list):
+        return None
+    for index, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            continue
+        pin = step.get("tool_sha256")
+        if not isinstance(pin, str) or not pin:
+            continue
+        name = str(step.get("tool") or "")
+        tool = catalog.get(name)
+        path = tool.get("path") if isinstance(tool, dict) else ""
+        if _sha256_file(path) != pin:
+            return index, name
+    return None
+
+
+def _pin_changed(step: dict, tool: dict | None) -> bool:
+    pin = step.get("tool_sha256")
+    if not isinstance(pin, str) or not pin:
+        return False
+    path = tool.get("path") if isinstance(tool, dict) else ""
+    return _sha256_file(path) != pin
+
+
+def _dependency_changed(index: int, name: str, any_ok: bool) -> dict:
+    payload = {
+        "error": "chain_dependency_changed",
+        "why": f"step {index} {name} bytes changed",
+        "fix": "tk chain save",
+    }
+    if any_ok:
+        payload["outcome"] = "partial"
+    return payload
+
+
 def _chain_policy_block(
     root_dir: Path,
     steps: list,
@@ -1692,6 +1730,13 @@ def run_chain(
             _chain_trace_finish(root_dir, chain_item, run_id, "preflight", result[0], started, step_count)
             chain_open = False
             return _record_and_return(root_dir, chain_item, dry_run, result)
+        changed = _chain_pin_mismatch(chain_item, catalog)
+        if changed is not None:
+            index, name = changed
+            result = _failure(1, _dependency_changed(index, name, False))
+            _chain_trace_finish(root_dir, chain_item, run_id, "preflight", result[0], started, step_count)
+            chain_open = False
+            return _record_and_return(root_dir, chain_item, dry_run, result)
         blocked = None if user_dry_run else _chain_policy_block(
             root_dir, steps if isinstance(steps, list) else [], catalog, confirmed
         )
@@ -1761,6 +1806,13 @@ def run_chain(
                 _chain_trace_finish(root_dir, chain_item, run_id, outcome, unresolved[0], started, step_count)
                 chain_open = False
                 return _record_and_return(root_dir, chain_item, dry_run, unresolved)
+            if isinstance(step, dict) and _pin_changed(step, tool if isinstance(tool, dict) else None):
+                _step_trace_failed(root_dir, str(tool_name or ""), run_id, index, step_count)
+                outcome = "partial" if any_ok else "failed"
+                changed_now = _failure(1, _dependency_changed(index, str(tool_name or ""), any_ok))
+                _chain_trace_finish(root_dir, chain_item, run_id, outcome, changed_now[0], started, step_count)
+                chain_open = False
+                return _record_and_return(root_dir, chain_item, dry_run, changed_now)
 
             code, stdout, stderr = run_tool(
                 root_dir,

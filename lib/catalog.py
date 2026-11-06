@@ -1155,6 +1155,7 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         name = str(item.get("name") or path.stem)
         errors: list[str] = []
         skipped: list[str] = []
+        warnings: list[str] = []
         secret_rules = _file_secret_rules(path)
         if not is_chain and not os.access(path, os.X_OK):
             errors.append(f"not executable: {path}")
@@ -1190,6 +1191,15 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
                     elif tool_name not in catalog:
                         errors.append(f"step {index} tool not in catalog: {tool_name}")
                 errors.extend(_chain_wiring_errors(item, catalog))
+                if isinstance(steps, list) and any(
+                    not (
+                        isinstance(step, dict)
+                        and isinstance(step.get("tool_sha256"), str)
+                        and step.get("tool_sha256")
+                    )
+                    for step in steps
+                ):
+                    warnings.append("unpinned")
         if secret_rules:
             shown = ", ".join(secret_rules)
             errors.append(
@@ -1202,6 +1212,8 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
         payload = {"name": name, "ok": not errors, "errors": errors}
         if skipped:
             payload["skipped"] = skipped
+        if warnings:
+            payload["warnings"] = warnings
         return payload
     except Exception as exc:
         return {"name": label, "ok": False, "errors": [f"internal_error: {exc}"]}

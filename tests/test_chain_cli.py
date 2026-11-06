@@ -101,7 +101,9 @@ class ChainCliTests(unittest.TestCase):
         doc = self._chain("demo.eq")
         self.assertEqual(doc["summary"], "picked")
         self.assertEqual(doc["safety"], "read-only")
-        self.assertEqual(doc["steps"], [{"tool": "json.pick", "args": {"keys": "a"}}])
+        self.assertEqual(doc["steps"][0]["tool"], "json.pick")
+        self.assertEqual(doc["steps"][0]["args"], {"keys": "a"})
+        self.assertEqual(len(doc["steps"][0]["tool_sha256"]), 64)
 
     def test_name_with_only_flags_still_runs(self) -> None:
         before = sorted(p.name for p in (self.root / "chains").glob("*.json"))
@@ -154,7 +156,9 @@ class ChainCliTests(unittest.TestCase):
     def test_force_does_not_swallow_step(self) -> None:
         proc = self._run("chain", "demo.force", "--force", "sys.env-digest")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self._chain("demo.force")["steps"], [{"tool": "sys.env-digest"}])
+        step = self._chain("demo.force")["steps"][0]
+        self.assertEqual(step["tool"], "sys.env-digest")
+        self.assertEqual(len(step["tool_sha256"]), 64)
         self.assertFalse((ROOT / "chains" / "demo.force.json").exists())
 
     def test_no_args_unchanged(self) -> None:

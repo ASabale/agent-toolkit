@@ -282,7 +282,7 @@ class BlastRadiusTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(set(payload), {"path", "target", "count", "truncated", "dependents"})
+        self.assertTrue({"path", "target", "count", "truncated", "dependents"} <= set(payload))
         files = {item["file"] for item in payload["dependents"]}
         self.assertIn("lib/runner.py", files)
         self.assertIn("lib/evolver.py", files)

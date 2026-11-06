@@ -301,6 +301,23 @@ def save_tool(
         return _failure("internal_error", str(exc), "tk check")
 
 
+def _pin_chain_steps(root: Path, steps: list[dict]) -> list[dict]:
+    """Copy each step and record the full SHA-256 of that tool file."""
+    from lib.catalog import discover_catalog
+    from lib.runner import _sha256_file
+
+    catalog = discover_catalog(root)
+    pinned: list[dict] = []
+    for step in steps:
+        copied = dict(step)
+        name = str(copied.get("tool") or "")
+        tool = catalog.get(name)
+        path = tool.get("path") if isinstance(tool, dict) else ""
+        copied["tool_sha256"] = _sha256_file(path)
+        pinned.append(copied)
+    return pinned
+
+
 def save_chain(
     root_dir: Path,
     name: str,
@@ -331,7 +348,7 @@ def save_chain(
             "summary": summary,
             "safety": safety,
             "args": chain_args,
-            "steps": steps,
+            "steps": _pin_chain_steps(root, steps),
             "output": "json | Chain result",
             "example": example_text,
             "verified": "none",
