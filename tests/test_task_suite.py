@@ -29,10 +29,10 @@ class TaskSuiteTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in model["tasks"]], list(TASK_IDS))
         migrate = scripted[-1]
         self.assertEqual(migrate["id"], "migrate_dry_run")
-        self.assertFalse(migrate["scored"])
-        self.assertIsNone(migrate["first_attempt_success"])
-        scored = [row for row in scripted if row["id"] != "migrate_dry_run"]
-        self.assertEqual(len(scored), 8)
+        self.assertTrue(migrate["scored"])
+        self.assertTrue(migrate["first_attempt_success"])
+        scored = [row for row in scripted if row["scored"]]
+        self.assertEqual(len(scored), 9)
         for row in scored:
             self.assertTrue(row["scored"], row["id"])
             self.assertTrue(row["first_attempt_success"], row)
@@ -47,6 +47,18 @@ class TaskSuiteTests(unittest.TestCase):
             if source["first_attempt_success"] is None:
                 continue
             self.assertIsNone(copy["first_attempt_success"])
+            self.assertNotEqual(copy["first_attempt_success"], source["first_attempt_success"])
+
+    def test_migrate_score_does_not_claim_another_harness(self) -> None:
+        report = run_suite(ROOT)
+        self.assertIsNone(report["model"]["harness_id"])
+        migrate = report["scripted"]["tasks"][-1]
+        self.assertEqual(migrate["id"], "migrate_dry_run")
+        self.assertTrue(migrate["first_attempt_success"])
+        self.assertIsNone(report["model"]["tasks"][-1]["first_attempt_success"])
+        blob = json.dumps(report)
+        for foreign in ("codex", "claude-code", "openclaw"):
+            self.assertNotIn(foreign, blob)
 
     def test_token_benchmark_still_runs(self) -> None:
         proc = subprocess.run(
