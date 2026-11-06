@@ -8,7 +8,7 @@
 - `state/policy.json` version 1 decides allow, confirm, or deny. An exact file hash outranks a name, and a name outranks the class default. A name `allow` does not run a writer. A missing file uses read-only allow, mutating confirm, and destructive deny. A same-user process can still edit that file or exec the tool directly. This policy is not that boundary.
 - Check a tool with `tk check <name>` before you rely on it. Do not run a script you have not read.
 - `safety` is a declaration. `tk check` is not a sandbox. Tools run as the user.
-- `@tk-verified` is a date in the header. It is not a signature.
+- `@tk-verified` is a date in the header. It is not a signature. `@tk-provenance: local` is not approval. A save or an import is an execution draft until an exact-hash policy rule allows those bytes. Invalid `state/evidence.json` blocks class-level allow. A missing evidence file is not approval and does not block a capability that was never marked a draft. Approval stored for one hash does not survive a byte change.
 - `state/trace.jsonl` is best-effort. A failed trace write does not block read-only work. It is not the writer audit.
 - A writer authorization audit failure blocks the start. A terminal audit failure does not undo a finished operation.
 - `TK_DRY_RUN` is cooperative. The audit field `isolation` is `none`.

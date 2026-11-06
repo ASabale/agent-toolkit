@@ -17,8 +17,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.catalog import check_item, discover_catalog  # noqa: E402
-from lib.evolver import save_tool  # noqa: E402
-from lib.runner import run_tool  # noqa: E402
+from lib.evolver import save_tool, write_state_json  # noqa: E402
+from lib.runner import _sha256_file, run_tool  # noqa: E402
+
+
+def _hash_confirm(root: Path, name: str) -> None:
+    item = discover_catalog(root)[name]
+    write_state_json(
+        root,
+        "policy.json",
+        {
+            "version": 1,
+            "classes": {"read-only": "allow", "mutating": "confirm", "destructive": "deny"},
+            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": "confirm"}],
+        },
+    )
 
 
 class SaveFileInterpreterTests(unittest.TestCase):
@@ -77,6 +90,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         self.assertTrue(checked["ok"], checked)
 
         item = discover_catalog(self.root)["demo.py"]
+        _hash_confirm(self.root, "demo.py")
         ran, stdout, stderr = run_tool(self.root, item, {}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout), {})
@@ -108,6 +122,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         self.assertFalse(target.exists())
 
         item = discover_catalog(self.root)["demo.touch"]
+        _hash_confirm(self.root, "demo.touch")
         ran, stdout, stderr = run_tool(
             self.root, item, {"--path": str(target)}, [], dry_run=True
         )
@@ -144,6 +159,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         guard_at = text.index("TK_DRY_RUN")
         self.assertLess(future_at, guard_at)
         item = discover_catalog(self.root)["demo.future"]
+        _hash_confirm(self.root, "demo.future")
         ran, stdout, stderr = run_tool(self.root, item, {}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout), {})
@@ -164,6 +180,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         self.assertTrue(bash_text.startswith("#!/usr/bin/env bash"))
         self.assertIn("set -euo pipefail", bash_text)
         item = discover_catalog(self.root)["demo.bash"]
+        _hash_confirm(self.root, "demo.bash")
         ran, stdout, stderr = run_tool(self.root, item, {}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout), {})
@@ -196,6 +213,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         self.assertTrue(text.startswith("#!/usr/bin/env bash"))
         self.assertIn("set -euo pipefail", text)
         item = discover_catalog(self.root)["demo.plain"]
+        _hash_confirm(self.root, "demo.plain")
         ran, stdout, stderr = run_tool(self.root, item, {}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout), {})
@@ -283,6 +301,15 @@ class SaveFileInterpreterCliTests(unittest.TestCase):
         self.assertEqual(saved.returncode, 0, saved.stderr)
         self.assertNotIn("syntax error", saved.stderr.lower())
         self.assertTrue(json.loads(saved.stdout)["ok"])
+        previous = os.environ.get("TK_STATE_DIR")
+        os.environ["TK_STATE_DIR"] = str(self.root / "state")
+        try:
+            _hash_confirm(self.root, "demo.py")
+        finally:
+            if previous is None:
+                os.environ.pop("TK_STATE_DIR", None)
+            else:
+                os.environ["TK_STATE_DIR"] = previous
         ran = self._run("run", "demo.py")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertEqual(json.loads(ran.stdout), {})

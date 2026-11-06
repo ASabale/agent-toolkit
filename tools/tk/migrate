@@ -208,6 +208,8 @@ def _draft_bytes(data: bytes) -> bytes:
     for line in data.decode("utf-8", errors="replace").splitlines(keepends=True):
         if line.startswith("# ") and "@tk-verified:" in line:
             lines.append(f"# @tk-verified: none{line[-1:] if line.endswith(chr(10)) else ''}")
+        elif line.startswith("# ") and "@tk-provenance:" in line:
+            continue
         else:
             lines.append(line)
     return "".join(lines).encode("utf-8")
@@ -265,6 +267,40 @@ def _failure(error: str, why: str, removed: list[str]) -> dict:
     }
 
 
+def _capability_name(dest: Path, rel: str, kind: str) -> str:
+    path = dest / rel
+    if kind == "tool":
+        from lib.catalog import parse_tool_header
+
+        return str(parse_tool_header(path).get("name") or "")
+    if kind == "chain":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return ""
+        if isinstance(data, dict):
+            return str(data.get("name") or "")
+    return ""
+
+
+def _mark_drafts(dest: Path, files: list[dict], copied: list[str]) -> str:
+    """Imported names start blocked. Header provenance was already stripped."""
+    from lib.evolver import mark_execution_draft
+
+    copied_set = set(copied)
+    for row in files:
+        if row["path"] not in copied_set or row["kind"] not in {"tool", "chain"}:
+            continue
+        name = _capability_name(dest, row["path"], row["kind"])
+        if not name:
+            return f"imported file has no name: {row['path']}"
+        try:
+            mark_execution_draft(dest, name)
+        except (OSError, ValueError) as exc:
+            return f"{row['path']}: {exc}"
+    return ""
+
+
 def _apply(source: Path, dest: Path, files: list[dict], write: bool) -> dict:
     plan = [row["path"] for row in files]
     if not write or os.environ.get("TK_DRY_RUN", "0") == "1":
@@ -313,6 +349,9 @@ def _apply(source: Path, dest: Path, files: list[dict], write: bool) -> dict:
     bad = next((row for row in checks if not row.get("ok")), None)
     if bad:
         return _failure("check_failed", f"{bad['name']}: {bad['errors']}", _rollback(created))
+    marked = _mark_drafts(dest, files, copied)
+    if marked:
+        return _failure("draft_unrecorded", marked, _rollback(created))
     return {
         "dry_run": False,
         "copied": copied,

@@ -17,8 +17,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.catalog import discover_catalog  # noqa: E402
-from lib.evolver import save_tool  # noqa: E402
-from lib.runner import run_tool  # noqa: E402
+from lib.evolver import save_tool, write_state_json  # noqa: E402
+from lib.runner import _sha256_file, run_tool  # noqa: E402
+
+
+def _hash_confirm(root: Path, name: str) -> None:
+    item = discover_catalog(root)[name]
+    write_state_json(
+        root,
+        "policy.json",
+        {
+            "version": 1,
+            "classes": {"read-only": "allow", "mutating": "confirm", "destructive": "deny"},
+            "rules": [{"rank": "hash", "sha256": _sha256_file(item["path"]), "decision": "confirm"}],
+        },
+    )
 
 _REPRO_CMD = 'echo "{\\"hint\\":\\"tools read TK_ARG_FOO\\"}"'
 
@@ -64,6 +77,7 @@ class SaveArgInferenceTests(unittest.TestCase):
         self.assertNotIn("@tk-arg", header)
 
         item = discover_catalog(self.root)["demo.note"]
+        _hash_confirm(self.root, "demo.note")
         ran, stdout, stderr = run_tool(self.root, item, {}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout)["hint"], "tools read TK_ARG_FOO")
@@ -81,6 +95,7 @@ class SaveArgInferenceTests(unittest.TestCase):
         self.assertIn("tk run demo.need --foo example", text)
 
         item = discover_catalog(self.root)["demo.need"]
+        _hash_confirm(self.root, "demo.need")
         missing, _, stderr = run_tool(self.root, item, {}, [])
         self.assertNotEqual(missing, 0)
         self.assertEqual(json.loads(stderr)["error"], "missing_required")
@@ -106,6 +121,7 @@ class SaveArgInferenceTests(unittest.TestCase):
         self.assertNotIn("--foo example", text.split("# @tk-example:", 1)[1].splitlines()[0])
 
         item = discover_catalog(self.root)["demo.opt"]
+        _hash_confirm(self.root, "demo.opt")
         ran, stdout, stderr = run_tool(self.root, item, {}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout)["foo"], "x")
@@ -140,6 +156,7 @@ class SaveArgInferenceTests(unittest.TestCase):
         self.assertIn("tk run demo.pyenv --foo example", text)
 
         item = discover_catalog(self.root)["demo.pyenv"]
+        _hash_confirm(self.root, "demo.pyenv")
         ran, stdout, stderr = run_tool(self.root, item, {"--foo": "bar"}, [])
         self.assertEqual(ran, 0, stderr)
         self.assertEqual(json.loads(stdout)["foo"], "bar")
@@ -186,6 +203,7 @@ class SaveArgInferenceTests(unittest.TestCase):
         header = self._header_block(tool.read_text(encoding="utf-8"))
         self.assertNotIn("--foo", header)
         self.assertNotIn("@tk-arg", header)
+        _hash_confirm(toolkit, "demo.note")
 
         ran = subprocess.run(
             [str(tk), "run", "demo.note"],

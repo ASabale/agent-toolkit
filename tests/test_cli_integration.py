@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -57,6 +58,26 @@ class CliIntegrationTests(unittest.TestCase):
             text=True,
             cwd=self.root if cwd is None else cwd,
             env=run_env,
+        )
+
+    def _allow_saved(self, name: str) -> None:
+        tool = self.root / "tools" / Path(*name.split("."))
+        digest = hashlib.sha256(tool.read_bytes()).hexdigest()
+        state = self.root / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "policy.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "classes": {
+                        "read-only": "allow",
+                        "mutating": "confirm",
+                        "destructive": "deny",
+                    },
+                    "rules": [{"rank": "hash", "sha256": digest, "decision": "allow"}],
+                }
+            ),
+            encoding="utf-8",
         )
 
     def _events(self) -> list[dict]:
@@ -277,6 +298,27 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertTrue(json.loads(chained.stdout)["ok"])
         self.assertTrue((self.root / "chains" / "lab.pipe.json").is_file())
 
+        denied = self._run("run", "lab.pipe")
+        self.assertEqual(denied.returncode, 2, denied.stderr)
+        self.assertEqual(json.loads(denied.stderr)["error"], "policy_denied")
+        tool = self.root / "tools" / "lab" / "echo"
+        digest = hashlib.sha256(tool.read_bytes()).hexdigest()
+        state = self.root / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "policy.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "classes": {
+                        "read-only": "allow",
+                        "mutating": "confirm",
+                        "destructive": "deny",
+                    },
+                    "rules": [{"rank": "hash", "sha256": digest, "decision": "allow"}],
+                }
+            ),
+            encoding="utf-8",
+        )
         ran = self._run("run", "lab.pipe")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertEqual(json.loads(ran.stdout), {"ok": True})
@@ -360,6 +402,7 @@ class CliIntegrationTests(unittest.TestCase):
             "printf '%s\\n' '{\"ok\":true}'",
         )
         self.assertEqual(saved.returncode, 0, saved.stderr)
+        self._allow_saved("lab.echo")
         missed = self._run("find", "deploy-status-missing")
         self.assertEqual(missed.returncode, 0, missed.stderr)
         ran = self._run("run", "lab.echo")
@@ -379,6 +422,7 @@ class CliIntegrationTests(unittest.TestCase):
         today = date.today().isoformat()
         text = (self.root / "tools" / "lab" / "echo").read_text(encoding="utf-8")
         self.assertIn(f"# @tk-verified: {today}", text)
+        self._allow_saved("lab.echo")
 
         ran = self._run("run", "lab.echo")
         self.assertEqual(ran.returncode, 0, ran.stderr)
@@ -421,6 +465,7 @@ class CliIntegrationTests(unittest.TestCase):
             '[{"tool":"lab.keep"}]',
         )
         self.assertEqual(chained.returncode, 0, chained.stderr)
+        self._allow_saved("lab.keep")
         ran = self._run("run", "lab.pipe")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self._seed_run_events(MIN_UNUSED_RUN_EVENTS - 1, "lab.pipe")

@@ -8,9 +8,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from lib.catalog import check_item, format_info_output
-from lib.evolver import evolve_report, evidence_view, record_validation
-from lib.runner import run_tool
+from lib.catalog import check_item, format_info_output, parse_tool_header
+from lib.evolver import (
+    evolve_report,
+    evidence_view,
+    execution_draft,
+    mark_execution_draft,
+    record_validation,
+    write_state_json,
+)
+from lib.runner import _sha256_file, run_chain, run_tool
 
 
 def _bash_tool(name: str, safety: str) -> str:
@@ -135,6 +142,151 @@ class EvidenceTests(unittest.TestCase):
                 evolve_report(root)
             self.assertEqual(path.read_bytes(), before)
             self.assertIn("# @tk-verified: none", path.read_text(encoding="utf-8"))
+
+    def test_header_provenance_is_not_approval_and_does_not_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._tool(root, "read-only")
+            text = path.read_text(encoding="utf-8").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: none\n# @tk-provenance: local\n",
+            )
+            path.write_text(text, encoding="utf-8")
+            self.assertEqual(parse_tool_header(path).get("provenance"), "local")
+            view = evidence_view(root, self._item(path))
+            self.assertEqual(view["provenance"], "draft")
+            self.assertTrue(execution_draft(root, self._item(path)))
+            code, out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(out, "")
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
+
+    def test_verified_none_without_a_draft_record_is_not_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._tool(root, "read-only")
+            view = evidence_view(root, self._item(path))
+            self.assertEqual(view["provenance"], "draft")
+            self.assertFalse(execution_draft(root, self._item(path)))
+            code, out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["ok"], True)
+
+    def test_invalid_evidence_blocks_class_allow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._tool(root, "read-only")
+            state = Path(self._state.name)
+            state.mkdir(parents=True, exist_ok=True)
+            (state / "evidence.json").write_text("{", encoding="utf-8")
+            code, _out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
+            (state / "evidence.json").write_text('{"version": 2, "items": {}}\n', encoding="utf-8")
+            code, _out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
+
+    def test_exact_approval_does_not_survive_a_byte_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._tool(root, "read-only")
+            digest = _sha256_file(path)
+            write_state_json(
+                root,
+                "evidence.json",
+                {
+                    "version": 1,
+                    "items": {
+                        "demo.echo": {
+                            "provenance": "local",
+                            "approved_sha256": digest,
+                            "validation": digest,
+                        }
+                    },
+                },
+            )
+            self.assertFalse(execution_draft(root, self._item(path)))
+            code, _out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 0, err)
+            path.write_bytes(path.read_bytes() + b"\n# changed\n")
+            record_validation(root, ["demo.echo"])
+            view = evidence_view(root, self._item(path))
+            self.assertEqual(view["provenance"], "draft")
+            self.assertNotEqual(view["validation_sha256"], digest)
+            self.assertTrue(execution_draft(root, self._item(path)))
+            code, out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(out, "")
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
+
+    def test_saved_draft_runs_only_with_exact_hash_allow_including_a_chain(self) -> None:
+        from lib.evolver import save_tool, save_chain
+        from lib.catalog import discover_catalog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code, _out, err = save_tool(
+                root,
+                "demo.echo",
+                "Echo",
+                from_cmd="printf '%s\\n' '{\"ok\":true}'",
+            )
+            self.assertEqual(code, 0, err)
+            path = root / "tools" / "demo" / "echo"
+            self.assertIn("# @tk-verified: none", path.read_text(encoding="utf-8"))
+            self.assertNotIn("@tk-provenance: local", path.read_text(encoding="utf-8"))
+            item = discover_catalog(root)["demo.echo"]
+            self.assertTrue(execution_draft(root, item))
+            code, out, err = run_tool(root, item, {}, [], False, None)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(out, "")
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
+            code, _, err = save_chain(
+                root, "demo.pipe", "Pipe", steps=[{"tool": "demo.echo", "args": {}}]
+            )
+            self.assertEqual(code, 0, err)
+            chain = discover_catalog(root)["demo.pipe"]
+            code, _out, err = run_chain(root, chain, {})
+            self.assertEqual(code, 2, err)
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
+            write_state_json(
+                root,
+                "policy.json",
+                {
+                    "version": 1,
+                    "classes": {
+                        "read-only": "allow",
+                        "mutating": "confirm",
+                        "destructive": "deny",
+                    },
+                    "rules": [
+                        {
+                            "rank": "hash",
+                            "sha256": _sha256_file(path),
+                            "decision": "allow",
+                        }
+                    ],
+                },
+            )
+            code, out, err = run_tool(root, item, {}, [], False, None)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["ok"], True)
+            code, out, err = run_chain(root, chain, {})
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["ok"], True)
+            stored = json.loads((Path(self._state.name) / "evidence.json").read_text(encoding="utf-8"))
+            self.assertIs(stored["items"]["demo.echo"]["blocked"], True)
+            self.assertEqual(stored["items"]["demo.echo"]["provenance"], "draft")
+
+    def test_mark_execution_draft_blocks_an_existing_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._tool(root, "read-only")
+            mark_execution_draft(root, "demo.echo")
+            code, _out, err = run_tool(root, self._item(path), {}, [], False, None)
+            self.assertEqual(code, 2, err)
+            self.assertEqual(json.loads(err)["error"], "policy_denied")
 
 
 if __name__ == "__main__":

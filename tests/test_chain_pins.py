@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 
 from lib.catalog import check_item, discover_catalog
-from lib.evolver import save_chain, save_tool
-from lib.runner import run_chain
+from lib.evolver import save_chain, save_tool, write_state_json
+from lib.runner import _sha256_file, run_chain
 
 
 class ChainPinTests(unittest.TestCase):
@@ -33,6 +33,29 @@ class ChainPinTests(unittest.TestCase):
         code, _, err = save_tool(self.root, name, name, from_cmd=body)
         self.assertEqual(code, 0, err)
         return self.root / "tools" / Path(*name.split("."))
+
+    def _allow(self, *names: str) -> None:
+        rules = [
+            {
+                "rank": "hash",
+                "sha256": _sha256_file(discover_catalog(self.root)[name]["path"]),
+                "decision": "allow",
+            }
+            for name in names
+        ]
+        write_state_json(
+            self.root,
+            "policy.json",
+            {
+                "version": 1,
+                "classes": {
+                    "read-only": "allow",
+                    "mutating": "confirm",
+                    "destructive": "deny",
+                },
+                "rules": rules,
+            },
+        )
 
     def _chain(self, name: str, steps: list[dict]) -> Path:
         code, _, err = save_chain(self.root, name, name, steps=steps)
@@ -60,6 +83,7 @@ class ChainPinTests(unittest.TestCase):
         updated = json.loads(path.read_text(encoding="utf-8"))["steps"][0]["tool_sha256"]
         self.assertNotEqual(updated, pin)
         self.assertEqual(updated, hashlib.sha256(tool.read_bytes()).hexdigest())
+        self._allow("demo.touch")
         item = discover_catalog(self.root)["demo.pinned"]
         ran, out, err = run_chain(self.root, item, {})
         self.assertEqual(ran, 0, err)
@@ -105,6 +129,7 @@ class ChainPinTests(unittest.TestCase):
         checked = check_item(self.root, "demo.legacy")
         self.assertTrue(checked["ok"], checked)
         self.assertIn("unpinned", checked["warnings"])
+        self._allow("demo.look")
         item = discover_catalog(self.root)["demo.legacy"]
         code, out, err = run_chain(self.root, item, {})
         self.assertEqual(code, 0, err)
@@ -139,6 +164,7 @@ class ChainPinTests(unittest.TestCase):
             "demo.swap",
             [{"tool": "demo.one", "args": {}}, {"tool": "demo.two", "args": {}}],
         )
+        self._allow("demo.one", "demo.two")
         item = discover_catalog(self.root)["demo.swap"]
         code, _out, err = run_chain(self.root, item, {})
         self.assertEqual(code, 1)
