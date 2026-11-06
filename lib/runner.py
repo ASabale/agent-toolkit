@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lib.catalog import output_keys
 from lib.chainref import resolve_expr, stringify
-from lib.evolver import append_audit, log_event
+from lib.evolver import append_audit, log_event, record_feedback
 from lib.guards import tool_subprocess_env
 from lib.redact import redact_data
 
@@ -459,6 +459,7 @@ def _record_run(root_dir: Path, item: dict, code: int, stderr: str, dry_run: boo
         return
     payload["why"] = _why_from_stderr(stderr)
     log_event(root_dir, "run_error", payload)
+    record_feedback(root_dir, str(item.get("name") or ""), code, stderr)
 
 
 def _positive_float(raw: str, default: float) -> float:
@@ -881,6 +882,39 @@ def _annotate_step_stop(stderr: str, chain_name: str, index: int, total: int, to
     return _compact(payload)
 
 
+def _unquoted_command_sub(text: str) -> bool:
+    """True when ``$(`` appears outside single or double quotes."""
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if text.startswith("$(", index):
+            return True
+        index += 1
+    return False
+
+
+def _rejected_tool_fix(fix: str) -> bool:
+    """A tool-supplied fix may not add a second command."""
+    if "\n" in fix or "\r" in fix or ";" in fix:
+        return True
+    return _unquoted_command_sub(fix)
+
+
 def _tool_failure(item: dict, code: int, stderr: str) -> dict:
     text = stderr.strip()
     if text:
@@ -889,6 +923,10 @@ def _tool_failure(item: dict, code: int, stderr: str) -> dict:
         except json.JSONDecodeError:
             payload = None
         if isinstance(payload, dict) and {"error", "why", "fix"} <= payload.keys():
+            fix = payload.get("fix")
+            if isinstance(fix, str) and _rejected_tool_fix(fix):
+                payload = dict(payload)
+                payload["fix"] = _example(item)
             return payload
     return {
         "error": "tool_failed",
