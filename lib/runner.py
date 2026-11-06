@@ -693,7 +693,7 @@ _POLICY_CLASSES = {
 }
 _POLICY_DECISIONS = {"allow", "confirm", "deny"}
 _YES_DEPRECATED = (
-    "warning: destructive --yes is deprecated and is not standing authorization; "
+    "warning: mutating --yes is deprecated and is not standing authorization; "
     "use --confirm with the current plan_id\n"
 )
 
@@ -756,31 +756,33 @@ def _policy_document(root_dir: Path) -> tuple[dict | None, str | None]:
 def _policy_decision(
     policy: dict, *, sha256: str, name: str, safety: str, draft: bool
 ) -> tuple[str, str]:
-    """One decision. Returns ``(decision, rank)`` or ``(policy_conflict, "")``."""
+    """One decision. An applicable deny wins. Name allow is not a byte grant.
+
+    Same-rank disagreement is ``policy_conflict``. A single hash decision is
+    standing authorization for those bytes. Name ``allow`` falls through to
+    the class default. Draft bytes do not receive class ``allow``.
+    """
     rules = policy["rules"]
     hash_hits = [
         rule["decision"]
         for rule in rules
         if rule["rank"] == "hash" and rule["sha256"] == sha256
     ]
-    if hash_hits:
-        if len(set(hash_hits)) > 1:
-            return "policy_conflict", ""
-        return hash_hits[0], "hash"
     name_hits = [
         rule["decision"]
         for rule in rules
         if rule["rank"] == "name" and rule["name"] == name
     ]
-    if name_hits:
-        if len(set(name_hits)) > 1:
-            return "policy_conflict", ""
-        chosen = name_hits[0]
-        writer = safety in {"mutating", "destructive"}
-        if chosen == "allow" and (writer or draft):
-            pass
-        else:
-            return chosen, "name"
+    if (hash_hits and len(set(hash_hits)) > 1) or (name_hits and len(set(name_hits)) > 1):
+        return "policy_conflict", ""
+    if any(decision == "deny" for decision in hash_hits):
+        return "deny", "hash"
+    if any(decision == "deny" for decision in name_hits):
+        return "deny", "name"
+    if hash_hits:
+        return hash_hits[0], "hash"
+    if name_hits and name_hits[0] != "allow":
+        return name_hits[0], "name"
     if draft:
         return "deny", "draft"
     if safety not in policy["classes"]:
@@ -788,12 +790,17 @@ def _policy_decision(
     return policy["classes"][safety], "class"
 
 
-def _yes_exception(decision: str, rank: str, safety: str, confirmed: bool | None) -> bool:
+def _hash_grant(decision: str, rank: str) -> bool:
+    return rank == "hash" and decision in {"allow", "confirm"}
+
+
+def _yes_satisfies(decision: str, rank: str, safety: str, confirmed: bool | None) -> bool:
+    """``--yes`` satisfies only a class-level mutating confirm."""
     return (
         confirmed is True
-        and decision == "deny"
+        and decision == "confirm"
         and rank == "class"
-        and safety == "destructive"
+        and safety == "mutating"
     )
 
 
@@ -813,7 +820,10 @@ def _public_flags(flags: dict[str, str]) -> dict[str, str]:
 
 
 def _apply_command(item: dict, flags: dict[str, str]) -> str:
-    return _fix_command(item, _public_flags(flags)) + " --yes"
+    command = _fix_command(item, _public_flags(flags))
+    if str(item.get("safety") or "") == "destructive":
+        return command + " --confirm"
+    return command + " --yes"
 
 
 def _sha256_file(path: object) -> str:
@@ -892,7 +902,11 @@ def _safe_write_result(item: dict, flags: dict[str, str], payload: object) -> di
         "dry_run": True,
         "plan": plan,
         "plan_id": plan_id,
-        "apply": _apply_command(item, flags),
+        "apply": (
+            _confirm_command(item, flags, plan_id)
+            if str(item.get("safety") or "") == "destructive"
+            else _apply_command(item, flags)
+        ),
         "confirm": _confirm_command(item, flags, plan_id),
     }
 
@@ -996,9 +1010,10 @@ def run_tool(
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
     ``confirmed`` defaults to omitted. That is not authorization. A writer runs
-    when policy says ``allow``, when ``--confirm`` matches, or when destructive
-    ``--yes`` is the class-default exception. ``tk run`` passes true only for
-    ``--yes``. ``confirm_id`` executes only when the id matches.
+    when a non-destructive policy says ``allow``, when ``--confirm`` matches,
+    or when ``--yes`` satisfies a class-level mutating confirm. ``--yes`` does
+    not authorize a hash confirm or any destructive decision. ``confirm_id``
+    executes only when the id matches.
 
     Each call writes one trace start and one trace finish. A trace failure
     does not change the result. A writer records authorization before the
@@ -1047,10 +1062,55 @@ def run_tool(
     if facts.get("authorized") and _writes(item):
         if not _terminal_audit(root_dir, item, run_id, facts, code):
             stderr = _with_audit_incomplete(stderr)
-    if facts.get("yes_deprecated"):
-        stderr = _YES_DEPRECATED + stderr
+    if facts.get("yes_deprecated") and not stderr.strip():
+        stderr = _YES_DEPRECATED
     _trace_finish(root_dir, item, run_id, facts, code, started, parent_run_id)
     return code, stdout, stderr
+
+
+def _confirm_required(
+    root_dir: Path,
+    item: dict,
+    flags: dict[str, str],
+    positional: list[str] | None,
+    stdin_data: str | None,
+    raw: bool,
+    parent_run_id: str | None,
+) -> tuple[int, str, str]:
+    """``--yes`` is not an exact-hash or destructive grant. Return the plan fix."""
+    code, out, _err = run_tool(
+        root_dir,
+        item,
+        flags,
+        positional,
+        False,
+        stdin_data,
+        confirmed=False,
+        raw=raw,
+        confirm_id=None,
+        parent_run_id=parent_run_id,
+    )
+    plan_id = ""
+    if code == 0:
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("plan_id"), str):
+            plan_id = payload["plan_id"]
+    fix = (
+        _confirm_command(item, flags, plan_id)
+        if plan_id
+        else _fix_command(item, _public_flags(flags)) + " --confirm <plan_id>"
+    )
+    return _failure(
+        2,
+        {
+            "error": "confirm_required",
+            "why": "this invocation needs --confirm with the current plan_id",
+            "fix": fix,
+        },
+    )
 
 
 def _execute_tool(
@@ -1115,16 +1175,10 @@ def _execute_tool(
                 ),
                 outcome="failed",
             )
-        if decision == "allow" and not dry_run:
-            confirmed = True
-            if audit_via is None:
-                audit_via = "policy"
-                facts["via"] = "policy"
-        elif _yes_exception(decision, rank, safety, confirmed):
-            facts["yes_deprecated"] = True
-            facts["via"] = "yes"
-            audit_via = "yes"
-        elif decision == "deny" and not dry_run:
+        destructive = safety == "destructive"
+        granted = _hash_grant(decision, rank)
+        yes_ok = _yes_satisfies(decision, rank, safety, confirmed)
+        if decision == "deny" and not dry_run:
             return finish(
                 _failure(
                     2,
@@ -1136,9 +1190,33 @@ def _execute_tool(
                 ),
                 outcome="failed",
             )
-        elif decision == "confirm" and confirmed is True and audit_via is None:
-            audit_via = "yes"
+        if destructive and not dry_run and not granted:
+            return finish(
+                _failure(
+                    2,
+                    {
+                        "error": "policy_denied",
+                        "why": f"{item.get('name') or 'tool'} is denied",
+                        "fix": _example(item),
+                    },
+                ),
+                outcome="failed",
+            )
+        needs_plan = (not dry_run) and ((decision == "confirm" and not yes_ok) or (destructive and granted))
+        planned = audit_via == "confirm"
+        if needs_plan and confirmed is True and not confirm_id and not planned:
+            return finish(_confirm_required(root_dir, item, flags, positional, stdin_data, raw, parent_run_id), outcome="failed")
+        if needs_plan and confirm_id is not None and not planned:
+            confirmed = False
+        elif decision == "allow" and not dry_run and not destructive:
+            confirmed = True
+            if audit_via is None:
+                audit_via = "policy"
+                facts["via"] = "policy"
+        elif yes_ok:
+            facts["yes_deprecated"] = True
             facts["via"] = "yes"
+            audit_via = "yes"
         user_dry_run = dry_run
         writer = _writes(item)
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
@@ -1598,6 +1676,7 @@ def _chain_policy_block(
     steps: list,
     catalog: dict,
     confirmed: bool | None,
+    confirm_id: str | None,
 ) -> tuple[int, str, str] | None:
     """Reject the chain before step 1 when policy will not run a later step."""
     policy, policy_error = _policy_document(root_dir)
@@ -1633,13 +1712,25 @@ def _chain_policy_block(
                     "fix": "keep one decision for that hash or name",
                 },
             )
-        if decision == "deny" and not _yes_exception(decision, rank, safety, confirmed):
+        granted = _hash_grant(decision, rank)
+        if decision == "deny" or (safety == "destructive" and not granted):
             return _failure(
                 2,
                 {
                     "error": "policy_denied",
                     "why": f"{tool.get('name') or 'tool'} is denied",
                     "fix": "change the policy rule or the executable",
+                },
+            )
+        yes_ok = _yes_satisfies(decision, rank, safety, confirmed)
+        needs_plan = (decision == "confirm" and not yes_ok) or (safety == "destructive" and granted)
+        if needs_plan and confirmed is True and not confirm_id:
+            return _failure(
+                2,
+                {
+                    "error": "confirm_required",
+                    "why": "this invocation needs --confirm with the current plan_id",
+                    "fix": _example(tool) + " --confirm <plan_id>",
                 },
             )
     return None
@@ -1749,7 +1840,11 @@ def run_chain(
             chain_open = False
             return _record_and_return(root_dir, chain_item, dry_run, result)
         blocked = None if user_dry_run else _chain_policy_block(
-            root_dir, steps if isinstance(steps, list) else [], catalog, confirmed
+            root_dir,
+            steps if isinstance(steps, list) else [],
+            catalog,
+            confirmed,
+            confirm_id,
         )
         if blocked is not None:
             _chain_trace_finish(root_dir, chain_item, run_id, "preflight", blocked[0], started, step_count)
@@ -1855,12 +1950,24 @@ def run_chain(
             last_stdout = stdout
         if gated:
             plan_id = _chain_plan_id(chain_item, flags, plans, catalog)
+            destructive_plan = str(chain_item.get("safety") or "") == "destructive"
+            if not destructive_plan:
+                for step in steps:
+                    tool = catalog.get(str(step.get("tool") or "")) if isinstance(step, dict) else None
+                    if isinstance(tool, dict) and str(tool.get("safety") or "") == "destructive":
+                        destructive_plan = True
+                        break
+            apply = (
+                _confirm_command(chain_item, flags, plan_id)
+                if destructive_plan
+                else _apply_command(chain_item, flags)
+            )
             last_stdout = _compact(
                 {
                     "dry_run": True,
                     "plan": plans,
                     "plan_id": plan_id,
-                    "apply": _apply_command(chain_item, flags),
+                    "apply": apply,
                     "confirm": _confirm_command(chain_item, flags, plan_id),
                 }
             )
