@@ -24,7 +24,7 @@ from pathlib import Path
 
 from lib.catalog import check_item, discover_catalog, _referenced_arg_names, output_keys, trust_label
 from lib.guards import tool_subprocess_env
-from lib.redact import redact_data
+from lib.redact import redact, redact_data
 
 _SAFETY = {"read-only", "mutating", "destructive"}
 _ARG_TYPES = {"string", "int", "float", "bool"}
@@ -126,6 +126,22 @@ def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
         record = redact_data(record)
         line = json.dumps(record, separators=(",", ":"), default=str)
         _append_line(state, "events.jsonl", "events.lock", line)
+    except Exception:
+        return
+
+
+def record_feedback(root_dir: Path, name: str, code: int, stderr: str) -> None:
+    """Store the failed-run stderr line locally. No network. Swallows write errors."""
+    if _telemetry_disabled():
+        return
+    try:
+        text = redact(stderr or "")
+        home = str(Path.home())
+        if home and home not in {"/", ""}:
+            text = text.replace(home, "~")
+        record = {"name": name, "exit": code, "stderr": text}
+        line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
+        _append_line(_state_dir(Path(root_dir)), "feedback.jsonl", "feedback.lock", line)
     except Exception:
         return
 
