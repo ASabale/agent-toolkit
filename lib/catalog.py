@@ -871,15 +871,25 @@ def _header_errors(item: dict) -> list[str]:
     return errors
 
 
-def _needs_errors(item: dict) -> list[str]:
-    """Name a missing executable or env var. Does not install or confine."""
+def _which_on_path(name: str, env: dict[str, str]) -> str | None:
+    """Resolve a command with the PATH the child process will inherit."""
+    return shutil.which(name, path=env.get("PATH"))
+
+
+def _needs_errors(item: dict, env: dict[str, str] | None = None) -> list[str]:
+    """Name a missing executable or env var. Does not install or confine.
+
+    ``env`` is the mapping the child will see. ``env:`` reads that mapping.
+    A bare command is resolved with that mapping's PATH.
+    """
+    mapping = os.environ if env is None else env
     errors: list[str] = []
     for raw in item.get("needs") or []:
         token = str(raw).strip()
         env_match = _NEED_ENV.fullmatch(token)
         if env_match:
             name = env_match.group(1)
-            if not os.environ.get(name):
+            if not mapping.get(name):
                 errors.append(f"missing env: {name}; fix: export {name}=<value>")
             continue
         if not _NEED_BIN.fullmatch(token):
@@ -887,17 +897,20 @@ def _needs_errors(item: dict) -> list[str]:
                 f"invalid @tk-needs: {token}; fix: use a command name or env:NAME"
             )
             continue
-        if shutil.which(token) is None:
+        if _which_on_path(token, mapping) is None:
             errors.append(f"missing executable: {token}; fix: install {token}")
     return errors
 
 
-def _requires_report(item: dict, root_dir: Path) -> tuple[list[str], list[str]]:
+def _requires_report(
+    item: dict, root_dir: Path, env: dict[str, str] | None = None
+) -> tuple[list[str], list[str]]:
     """Evaluate @tk-requires without a write and without a shell.
 
     env:, bin:, and file: (a relative path inside the repo) are reads.
-    Anything else is skipped and the reason is returned. The tool still runs.
+    ``env`` is the child mapping. Anything else is skipped and the reason is returned.
     """
+    mapping = os.environ if env is None else env
     errors: list[str] = []
     skipped: list[str] = []
     root = Path(root_dir).resolve()
@@ -906,13 +919,13 @@ def _requires_report(item: dict, root_dir: Path) -> tuple[list[str], list[str]]:
         env_match = _REQUIRE_ENV.fullmatch(token)
         if env_match:
             name = env_match.group(1)
-            if not os.environ.get(name):
+            if not mapping.get(name):
                 errors.append(f"missing env: {name}; fix: export {name}=<value>")
             continue
         bin_match = _REQUIRE_BIN.fullmatch(token)
         if bin_match:
             name = bin_match.group(1)
-            if shutil.which(name) is None:
+            if _which_on_path(name, mapping) is None:
                 errors.append(f"missing executable: {name}; fix: install {name}")
             continue
         file_match = _REQUIRE_FILE.fullmatch(token)
@@ -1143,8 +1156,8 @@ def check_item(root_dir: Path, name_or_path: str | Path) -> dict:
             errors.append(f"not executable: {path}")
         errors.extend(_header_errors(item))
         if not is_chain:
-            errors.extend(_needs_errors(item))
-            require_errors, skipped = _requires_report(item, root_dir)
+            errors.extend(_needs_errors(item, os.environ))
+            require_errors, skipped = _requires_report(item, root_dir, os.environ)
             errors.extend(require_errors)
         errors.extend(_example_ok(str(item.get("name") or ""), str(item.get("example") or ""), item.get("args") or []))
         if not is_chain:

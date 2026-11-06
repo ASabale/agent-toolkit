@@ -30,6 +30,7 @@ from lib.catalog import (  # noqa: E402
     _score,
     parse_tool_header,
     suggest_closest_item,
+    _needs_errors,
 )
 from lib.runner import run_tool  # noqa: E402
 
@@ -1205,6 +1206,25 @@ class DuplicateNameBoundaryTests(unittest.TestCase):
         self.assertIn("tools/aaa/local", payload["why"])
         self.assertIn("tools/gh/local", payload["why"])
         self.assertFalse(sentinel.exists())
+
+
+class DeclaredDependencyEnvTests(unittest.TestCase):
+    def test_needs_errors_read_the_passed_mapping_not_os_environ(self):
+        item = {"needs": ["env:NOT_IN_PARENT", "only-on-child-path"]}
+        bindir = None
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp)
+            exe = bindir / "only-on-child-path"
+            exe.write_text("#!/bin/sh\n", encoding="utf-8")
+            exe.chmod(0o755)
+            os.environ.pop("NOT_IN_PARENT", None)
+            parent_had = "only-on-child-path" in os.environ.get("PATH", "")
+            errors = _needs_errors(
+                item,
+                {"PATH": str(bindir), "NOT_IN_PARENT": "1"},
+            )
+        self.assertEqual(errors, [])
+        self.assertFalse(parent_had)
 
 
 if __name__ == "__main__":
