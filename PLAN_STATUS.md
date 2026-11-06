@@ -228,3 +228,20 @@ OK
 ```
 decisions: isolation on the audit line is none. Not merged to main (issue #229).
 follow-ups: T2.5 keeps the one TK_TIMEOUT path.
+
+## T3.4 Budgets
+
+status: DONE
+branch: plan/t3.4-budget
+baseline: plan/t2.4-lock at bb1b223
+result: one output cap. `lib/runner.py` reads `TK_MAX_OUTPUT_BYTES` once, default 65536. Over the cap, the existing `output_too_large` error returns exit 1. `tk` has no second cap and no `--max-output` flag.
+verify-evidence: the environment read occurs once. A tool whose JSON is larger than 8 bytes returns `output_too_large`.
+changes: tests/test_output_budget.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_output_budget -v
+Ran 2 tests in 0.160s
+OK
+```
+decisions: no second cap. Not merged to `main` (issue #234).
+follow-ups: T3.5 runs README fences only when they are already valid.
