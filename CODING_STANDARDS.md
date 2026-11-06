@@ -71,7 +71,7 @@ Agents rely on `tk` in place of MCP servers. If `tk` crashes with an unhandled t
     run: <example>
   ```
 - **`format_info_output(item: dict) -> str`**
-  Compact multi-line contract view (`name`, `kind`, `safety`, `summary`, `args`, `output`, `example`, `verified`).
+  Compact multi-line contract view (`name`, `kind`, `safety`, `summary`, `args`, `output`, `example`, `verified`). Non-empty `needs` and `requires` add `declared_needs:` and `declared_requires:` lines. Those lines restate the header. `contract: 1` stays the only contract line. `safety` is a declaration. `tk check` is not a sandbox. `@tk-verified` is not a signature. Trace writes are best-effort and do not block read-only work. A writer authorization audit failure blocks start. A terminal audit failure does not undo a finished operation. `TK_DRY_RUN` is cooperative. `isolation` is `none`. Chains are not transactional. A `bin:` an earlier step would install requires a separate `tk run`.
 - **`check_item(root_dir: Path, name_or_path: str | Path) -> dict`**
   Returns `{"name": str, "ok": bool, "errors": list[str]}`.
   Checks:

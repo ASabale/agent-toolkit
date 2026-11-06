@@ -302,6 +302,33 @@ class DiscoverAndFindTests(unittest.TestCase):
         self.assertEqual(sum(line.startswith("contract:") for line in text.splitlines()), 1)
         self.assertIn("trust: draft", text)
         self.assertNotIn("trust: signed", text)
+        self.assertNotIn("declared_needs:", text)
+        self.assertNotIn("declared_requires:", text)
+
+    def test_info_lists_declared_needs_and_requires(self):
+        item = {
+            "name": "demo.echo",
+            "kind": "tool",
+            "safety": "read-only",
+            "summary": "Echo a target id",
+            "needs": ["gh"],
+            "requires": ["env:GH_TOKEN"],
+            "args": [],
+            "output": "json | Distilled object",
+            "example": "tk run demo.echo",
+            "verified": "none",
+        }
+        text = format_info_output(item)
+        self.assertIn("declared_needs: gh", text)
+        self.assertIn("declared_requires: env:GH_TOKEN", text)
+        self.assertEqual(text.splitlines()[0], "contract: 1")
+        self.assertEqual(sum(line.startswith("contract:") for line in text.splitlines()), 1)
+        self.assertIn("trust: draft", text)
+        lowered = text.lower()
+        self.assertNotIn("signature", lowered)
+        self.assertNotIn("sandbox", lowered)
+        skill = Path(__file__).resolve().parents[1] / "skills" / "agent-toolkit" / "SKILL.md"
+        self.assertEqual(len(skill.read_text(encoding="utf-8").splitlines()), 51)
 
     def test_signed_header_stays_draft_and_fails_check(self):
         self.assertEqual(trust_label("signed", check_passed=True), "draft")
