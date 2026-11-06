@@ -211,3 +211,20 @@ ok true, checked 41, errors 0
 ```
 decisions: a skip is recorded, not turned into a lint or a sandbox. Not merged to `main` (issue #227).
 follow-ups: T2.3 fixtures depend on T2.1.
+
+## T2.4 State locking
+
+status: DONE
+branch: plan/t2.4-lock
+baseline: plan/t2.2-requires at 4c35be6
+result: telemetry and audit appends take an advisory flock on a sibling lock. JSON state is written to a temp file and replaced while state.lock is held. The lock is local to one filesystem. O_APPEND is not the lock. Telemetry still swallows errors. A mutating run with no audit line is denied with audit_failed and does not start.
+verify-evidence: two processes wrote 60 JSON lines with none torn. tk find env exited 0 when TK_STATE_DIR was a file. A mutating tool did not create its marker when the audit write failed. policy.json replace left no temp file.
+changes: lib/evolver.py; lib/runner.py; SECURITY.md; tests/test_state_lock.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_state_lock tests.test_runner tests.test_git_sync -v
+Ran 51 tests in 11.950s
+OK
+```
+decisions: isolation on the audit line is none. Not merged to main (issue #229).
+follow-ups: T2.5 keeps the one TK_TIMEOUT path.

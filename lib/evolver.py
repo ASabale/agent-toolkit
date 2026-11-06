@@ -10,6 +10,7 @@ Public seam (CODING_STANDARDS.md §2.3):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -85,13 +87,34 @@ def _state_dir(root: Path) -> Path:
     return root / "state"
 
 
+@contextmanager
+def _state_lock(state: Path, name: str):
+    """Exclusive advisory lock on a sibling file. Local to one filesystem."""
+    state.mkdir(parents=True, exist_ok=True)
+    handle = (state / name).open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _append_line(state: Path, filename: str, lock_name: str, line: str) -> None:
+    with _state_lock(state, lock_name):
+        with (state / filename).open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+
+
 def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
     """Append one JSONL telemetry record. Swallows every I/O or encoding failure."""
     if _telemetry_disabled():
         return
     try:
         state = _state_dir(Path(root_dir))
-        state.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event_type,
@@ -102,10 +125,42 @@ def log_event(root_dir: Path, event_type: str, payload: dict) -> None:
                     record[key] = value
         record = redact_data(record)
         line = json.dumps(record, separators=(",", ":"), default=str)
-        with (state / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        _append_line(state, "events.jsonl", "events.lock", line)
     except Exception:
         return
+
+
+def append_audit(root_dir: Path, record: dict) -> bool:
+    """Append one audit line under ``audit.lock``. False when the lock or write fails.
+
+    ``O_APPEND`` is not the lock. The flock is advisory and local to one filesystem.
+    """
+    try:
+        state = _state_dir(Path(root_dir))
+        payload = dict(record)
+        payload.setdefault("ts", datetime.now(timezone.utc).isoformat())
+        payload["lock"] = "flock"
+        redacted = redact_data(payload)
+        if not isinstance(redacted, dict):
+            return False
+        line = json.dumps(redacted, separators=(",", ":"), default=str)
+        _append_line(state, "audit.jsonl", "audit.lock", line)
+        return True
+    except Exception:
+        return False
+
+
+def write_state_json(root_dir: Path, filename: str, document: dict) -> None:
+    """Replace one JSON file in the state directory while ``state.lock`` is held."""
+    if "/" in filename or filename.startswith("."):
+        raise ValueError(filename)
+    state = _state_dir(Path(root_dir))
+    text = json.dumps(redact_data(document), indent=2) + "\n"
+    with _state_lock(state, "state.lock"):
+        dest = state / filename
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, dest)
 
 
 def save_tool(
