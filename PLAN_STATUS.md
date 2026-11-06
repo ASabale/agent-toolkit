@@ -250,6 +250,23 @@ ok true, checked 41, errors 0
 decisions: a skip is recorded, not turned into a lint or a sandbox. Not merged to `main` (issue #227).
 follow-ups: T2.3 fixtures depend on T2.1.
 
+## T2.3 Fixtures
+
+status: DONE
+branch: plan/t2.3-fixtures
+baseline: plan/t2.1-schema at e32875c
+result: schema fixtures live in tests/fixtures, not tools/. schema_ok passes check. schema_missing names the absent key `count` and includes `fix:`.
+verify-evidence: both files are executable and their paths contain `tests/fixtures`, not `tools/`.
+changes: tests/fixtures/schema_ok; tests/fixtures/schema_missing; tests/test_schema_fixtures.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_schema_fixtures -v
+Ran 3 tests in 0.300s
+OK
+```
+decisions: fixtures are not catalog tools. Not merged to `main` (issue #228).
+follow-ups: T2.4 locks state writes and does not move these fixtures.
+
 ## T2.4 State locking
 
 status: DONE
