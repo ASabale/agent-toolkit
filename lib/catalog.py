@@ -155,6 +155,8 @@ def parse_tool_header(path: Path) -> dict:
                 item["deprecated"] = value
             elif key == "@tk-keep":
                 item["keep"] = True
+            elif key == "@tk-provenance" and value == "local":
+                item["provenance"] = "local"
     except Exception:
         return item
     return item
@@ -646,6 +648,21 @@ def format_info_output(item: dict) -> str:
             "trust: "
             + trust_label(verified, bool(item.get("check_passed")))
         )
+        content = str(item.get("content_sha256") or "")
+        validation = str(item.get("validation_sha256") or "")
+        observed = str(item.get("observed_sha256") or "")
+        provenance = str(item.get("provenance") or "")
+        if provenance != "local":
+            provenance = "draft"
+        if validation and validation == content:
+            lines.append(f"validation: static_passed {validation}")
+        else:
+            lines.append("validation: none")
+        if observed and observed == content:
+            lines.append(f"observed_run: ok {observed}")
+        else:
+            lines.append("observed_run: none")
+        lines.append(f"provenance: {provenance}")
         return "\n".join(lines) + "\n"
     except Exception:
         return ""

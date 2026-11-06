@@ -26,7 +26,7 @@ from lib.catalog import (
     output_keys,
 )
 from lib.chainref import resolve_expr, stringify
-from lib.evolver import append_audit, append_trace, log_event, record_feedback, write_state_json
+from lib.evolver import append_audit, append_trace, log_event, record_feedback, record_observed, write_state_json
 from lib.guards import tool_subprocess_env
 from lib.redact import redact_data, secret_hits
 
@@ -1319,6 +1319,8 @@ def _record_and_return(
 ) -> tuple[int, str, str]:
     code, _stdout, stderr = result
     _record_run(root_dir, item, code, stderr, dry_run)
+    if code == 0 and not dry_run:
+        record_observed(root_dir, item)
     return result
 
 

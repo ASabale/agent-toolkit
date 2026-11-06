@@ -12,6 +12,7 @@ Public seam (CODING_STANDARDS.md §2.3):
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -238,6 +239,91 @@ def append_trace(root_dir: Path, record: dict) -> None:
         _append_line(_state_dir(Path(root_dir)), "trace.jsonl", "trace.lock", line)
     except Exception:
         return
+
+
+def _content_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _evidence_document(root_dir: Path) -> dict:
+    path = _state_dir(Path(root_dir)) / "evidence.json"
+    if not path.is_file():
+        return {"version": 1, "items": {}}
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict) or parsed.get("version") != 1:
+        return {"version": 1, "items": {}}
+    items = parsed.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    return {"version": 1, "items": items}
+
+
+def _kept_provenance(current: object) -> str:
+    if isinstance(current, dict) and current.get("provenance") == "local":
+        return "local"
+    return "draft"
+
+
+def record_validation(root_dir: Path, names: list[str], *, strict: bool = False) -> None:
+    """Store the checked file hash. Does not set provenance or policy."""
+    try:
+        _record_evidence(root_dir, names, "validation")
+    except Exception:
+        if strict:
+            raise
+
+
+def record_observed(root_dir: Path, item: dict) -> None:
+    """Store the hash of a tool that just exited 0. Never raises."""
+    try:
+        name = str(item.get("name") or "")
+        if name:
+            _record_evidence(root_dir, [name], "observed")
+    except Exception:
+        return
+
+
+def evidence_view(root_dir: Path, item: dict) -> dict:
+    """Current file hash plus stored evidence. A mismatch is not current."""
+    content = ""
+    path = item.get("path")
+    if path:
+        try:
+            content = _content_sha256(Path(path))
+        except OSError:
+            content = ""
+    stored: dict = {}
+    try:
+        found = _evidence_document(root_dir)["items"].get(str(item.get("name") or ""))
+        if isinstance(found, dict):
+            stored = found
+    except (OSError, json.JSONDecodeError):
+        stored = {}
+    provenance = "local" if item.get("provenance") == "local" or stored.get("provenance") == "local" else "draft"
+    return {
+        "content_sha256": content,
+        "validation_sha256": str(stored.get("validation") or ""),
+        "observed_sha256": str(stored.get("observed") or ""),
+        "provenance": provenance,
+    }
+
+
+def _record_evidence(root_dir: Path, names: list[str], field: str) -> None:
+    catalog = discover_catalog(Path(root_dir))
+    document = _evidence_document(root_dir)
+    items = document["items"]
+    for name in names:
+        found = catalog.get(name)
+        if not isinstance(found, dict):
+            continue
+        path = Path(str(found.get("path") or ""))
+        digest = _content_sha256(path)
+        current = items.get(name)
+        updated = dict(current) if isinstance(current, dict) else {}
+        updated[field] = digest
+        updated["provenance"] = _kept_provenance(current)
+        items[name] = updated
+    write_state_json(root_dir, "evidence.json", document)
 
 
 def write_state_json(root_dir: Path, filename: str, document: dict) -> None:
@@ -485,6 +571,10 @@ def evolve_report(root_dir: Path, auto_promote: bool = True) -> dict:
                 failing.append({"name": name, "errors": ["trust computation failed"]})
                 continue
             if label != "check_passed":
+                continue
+            try:
+                record_validation(root, [name], strict=True)
+            except Exception:
                 continue
             if not auto_promote:
                 continue
