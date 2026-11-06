@@ -303,6 +303,127 @@ def _partial(dest: Path, state: Path, mark: Path) -> dict:
     return task.finish(success, "partial" not in outcomes)
 
 
+def _migrate_call(source: Path, state: Path, task: _Task, extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run the checkout migrator itself. Policy is not part of this score."""
+    env = os.environ.copy()
+    env["TK_NO_TELEMETRY"] = "1"
+    env["TK_STATE_DIR"] = str(state)
+    env["TK_DRY_RUN"] = "0"
+    env["TK_ROOT_DIR"] = str(source)
+    env.update(extra)
+    started = time.perf_counter()
+    proc = subprocess.run(
+        [str(source / "tools" / "tk" / "migrate")],
+        cwd=source,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    task.elapsed_ms += int((time.perf_counter() - started) * 1000)
+    task.turns += 1
+    task.calls += 1
+    task.tokens += _tokens(proc)
+    return proc
+
+
+def _checkout(path: Path) -> Path:
+    (path / "tools").mkdir(parents=True, exist_ok=True)
+    (path / "chains").mkdir(parents=True, exist_ok=True)
+    (path / "skills" / "agent-toolkit").mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _files(path: Path) -> dict[str, bytes]:
+    return {
+        item.relative_to(path).as_posix(): item.read_bytes()
+        for item in path.rglob("*")
+        if item.is_file() and not item.is_symlink()
+    }
+
+
+def _migrate(root: Path, state: Path) -> dict:
+    """Score Agent Toolkit checkout migration only. No other harness is involved."""
+    task = _Task("migrate_dry_run")
+    source = _isolate(root)
+    scratch = Path(tempfile.mkdtemp(prefix="tk-migrate-task-"))
+    try:
+        dry = _checkout(scratch / "dry")
+        before = _files(dry)
+        dry_proc = _migrate_call(
+            source,
+            state,
+            task,
+            {"TK_ARG_ACTION": "apply", "TK_ARG_SOURCE": str(source), "TK_ARG_DEST": str(dry)},
+        )
+        dry_ok = dry_proc.returncode == 0 and _files(dry) == before
+        if dry_ok:
+            payload = json.loads(dry_proc.stdout)
+            dry_ok = payload.get("dry_run") is True and payload.get("copied") == []
+
+        applied = _checkout(scratch / "applied")
+        apply_proc = _migrate_call(
+            source,
+            state,
+            task,
+            {
+                "TK_ARG_ACTION": "apply",
+                "TK_ARG_SOURCE": str(source),
+                "TK_ARG_DEST": str(applied),
+                "TK_ARG_APPLY": "1",
+            },
+        )
+        copied = applied / "tools" / "tk" / "migrate"
+        apply_ok = (
+            apply_proc.returncode == 0
+            and copied.is_file()
+            and not (state / "bench-ran").exists()
+            and "@tk-verified: none" in copied.read_text(encoding="utf-8")
+        )
+
+        outside = scratch / "outside"
+        outside.mkdir()
+        escaped = scratch / "escaped"
+        (escaped / "chains").mkdir(parents=True)
+        (escaped / "skills" / "agent-toolkit").mkdir(parents=True)
+        os.symlink(outside, escaped / "tools")
+        escape_proc = _migrate_call(
+            source,
+            state,
+            task,
+            {
+                "TK_ARG_ACTION": "apply",
+                "TK_ARG_SOURCE": str(source),
+                "TK_ARG_DEST": str(escaped),
+                "TK_ARG_APPLY": "1",
+            },
+        )
+        escape_ok = escape_proc.returncode != 0 and list(outside.iterdir()) == []
+
+        rolled = _checkout(scratch / "rolled")
+        unrelated = rolled / "notes.txt"
+        unrelated.write_text("keep\n", encoding="utf-8")
+        (rolled / "tools" / "tk").mkdir(parents=True)
+        (rolled / "tools" / "tk" / "migrate").mkdir()
+        rollback_proc = _migrate_call(
+            source,
+            state,
+            task,
+            {
+                "TK_ARG_ACTION": "apply",
+                "TK_ARG_SOURCE": str(source),
+                "TK_ARG_DEST": str(rolled),
+                "TK_ARG_APPLY": "1",
+            },
+        )
+        rollback_ok = rollback_proc.returncode != 0 and unrelated.read_text(encoding="utf-8") == "keep\n"
+        success = dry_ok and apply_ok and escape_ok and rollback_ok
+        return task.finish(success, not success)
+    finally:
+        shutil.rmtree(source, ignore_errors=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _destructive(dest: Path, state: Path, sentinel: Path) -> dict:
     task = _Task("destructive_without_policy")
     _write_tool(
@@ -336,9 +457,8 @@ def run_suite(root: Path) -> dict:
             _pin_change(dest, state),
             _partial(dest, state, mark),
             _destructive(dest, state, state / "deny-sentinel"),
+            _migrate(root, state),
         ]
-        skipped = _blank("migrate_dry_run", False)
-        rows.append(skipped)
     finally:
         shutil.rmtree(dest, ignore_errors=True)
         shutil.rmtree(state, ignore_errors=True)
