@@ -508,6 +508,81 @@ class MigrateReportTests(unittest.TestCase):
             self.assertEqual(payload["skipped"], [])
             self.assertEqual(set(payload["copied"]), {row["path"] for row in manifest["files"]})
 
+    def test_apply_rewrites_chain_pins_to_destination_tool_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            second = source / "chains" / "bench.again.json"
+            plain_sha = hashlib.sha256(PLAIN_TOOL.encode()).hexdigest()
+            dated_sha = hashlib.sha256((source / "tools" / "bench.dated").read_bytes()).hexdigest()
+            second.write_text(
+                json.dumps(
+                    {
+                        "kind": "chain",
+                        "name": "bench.again",
+                        "summary": "Pin both tools",
+                        "safety": "read-only",
+                        "args": [],
+                        "steps": [
+                            {"tool": "bench.plain", "args": {}, "tool_sha256": plain_sha},
+                            {"tool": "bench.dated", "args": {}, "tool_sha256": dated_sha},
+                        ],
+                        "output": "json | object",
+                        "example": "tk run bench.again",
+                        "verified": "2026-10-01",
+                    }
+                )
+            )
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            plain = hashlib.sha256((dest / "tools" / "bench.plain").read_bytes()).hexdigest()
+            dated = hashlib.sha256((dest / "tools" / "bench.dated").read_bytes()).hexdigest()
+            self.assertIn("# @tk-verified: none", (dest / "tools" / "bench.dated").read_text())
+            first = json.loads((dest / "chains" / "bench.chain.json").read_text())
+            again = json.loads((dest / "chains" / "bench.again.json").read_text())
+            self.assertEqual(first["steps"][0]["tool_sha256"], plain)
+            self.assertEqual(again["steps"][0]["tool_sha256"], plain)
+            self.assertEqual(again["steps"][1]["tool_sha256"], dated)
+            self.assertNotEqual(again["steps"][0]["tool_sha256"], again["steps"][1]["tool_sha256"])
+            from lib.catalog import discover_catalog
+            from lib.runner import _chain_pin_mismatch
+
+            catalog = discover_catalog(dest)
+            self.assertIsNone(_chain_pin_mismatch(catalog["bench.chain"], catalog))
+            self.assertIsNone(_chain_pin_mismatch(catalog["bench.again"], catalog))
+
+    def test_omitted_tool_fails_and_leaves_no_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            manifest["files"] = [row for row in manifest["files"] if row["path"] != "tools/bench.plain"]
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            payload = _payload(proc)
+            self.assertEqual(payload["error"], "incomplete")
+            self.assertIn("bench.plain", payload["why"])
+            self.assertFalse((dest / "chains" / "bench.chain.json").exists())
+            self.assertFalse((dest / "tools" / "bench.dated").exists())
+
+    def test_existing_different_tool_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            victim = dest / "tools" / "bench.plain"
+            victim.write_text(PLAIN_TOOL.replace("Writes a marker", "Different summary"))
+            before = victim.read_bytes()
+            manifest = self._export(source)
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertEqual(_payload(proc)["error"], "collision")
+            self.assertEqual(victim.read_bytes(), before)
+            self.assertFalse((dest / "chains" / "bench.chain.json").exists())
+
     def test_traversal_and_source_symlink_escape_are_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

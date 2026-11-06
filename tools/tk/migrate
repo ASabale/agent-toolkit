@@ -313,6 +313,55 @@ def _read(path: Path) -> bytes | None:
         return None
 
 
+def _tool_name(data: bytes) -> str:
+    for raw in data.splitlines():
+        line = raw.decode("utf-8", errors="replace")
+        if line.startswith("# @tk-name:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _destination_pins(source: Path, files: list[dict]) -> dict[str, str]:
+    """Hash the tool bytes that apply will write, after header normalization."""
+    pins: dict[str, str] = {}
+    for row in files:
+        if row.get("kind") != "tool":
+            continue
+        data = _read(source / str(row.get("path") or ""))
+        if data is None:
+            continue
+        drafted = _draft_bytes(data)
+        name = _tool_name(drafted)
+        if name:
+            pins[name] = _sha256(drafted)
+    return pins
+
+
+def _rewrite_chain(data: bytes, pins: dict[str, str], rel: str) -> tuple[bytes | None, str | None]:
+    """Point pinned steps at the imported tool bytes. An absent tool is incomplete."""
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None, f"chain is not json: {rel}"
+    if not isinstance(parsed, dict):
+        return None, f"chain is not json: {rel}"
+    steps = parsed.get("steps")
+    if not isinstance(steps, list):
+        return data, None
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        name = step.get("tool")
+        if not isinstance(name, str) or not name:
+            continue
+        if name not in pins:
+            return None, f"incomplete: {rel} missing {name}"
+        if isinstance(step.get("tool_sha256"), str) and step["tool_sha256"]:
+            step["tool_sha256"] = pins[name]
+    newline = b"\n" if data.endswith(b"\n") else b""
+    return json.dumps(parsed, indent=2, ensure_ascii=False).encode("utf-8") + newline, None
+
+
 def _draft_bytes(data: bytes) -> bytes:
     """Imported tools stay unverified. Rewriting the header changes the bytes."""
     lines = []
@@ -440,6 +489,7 @@ def _apply(source: Path, dest: Path, files: list[dict], write: bool, scan: dict 
     created: list[tuple[Path, str]] = []
     copied: list[str] = []
     skipped: list[str] = []
+    pins = _destination_pins(source, files)
     for row in files:
         rel = Path(row["path"])
         data = _read(source / rel)
@@ -447,6 +497,10 @@ def _apply(source: Path, dest: Path, files: list[dict], write: bool, scan: dict 
             return _failure("hash_mismatch", f"source changed: {row['path']}", _rollback(created))
         if row["kind"] == "tool":
             data = _draft_bytes(data)
+        elif row["kind"] == "chain":
+            data, pin_error = _rewrite_chain(data, pins, row["path"])
+            if pin_error or data is None:
+                return _failure("incomplete", pin_error or f"incomplete: {row['path']}", _rollback(created))
         digest = _sha256(data)
         target = dest / rel
         existing = _read(target)
@@ -478,6 +532,20 @@ def _apply(source: Path, dest: Path, files: list[dict], write: bool, scan: dict 
     bad = next((row for row in checks if not row.get("ok")), None)
     if bad:
         return _failure("check_failed", f"{bad['name']}: {bad['errors']}", _rollback(created))
+    from lib.catalog import discover_catalog
+    from lib.runner import _chain_pin_mismatch
+
+    catalog = discover_catalog(dest)
+    for row in files:
+        if row["kind"] != "chain":
+            continue
+        item = catalog.get(_capability_name(dest, row["path"], "chain"))
+        if not isinstance(item, dict):
+            return _failure("pin_mismatch", f"chain was not catalogued: {row['path']}", _rollback(created))
+        changed = _chain_pin_mismatch(item, catalog)
+        if changed is not None:
+            index, name = changed
+            return _failure("pin_mismatch", f"step {index} {name} bytes changed", _rollback(created))
     marked = _mark_drafts(dest, files, copied)
     if marked:
         return _failure("draft_unrecorded", marked, _rollback(created))
