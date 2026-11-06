@@ -25,6 +25,7 @@ from lib.redact import secret_hits
 _SAFETY = {"read-only", "mutating", "destructive"}
 _TYPES = {"string", "int", "float", "bool"}
 _DEFAULT_RE = re.compile(r"\(default:\s*([^)]*)\)", re.IGNORECASE)
+_VERIFIED_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _NEED_ENV = re.compile(r"env:([A-Za-z_][A-Za-z0-9_]*)\Z")
 _NEED_BIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,64}\Z")
 _REQUIRE_ENV = re.compile(r"env:([A-Za-z_][A-Za-z0-9_]*)\Z")
@@ -537,10 +538,29 @@ def format_find_output(items: list[dict]) -> str:
         return ""
 
 
+def trust_label(verified: str, check_passed: bool = False) -> str:
+    """Computed trust. A header cannot select ``signed``.
+
+    ``check_passed`` is true only after ``tk check`` exited 0 on these bytes.
+    A date or the word ``signed`` in ``@tk-verified`` does not raise trust.
+    """
+    if str(verified or "").strip().lower() == "signed":
+        return "draft"
+    if check_passed:
+        return "check_passed"
+    return "draft"
+
+
+# Gateway fields an agent can rely on. Bump only when one of those
+# stdout fields changes meaning, not when a header or a lint line is added.
+CONTRACT_VERSION = 1
+
+
 def format_info_output(item: dict) -> str:
-    """Compact multi-line contract: name, kind, safety, summary, args, output, example, verified."""
+    """Compact multi-line contract: name, kind, safety, summary, args, output, example, verified, trust."""
     try:
         lines = [
+            f"contract: {CONTRACT_VERSION}",
             f"name: {item.get('name') or ''}",
             f"kind: {item.get('kind') or ''}",
             f"safety: {item.get('safety') or ''}",
@@ -557,7 +577,12 @@ def format_info_output(item: dict) -> str:
             )
         lines.append(f"output: {item.get('output') or ''}")
         lines.append(f"example: {item.get('example') or ''}")
-        lines.append(f"verified: {item.get('verified') or ''}")
+        verified = str(item.get("verified") or "")
+        lines.append(f"verified: {verified}")
+        lines.append(
+            "trust: "
+            + trust_label(verified, bool(item.get("check_passed")))
+        )
         return "\n".join(lines) + "\n"
     except Exception:
         return ""
@@ -915,6 +940,15 @@ def _header_errors(item: dict) -> list[str]:
     safety = str(item.get("safety") or "")
     if safety and safety not in _SAFETY:
         errors.append(f"invalid safety: {safety}")
+    verified = str(item.get("verified") or "").strip()
+    if verified.lower() == "signed":
+        errors.append(
+            "invalid verified: signed is not a date; fix: set @tk-verified to none or YYYY-MM-DD"
+        )
+    elif verified and verified != "none" and _VERIFIED_DATE.fullmatch(verified) is None:
+        errors.append(
+            f"invalid verified: {verified} is not a date; fix: set @tk-verified to none or YYYY-MM-DD"
+        )
     seen_flags: set[str] = set()
     for arg in item.get("args") or []:
         if not isinstance(arg, dict):
