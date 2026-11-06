@@ -19,6 +19,7 @@ from lib.catalog import (  # noqa: E402
     find_items,
     format_find_output,
     format_info_output,
+    trust_label,
     load_chain,
     output_keys,
     _score,
@@ -293,6 +294,43 @@ class DiscoverAndFindTests(unittest.TestCase):
         self.assertIn("verified: none", text)
         self.assertEqual(text.splitlines()[0], "contract: 1")
         self.assertEqual(sum(line.startswith("contract:") for line in text.splitlines()), 1)
+        self.assertIn("trust: draft", text)
+        self.assertNotIn("trust: signed", text)
+
+    def test_signed_header_stays_draft_and_fails_check(self):
+        self.assertEqual(trust_label("signed", check_passed=True), "draft")
+        self.assertEqual(trust_label("2026-11-05", check_passed=False), "draft")
+        self.assertEqual(trust_label("none", check_passed=True), "check_passed")
+        item = {
+            "name": "demo.echo",
+            "kind": "tool",
+            "safety": "read-only",
+            "summary": "Echo a target id",
+            "args": [],
+            "output": "json | Distilled object",
+            "example": "tk run demo.echo",
+            "verified": "signed",
+            "check_passed": True,
+        }
+        text = format_info_output(item)
+        self.assertIn("trust: draft", text)
+        self.assertNotIn("trust: signed", text)
+        self.assertNotIn("signature", text.lower())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "tools" / "demo" / "echo"
+            text_file = _bash_tool("demo.echo", "Echo a target id").replace(
+                "# @tk-verified: none\n",
+                "# @tk-verified: signed\n",
+                1,
+            )
+            _write(path, text_file, executable=True)
+            result = check_item(root, "demo.echo")
+        blob = " ".join(result["errors"])
+        self.assertFalse(result["ok"])
+        self.assertIn("signed", blob)
+        self.assertIn("fix:", blob)
+        self.assertNotIn("signature", blob.lower())
 
 
 class CheckItemTests(unittest.TestCase):
