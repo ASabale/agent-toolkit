@@ -386,6 +386,126 @@ class MigrateReportTests(unittest.TestCase):
             self.assertIn("manifest hash mismatch", payload["why"])
             self.assertEqual(_tree(dest), {})
 
+    def _export(self, source: Path) -> dict:
+        proc = _run(_env({"TK_ARG_ACTION": "export", "TK_ARG_SOURCE": str(source), "TK_STATE_DIR": str(source.parent / "state")}))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def _apply_manifest(self, root: Path, source: Path, dest: Path, manifest: dict) -> subprocess.CompletedProcess:
+        path = root / "manifest.json"
+        path.write_text(json.dumps(manifest))
+        return _run(
+            _env(
+                {
+                    "TK_ARG_ACTION": "apply",
+                    "TK_ARG_SOURCE": str(source),
+                    "TK_ARG_DEST": str(dest),
+                    "TK_ARG_APPLY": "1",
+                    "TK_ARG_MANIFEST": str(path),
+                    "TK_STATE_DIR": str(root / "state"),
+                }
+            )
+        )
+
+    def test_file_added_after_export_is_absent_from_copied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            extra = source / "tools" / "bench.extra"
+            extra.write_text(PLAIN_TOOL.replace("bench.plain", "bench.extra"))
+            extra.chmod(0o755)
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            copied = _payload(proc)["copied"]
+            self.assertNotIn("tools/bench.extra", copied)
+            self.assertEqual(copied, [row["path"] for row in manifest["files"]])
+            self.assertFalse((dest / "tools" / "bench.extra").exists())
+
+    def test_path_deleted_from_manifest_is_absent_from_copied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            manifest["files"] = [row for row in manifest["files"] if row["path"] != "tools/bench.dated"]
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            copied = _payload(proc)["copied"]
+            self.assertNotIn("tools/bench.dated", copied)
+            self.assertEqual(copied, [row["path"] for row in manifest["files"]])
+            self.assertFalse((dest / "tools" / "bench.dated").exists())
+
+    def test_byte_change_after_export_copies_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            target = source / "tools" / "bench.plain"
+            target.write_bytes(target.read_bytes() + b"\n")
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            payload = _payload(proc)
+            self.assertEqual(payload["error"], "refused")
+            self.assertIn("manifest hash mismatch", payload["why"])
+            self.assertEqual(_tree(dest), {})
+
+    def test_duplicate_manifest_path_fails_before_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            manifest["files"] = [manifest["files"][0], dict(manifest["files"][0])]
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            payload = _payload(proc)
+            self.assertEqual(payload["error"], "refused")
+            self.assertIn("manifest duplicate path", payload["why"])
+            self.assertEqual(_tree(dest), {})
+
+    def test_parent_and_absolute_manifest_paths_fail_before_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            for rel in ("../escape.txt", "/etc/passwd"):
+                proc = self._apply_manifest(root, source, dest, {"version": 1, "files": [{"path": rel, "sha256": "0" * 64}]})
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                payload = _payload(proc)
+                self.assertEqual(payload["error"], "refused")
+                self.assertIn("manifest path refused", payload["why"])
+                self.assertEqual(_tree(dest), {})
+
+    def test_listed_path_missing_on_disk_fails_before_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            (source / "tools" / "bench.plain").unlink()
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            payload = _payload(proc)
+            self.assertEqual(payload["error"], "refused")
+            self.assertIn("manifest path missing", payload["why"])
+            self.assertEqual(_tree(dest), {})
+
+    def test_export_manifest_copies_exactly_its_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _make_source(root / "source")
+            dest = _make_dest(root / "dest")
+            manifest = self._export(source)
+            proc = self._apply_manifest(root, source, dest, manifest)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = _payload(proc)
+            self.assertEqual(payload["copied"], [row["path"] for row in manifest["files"]])
+            self.assertEqual(payload["skipped"], [])
+            self.assertEqual(set(payload["copied"]), {row["path"] for row in manifest["files"]})
+
     def test_traversal_and_source_symlink_escape_are_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
