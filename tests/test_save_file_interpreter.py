@@ -119,7 +119,7 @@ class SaveFileInterpreterTests(unittest.TestCase):
         self.assertFalse(target.exists())
 
         live, live_out, live_err = run_tool(
-            self.root, item, {"--path": str(target)}, []
+            self.root, item, {"--path": str(target)}, [], confirmed=True
         )
         self.assertEqual(live, 0, live_err)
         self.assertEqual(json.loads(live_out), {})

@@ -26,7 +26,7 @@ from lib.catalog import (
     output_keys,
 )
 from lib.chainref import resolve_expr, stringify
-from lib.evolver import append_audit, append_trace, log_event, record_feedback
+from lib.evolver import append_audit, append_trace, log_event, record_feedback, write_state_json
 from lib.guards import tool_subprocess_env
 from lib.redact import redact_data, secret_hits
 
@@ -677,6 +677,117 @@ def _writes(item: dict) -> bool:
     return str(item.get("safety") or "") in {"mutating", "destructive"}
 
 
+_POLICY_CLASSES = {
+    "read-only": "allow",
+    "mutating": "confirm",
+    "destructive": "deny",
+}
+_POLICY_DECISIONS = {"allow", "confirm", "deny"}
+_YES_DEPRECATED = (
+    "warning: destructive --yes is deprecated and is not standing authorization; "
+    "use --confirm with the current plan_id\n"
+)
+
+
+def _default_policy() -> dict:
+    return {
+        "version": 1,
+        "classes": dict(_POLICY_CLASSES),
+        "rules": [],
+    }
+
+
+def _policy_document(root_dir: Path) -> tuple[dict | None, str | None]:
+    """Load ``policy.json``. A missing file uses the class defaults."""
+    from lib.evolver import _state_dir
+
+    path = _state_dir(root_dir) / "policy.json"
+    if not path.is_file():
+        document = _default_policy()
+        try:
+            write_state_json(root_dir, "policy.json", document)
+        except Exception:
+            pass
+        return document, None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, "invalid_policy"
+    if not isinstance(parsed, dict) or parsed.get("version") != 1:
+        return None, "invalid_policy"
+    classes = parsed.get("classes")
+    if not isinstance(classes, dict):
+        return None, "invalid_policy"
+    normalized = {}
+    for safety, decision in _POLICY_CLASSES.items():
+        chosen = classes.get(safety, decision)
+        if chosen not in _POLICY_DECISIONS:
+            return None, "invalid_policy"
+        normalized[safety] = chosen
+    rules = parsed.get("rules", [])
+    if not isinstance(rules, list):
+        return None, "invalid_policy"
+    clean: list[dict] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            return None, "invalid_policy"
+        decision = rule.get("decision")
+        if decision not in _POLICY_DECISIONS:
+            return None, "invalid_policy"
+        rank = rule.get("rank")
+        if rank == "hash" and isinstance(rule.get("sha256"), str) and rule["sha256"]:
+            clean.append({"rank": "hash", "sha256": rule["sha256"], "decision": decision})
+        elif rank == "name" and isinstance(rule.get("name"), str) and rule["name"]:
+            clean.append({"rank": "name", "name": rule["name"], "decision": decision})
+        else:
+            return None, "invalid_policy"
+    return {"version": 1, "classes": normalized, "rules": clean}, None
+
+
+def _policy_decision(
+    policy: dict, *, sha256: str, name: str, safety: str, draft: bool
+) -> tuple[str, str]:
+    """One decision. Returns ``(decision, rank)`` or ``(policy_conflict, "")``."""
+    rules = policy["rules"]
+    hash_hits = [
+        rule["decision"]
+        for rule in rules
+        if rule["rank"] == "hash" and rule["sha256"] == sha256
+    ]
+    if hash_hits:
+        if len(set(hash_hits)) > 1:
+            return "policy_conflict", ""
+        return hash_hits[0], "hash"
+    name_hits = [
+        rule["decision"]
+        for rule in rules
+        if rule["rank"] == "name" and rule["name"] == name
+    ]
+    if name_hits:
+        if len(set(name_hits)) > 1:
+            return "policy_conflict", ""
+        chosen = name_hits[0]
+        writer = safety in {"mutating", "destructive"}
+        if chosen == "allow" and (writer or draft):
+            pass
+        else:
+            return chosen, "name"
+    if draft:
+        return "deny", "draft"
+    if safety not in policy["classes"]:
+        return "allow", "class"
+    return policy["classes"][safety], "class"
+
+
+def _yes_exception(decision: str, rank: str, safety: str, confirmed: bool | None) -> bool:
+    return (
+        confirmed is True
+        and decision == "deny"
+        and rank == "class"
+        and safety == "destructive"
+    )
+
+
 _SECRET_FLAG = "<redacted>"
 
 
@@ -867,7 +978,7 @@ def run_tool(
     positional: list[str] | None = None,
     dry_run: bool = False,
     stdin_data: str | None = None,
-    confirmed: bool = True,
+    confirmed: bool | None = None,
     raw: bool = False,
     confirm_id: str | None = None,
     audit_via: str | None = None,
@@ -875,11 +986,10 @@ def run_tool(
 ) -> tuple[int, str, str]:
     """Validate ``flags``, execute ``item['path']``, and compact JSON stdout.
 
-    ``confirmed`` defaults to true so in-process callers keep today's behavior.
-    ``tk run`` passes false unless argv contains ``--yes``. A mutating or
-    destructive tool then runs as a dry-run and returns ``plan`` plus ``apply``.
-    ``confirm_id`` reruns that dry-run and executes only when the id matches.
-    ``--yes`` (``confirmed`` true) ignores ``confirm_id``.
+    ``confirmed`` defaults to omitted. That is not authorization. A writer runs
+    when policy says ``allow``, when ``--confirm`` matches, or when destructive
+    ``--yes`` is the class-default exception. ``tk run`` passes true only for
+    ``--yes``. ``confirm_id`` executes only when the id matches.
 
     Each call writes one trace start and one trace finish. A trace failure
     does not change the result. A writer records authorization before the
@@ -928,6 +1038,8 @@ def run_tool(
     if facts.get("authorized") and _writes(item):
         if not _terminal_audit(root_dir, item, run_id, facts, code):
             stderr = _with_audit_incomplete(stderr)
+    if facts.get("yes_deprecated"):
+        stderr = _YES_DEPRECATED + stderr
     _trace_finish(root_dir, item, run_id, facts, code, started, parent_run_id)
     return code, stdout, stderr
 
@@ -961,6 +1073,63 @@ def _execute_tool(
         duplicate = _duplicate_claim(root_dir, str(item.get("name") or ""))
         if duplicate is not None:
             return finish(duplicate, outcome="failed")
+        policy, policy_error = _policy_document(root_dir)
+        if policy_error or policy is None:
+            return finish(
+                _failure(
+                    1,
+                    {
+                        "error": "invalid_policy",
+                        "why": "state/policy.json is not version 1",
+                        "fix": "replace state/policy.json with version 1",
+                    },
+                ),
+                outcome="failed",
+            )
+        safety = str(item.get("safety") or "")
+        decision, rank = _policy_decision(
+            policy,
+            sha256=_sha256_file(item.get("path")),
+            name=str(item.get("name") or ""),
+            safety=safety,
+            draft=bool(item.get("draft")),
+        )
+        if decision == "policy_conflict":
+            return finish(
+                _failure(
+                    1,
+                    {
+                        "error": "policy_conflict",
+                        "why": "two rules of the same rank disagree",
+                        "fix": "keep one decision for that hash or name",
+                    },
+                ),
+                outcome="failed",
+            )
+        if decision == "allow" and not dry_run:
+            confirmed = True
+            if audit_via is None:
+                audit_via = "policy"
+                facts["via"] = "policy"
+        elif _yes_exception(decision, rank, safety, confirmed):
+            facts["yes_deprecated"] = True
+            facts["via"] = "yes"
+            audit_via = "yes"
+        elif decision == "deny" and not dry_run:
+            return finish(
+                _failure(
+                    2,
+                    {
+                        "error": "policy_denied",
+                        "why": f"{item.get('name') or 'tool'} is denied",
+                        "fix": _example(item),
+                    },
+                ),
+                outcome="failed",
+            )
+        elif decision == "confirm" and confirmed is True and audit_via is None:
+            audit_via = "yes"
+            facts["via"] = "yes"
         user_dry_run = dry_run
         writer = _writes(item)
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
@@ -1375,21 +1544,73 @@ def _chain_preflight_failure(
     return _failure(1, payload)
 
 
+def _chain_policy_block(
+    root_dir: Path,
+    steps: list,
+    catalog: dict,
+    confirmed: bool | None,
+) -> tuple[int, str, str] | None:
+    """Reject the chain before step 1 when policy will not run a later step."""
+    policy, policy_error = _policy_document(root_dir)
+    if policy_error or policy is None:
+        return _failure(
+            1,
+            {
+                "error": "invalid_policy",
+                "why": "state/policy.json is not version 1",
+                "fix": "replace state/policy.json with version 1",
+            },
+        )
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        tool = catalog.get(str(step.get("tool") or ""))
+        if not isinstance(tool, dict):
+            continue
+        safety = str(tool.get("safety") or "")
+        decision, rank = _policy_decision(
+            policy,
+            sha256=_sha256_file(tool.get("path")),
+            name=str(tool.get("name") or ""),
+            safety=safety,
+            draft=bool(tool.get("draft")),
+        )
+        if decision == "policy_conflict":
+            return _failure(
+                1,
+                {
+                    "error": "policy_conflict",
+                    "why": "two rules of the same rank disagree",
+                    "fix": "keep one decision for that hash or name",
+                },
+            )
+        if decision == "deny" and not _yes_exception(decision, rank, safety, confirmed):
+            return _failure(
+                2,
+                {
+                    "error": "policy_denied",
+                    "why": f"{tool.get('name') or 'tool'} is denied",
+                    "fix": "change the policy rule or the executable",
+                },
+            )
+    return None
+
+
 def run_chain(
     root_dir: Path,
     chain_item: dict,
     flags: dict[str, str],
     positional: list[str] | None = None,
     dry_run: bool = False,
-    confirmed: bool = True,
+    confirmed: bool | None = None,
     confirm_id: str | None = None,
     audit_via: str | None = None,
 ) -> tuple[int, str, str]:
     """Validate chain flags, resolve step references, and stop on the first error.
 
-    A chain that writes, or that calls a mutating or destructive step, follows
-    the same ``--yes`` rule as ``run_tool`` when ``confirmed`` is false.
-    ``confirm_id`` executes that chain only when it matches the dry-run id.
+    An omitted confirmation does not run a writer step. Each step uses the
+    same policy decision as ``run_tool``. A denied writer step rejects the
+    chain before step 1. ``confirm_id`` executes only when the id matches.
     """
     chain_open = False
     run_id = ""
@@ -1471,6 +1692,13 @@ def run_chain(
             _chain_trace_finish(root_dir, chain_item, run_id, "preflight", result[0], started, step_count)
             chain_open = False
             return _record_and_return(root_dir, chain_item, dry_run, result)
+        blocked = None if user_dry_run else _chain_policy_block(
+            root_dir, steps if isinstance(steps, list) else [], catalog, confirmed
+        )
+        if blocked is not None:
+            _chain_trace_finish(root_dir, chain_item, run_id, "preflight", blocked[0], started, step_count)
+            chain_open = False
+            return _record_and_return(root_dir, chain_item, dry_run, blocked)
 
         denied = _audit_or_deny(
             root_dir,
@@ -1540,6 +1768,8 @@ def run_chain(
                 step_flags,
                 dry_run=dry_run,
                 stdin_data=None if prev is None else last_stdout,
+                confirmed=confirmed,
+                audit_via=audit_via,
                 parent_run_id=run_id,
             )
             if code != 0:

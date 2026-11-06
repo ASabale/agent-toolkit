@@ -86,7 +86,7 @@ The unconfirmed response gains two fields and keeps the current ones so existing
 {"dry_run":true,"plan":["…"],"plan_id":"<64 hex chars>","apply":"tk run name --flag value --yes","confirm":"tk run name --flag value --confirm <64 hex chars>"}
 ```
 
-`--confirm <plan_id>` recomputes the hash and runs only on an exact match. A mismatch exits 2 with `error` `plan_mismatch`, a `why` that names the id, and a `fix` of the current unconfirmed command. The hash is integrity. The in-process `confirmed=True` default stays, so unit tests that execute tools do not all become dry-runs.
+`--confirm <plan_id>` recomputes the hash and runs only on an exact match. A mismatch exits 2 with `error` `plan_mismatch`, a `why` that names the id, and a `fix` of the current unconfirmed command. The hash is integrity. `run_tool` does not default `confirmed` to true. An omitted confirmation does not run a writer. Tests that mean to execute a writer pass `confirmed=True` only under an allow or a matched confirm, or for the destructive `--yes` exception.
 
 ### 3.2 Authorization
 
