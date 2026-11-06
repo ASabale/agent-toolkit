@@ -211,3 +211,20 @@ ok true, checked 41, errors 0
 ```
 decisions: a skip is recorded, not turned into a lint or a sandbox. Not merged to `main` (issue #227).
 follow-ups: T2.3 fixtures depend on T2.1.
+
+## T2.5 Timeout
+
+status: DONE
+branch: plan/t2.5-timeout
+baseline: plan/t2.2-requires at 4c35be6
+result: one tool timer. `lib/runner.py` reads `TK_TIMEOUT` once, default 60s, and `tool_timeout` returns exit 1. `tk` has no `--timeout` flag. D6 is unanswered, so exit 124 was not added.
+verify-evidence: `os.environ.get("TK_TIMEOUT"` occurs once in `lib/runner.py`. A 1s timeout returns code 1 and `error` `tool_timeout`.
+changes: tests/test_timeout_path.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_timeout_path tests.test_runner.RunToolTests.test_tool_timeout_kills_descendants_and_logs_unless_dry_run -v
+Ran 3 tests in 5.049s
+OK
+```
+decisions: no second timer. Not merged to `main` (issue #230).
+follow-ups: T3.2 deprecation depends on T1.6.
