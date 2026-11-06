@@ -1,5 +1,8 @@
 """Seams for lib/catalog.py: header parsing, search, find text, and check_item."""
 
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import shlex
@@ -7,6 +10,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +21,7 @@ from lib.catalog import (  # noqa: E402
     check_item,
     discover_catalog,
     find_items,
+    resolve_named_item,
     format_find_output,
     format_info_output,
     trust_label,
@@ -1085,6 +1090,121 @@ class SuggestClosestItemTests(unittest.TestCase):
         self.assertEqual(close["name"], "alpha.widget")
         self.assertEqual(tokens["name"], "fs.tree-digest")
         self.assertIsNone(missing)
+
+
+class DuplicateNameBoundaryTests(unittest.TestCase):
+    """A name claimed by two files is not executable and is not a run example."""
+
+    def _sentinel_tool(self, name: str, sentinel: Path) -> str:
+        body = (
+            f"touch {shlex.quote(str(sentinel))}\n"
+            "printf '%s\\n' '{\"ok\":true}'\n"
+        )
+        return _bash_tool(
+            name,
+            "Duplicate fixture",
+            args=[("--note", "optional", "string", "Unused")],
+            body=body,
+            example=f"tk run {name}",
+        )
+
+    def test_unique_gh_pr_checks_runs_checks_and_appears_in_find_and_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "tools" / "gh" / "pr-checks",
+                _bash_tool(
+                    "gh.pr-checks",
+                    "List check runs",
+                    args=[("--note", "optional", "string", "Unused")],
+                    example="tk run gh.pr-checks",
+                ),
+                executable=True,
+            )
+            status, item, paths = resolve_named_item(root, "gh.pr-checks")
+            checked = check_item(root, "gh.pr-checks")
+            found = format_find_output(find_items(root, "gh.pr-checks"))
+            info = format_info_output(item)
+            code, out, err = run_tool(root, item, {})
+        self.assertEqual(status, "one")
+        self.assertEqual(paths, ["tools/gh/pr-checks"])
+        self.assertTrue(checked["ok"], checked["errors"])
+        self.assertIn("run: tk run gh.pr-checks", found)
+        self.assertIn("example: tk run gh.pr-checks", info)
+        self.assertEqual(code, 0, err)
+        self.assertIn("ok", out)
+
+    def test_duplicate_name_refuses_run_check_find_and_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sentinel = root / "sentinel"
+            text = self._sentinel_tool("dup.local", sentinel)
+            _write(root / "tools" / "aaa" / "local", text, executable=True)
+            _write(root / "tools" / "gh" / "local", text, executable=True)
+            chain = root / "chains" / "dup.local.json"
+            chain.parent.mkdir(parents=True)
+            chain.write_text(json.dumps({
+                "name": "dup.local",
+                "summary": "Colliding chain",
+                "safety": "read-only",
+                "args": [],
+                "steps": [{"tool": "dup.local"}],
+                "output": "json | object",
+                "example": "tk run dup.local",
+                "verified": "none",
+            }), encoding="utf-8")
+            status, item, paths = resolve_named_item(root, "dup.local")
+            checked = check_item(root, "dup.local")
+            found = format_find_output(find_items(root, "dup.local"))
+            import lib.catalog as catalog
+            import lib.evolver as evolver
+            import lib.runner as runner
+
+            loader = importlib.machinery.SourceFileLoader("tkcli_dup", str(ROOT / "tk"))
+            spec = importlib.util.spec_from_loader("tkcli_dup", loader)
+            tkcli = importlib.util.module_from_spec(spec)
+            loader.exec_module(tkcli)
+            previous_root = tkcli.ROOT
+            tkcli.ROOT = root
+            try:
+                out_buf, err_buf = io.StringIO(), io.StringIO()
+                with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                    info_code = tkcli._cmd_info(catalog, evolver, ["dup.local"])
+                info_err = err_buf.getvalue()
+                out_buf, err_buf = io.StringIO(), io.StringIO()
+                with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                    find_code = tkcli._cmd_find(catalog, evolver, ["dup.local"])
+                find_out, find_err = out_buf.getvalue(), err_buf.getvalue()
+                out_buf, err_buf = io.StringIO(), io.StringIO()
+                with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                    run_code = tkcli._cmd_run(
+                        catalog, runner, evolver, "dup.local", [], chains_only=False
+                    )
+                run_err = err_buf.getvalue()
+            finally:
+                tkcli.ROOT = previous_root
+        self.assertEqual(status, "many")
+        self.assertIsNone(item)
+        self.assertEqual(
+            paths,
+            ["tools/aaa/local", "tools/gh/local", "chains/dup.local.json"],
+        )
+        self.assertFalse(checked["ok"])
+        self.assertTrue(any("duplicate_name" in err and "tools/aaa/local" in err and "tools/gh/local" in err for err in checked["errors"]))
+        self.assertFalse(sentinel.exists())
+        self.assertNotIn("tk run", found)
+        self.assertEqual(info_code, 2)
+        self.assertIn("duplicate_name", info_err)
+        self.assertNotIn("tk run", info_err)
+        self.assertEqual(find_code, 2)
+        self.assertIn("duplicate_name", find_err)
+        self.assertNotIn("tk run", find_out)
+        self.assertEqual(run_code, 2)
+        payload = json.loads(run_err)
+        self.assertEqual(payload["error"], "duplicate_name")
+        self.assertIn("tools/aaa/local", payload["why"])
+        self.assertIn("tools/gh/local", payload["why"])
+        self.assertFalse(sentinel.exists())
 
 
 if __name__ == "__main__":

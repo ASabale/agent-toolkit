@@ -98,7 +98,8 @@ def _safety(opts: dict, fix: str) -> str | None:
 
 
 def _catalog_item(catalog, name: str):
-    return catalog.discover_catalog(ROOT).get(name)
+    status, item, paths = catalog.resolve_named_item(ROOT, name)
+    return status, item, paths
 
 
 def _cmd_find(catalog, evolver, argv: list[str]) -> int:
@@ -147,6 +148,11 @@ def _cmd_find(catalog, evolver, argv: list[str]) -> int:
             query_parts.append(token)
         index += 1
     query = " ".join(query_parts).strip()
+    if query:
+        status, _item, paths = catalog.resolve_named_item(ROOT, query)
+        if status == "many":
+            _err("duplicate_name", ", ".join(paths), f"tk check {query}")
+            return 2
     if limit is None and query:
         limit = 5
     items = catalog.find_items(ROOT, query, limit=limit, namespace=namespace)
@@ -198,7 +204,10 @@ def _cmd_info(catalog, evolver, argv: list[str]) -> int:
         _err("missing_name", "info requires a tool or chain name", "tk find")
         return 2
     name = argv[0]
-    item = _catalog_item(catalog, name)
+    status, item, paths = _catalog_item(catalog, name)
+    if status == "many":
+        _err("duplicate_name", ", ".join(paths), f"tk check {name}")
+        return 2
     if item is None:
         evolver.log_event(ROOT, "search_miss", {"query": name})
         why, fix = _suggest_fix(catalog, name)
@@ -213,7 +222,10 @@ def _stdin_data() -> str | None:
 
 
 def _cmd_run(catalog, runner, evolver, name: str, flag_argv: list[str], *, chains_only: bool) -> int:
-    item = _catalog_item(catalog, name)
+    status, item, paths = _catalog_item(catalog, name)
+    if status == "many":
+        _err("duplicate_name", ", ".join(paths), f"tk check {name}")
+        return 2
     if item is None:
         evolver.log_event(ROOT, "search_miss", {"query": name})
         why, fix = _suggest_fix(catalog, name)

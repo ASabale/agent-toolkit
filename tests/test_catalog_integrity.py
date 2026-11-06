@@ -66,7 +66,7 @@ class CatalogIntegrityTests(unittest.TestCase):
         self.assertEqual(catalog["env.check"]["kind"], "tool")
         self.assertFalse(result["ok"])
         self.assertIn(
-            "duplicate name: env.check (tools/env/check, tools/zz/other)",
+            "duplicate_name: env.check (tools/env/check, tools/zz/other)",
             result["errors"],
         )
         self.assertFalse(report["ok"])
@@ -91,7 +91,7 @@ class CatalogIntegrityTests(unittest.TestCase):
         self.assertEqual(catalog["git.branch-digest"]["kind"], "tool")
         self.assertFalse(result["ok"])
         self.assertIn(
-            "duplicate name: git.branch-digest (tools/git/branch-digest, chains/zz.json)",
+            "duplicate_name: git.branch-digest (tools/git/branch-digest, chains/zz.json)",
             result["errors"],
         )
         self.assertFalse(report["ok"])
