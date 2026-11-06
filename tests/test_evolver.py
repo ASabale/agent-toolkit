@@ -765,6 +765,7 @@ class EvolverTests(unittest.TestCase):
                 "unused_tools": [],
                 "overlap_candidates": [],
                 "chain_candidates": [],
+                "tool_candidates": [],
                 "telemetry": {"events": 0, "run_events": 0, "first_ts": None},
                 "unused_reason": "insufficient_telemetry",
             },
@@ -973,6 +974,75 @@ class EvolverTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_tool_candidates_suggest_repeated_misses_without_saving(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "env.check",
+            "Check the environment",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        before = sorted(path.name for path in (self.root / "tools").rglob("*") if path.is_file())
+        log_event(self.root, "search_miss", {"query": "deploy the app"})
+        log_event(self.root, "search_miss", {"query": "deploy the app"})
+        log_event(self.root, "search_miss", {"query": "once"})
+        log_event(self.root, "miss", {"q": "env.check"})
+        log_event(self.root, "miss", {"q": "env.check"})
+        report = evolve_report(self.root, auto_promote=False)
+        self.assertEqual(
+            report["tool_candidates"],
+            [
+                {
+                    "query": "deploy the app",
+                    "count": 2,
+                    "name": "deploy.the.app",
+                    "suggested_save": "tk save deploy.the.app --summary 'deploy the app'",
+                }
+            ],
+        )
+        after = sorted(path.name for path in (self.root / "tools").rglob("*") if path.is_file())
+        self.assertEqual(after, before)
+
+
+    def test_evolve_skips_failed_trust_destructive_and_core(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "alpha.keep",
+            "Keep this draft",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        ok, _, err = save_tool(
+            self.root,
+            "alpha.drop",
+            "Drop this draft",
+            safety="destructive",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        log_event(self.root, "run_ok", {"name": "alpha.keep"})
+        log_event(self.root, "run_ok", {"name": "alpha.drop"})
+        keep = self.root / "tools" / "alpha" / "keep"
+        drop = self.root / "tools" / "alpha" / "drop"
+        before_keep = keep.read_text(encoding="utf-8")
+        before_drop = drop.read_text(encoding="utf-8")
+
+        with patch("lib.evolver.trust_label", side_effect=RuntimeError("trust")):
+            report = evolve_report(self.root, auto_promote=True)
+        self.assertEqual(report["promoted"], [])
+        self.assertEqual(keep.read_text(encoding="utf-8"), before_keep)
+        self.assertIn("# @tk-verified: none", drop.read_text(encoding="utf-8"))
+        self.assertEqual(drop.read_text(encoding="utf-8"), before_drop)
+        failed = {item["name"] for item in report["failing_tools"]}
+        self.assertIn("alpha.keep", failed)
+
+        with patch("lib.evolver._core_tool_paths", return_value={keep.resolve()}):
+            report = evolve_report(self.root, auto_promote=True)
+        self.assertNotIn("alpha.keep", report["promoted"])
+        self.assertNotIn("alpha.drop", report["promoted"])
+        self.assertEqual(keep.read_text(encoding="utf-8"), before_keep)
+        self.assertEqual(drop.read_text(encoding="utf-8"), before_drop)
 
 
 if __name__ == "__main__":
