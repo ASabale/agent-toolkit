@@ -4,7 +4,8 @@
 
 - Do not put secrets, tokens, or credentials in a tool file, a chain file, `stdout`, `stderr`, or `state/events.jsonl`.
 - Leave credentials in the caller environment. A GitHub tool uses the existing `gh` login. It does not store a token in the catalog.
-- A mutating or destructive `tk run` returns `plan` and does not change anything until the same command includes `--yes`.
+- A mutating `tk run` returns `plan` until `--yes` or a matching `--confirm`. A destructive `tk run` without `--yes` or a matching hash rule is denied. Destructive `--yes` still runs once, writes a deprecation warning, and audits `via: yes`. It is not standing authorization.
+- `state/policy.json` version 1 decides allow, confirm, or deny. An exact file hash outranks a name, and a name outranks the class default. A name `allow` does not run a writer. A missing file uses read-only allow, mutating confirm, and destructive deny. A same-user process can still edit that file or exec the tool directly. This policy is not that boundary.
 - Check a tool with `tk check <name>` before you rely on it. Do not run a script you have not read.
 - `safety` is a declaration. `tk check` is not a sandbox. Tools run as the user.
 - `@tk-verified` is a date in the header. It is not a signature.
