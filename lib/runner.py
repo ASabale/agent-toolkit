@@ -387,6 +387,26 @@ def _failure(code: int, payload: dict) -> tuple[int, str, str]:
     return code, "", _compact(redact_data(payload))
 
 
+def _duplicate_claim(root_dir: Path, name: str) -> tuple[int, str, str] | None:
+    """Refuse a name that more than one catalog file claims. No process."""
+    from lib.catalog import _name_claimants
+
+    claimed = str(name or "").strip()
+    if not claimed:
+        return None
+    paths = list(_name_claimants(Path(root_dir)).get(claimed) or [])
+    if len(paths) < 2:
+        return None
+    return _failure(
+        2,
+        {
+            "error": "duplicate_name",
+            "why": ", ".join(paths),
+            "fix": f"tk check {claimed}",
+        },
+    )
+
+
 def _why_from_stderr(stderr: str) -> str:
     text = (stderr or "").strip()
     try:
@@ -687,6 +707,9 @@ def run_tool(
     ``--yes`` (``confirmed`` true) ignores ``confirm_id``.
     """
     try:
+        duplicate = _duplicate_claim(root_dir, str(item.get("name") or ""))
+        if duplicate is not None:
+            return duplicate
         user_dry_run = dry_run
         writer = _writes(item)
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
@@ -952,6 +975,9 @@ def run_chain(
     ``confirm_id`` executes that chain only when it matches the dry-run id.
     """
     try:
+        duplicate = _duplicate_claim(root_dir, str(chain_item.get("name") or ""))
+        if duplicate is not None:
+            return duplicate
         user_dry_run = dry_run
         writer = _chain_writes(root_dir, chain_item)
         if writer and not confirmed and confirm_id is not None and not user_dry_run:
@@ -1041,6 +1067,9 @@ def run_chain(
         last_stdout = ""
         for index, step in enumerate(steps, start=1):
             tool_name = step.get("tool") if isinstance(step, dict) else None
+            step_dup = _duplicate_claim(root_dir, str(tool_name or ""))
+            if step_dup is not None:
+                return step_dup
             tool = catalog.get(tool_name) if tool_name else None
             if tool is None:
                 return _record_and_return(

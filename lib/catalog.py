@@ -274,7 +274,29 @@ def _duplicate_name_errors(root_dir: Path, name: str) -> list[str]:
     paths = _name_claimants(root_dir).get(claimed) or []
     if len(paths) < 2:
         return []
-    return [f"duplicate name: {claimed} ({', '.join(paths)})"]
+    return [f"duplicate_name: {claimed} ({', '.join(paths)})"]
+
+
+def resolve_named_item(root_dir: Path, name: str) -> tuple[str, dict | None, list[str]]:
+    """Return one item, or every claimant path. Never pick a winner.
+
+    Status is ``one`` (item and its single path), ``none``, or ``many``
+    (no item; ``paths`` lists every repo-relative claimant in first-seen order).
+    """
+    root_dir = Path(root_dir)
+    claimed = str(name or "").strip()
+    if not claimed:
+        return "none", None, []
+    paths = list(_name_claimants(root_dir).get(claimed) or [])
+    if not paths:
+        return "none", None, []
+    if len(paths) > 1:
+        return "many", None, paths
+    rel = paths[0]
+    path = root_dir / rel
+    if rel.startswith("chains/") and path.suffix == ".json":
+        return "one", load_chain(path), paths
+    return "one", parse_tool_header(path), paths
 
 
 def discover_catalog(root_dir: Path) -> dict[str, dict]:
@@ -374,7 +396,15 @@ def find_items(
     """
     try:
         catalog = discover_catalog(root_dir)
-        items = list(catalog.values())
+        ambiguous = {
+            claimed
+            for claimed, paths in _name_claimants(root_dir).items()
+            if len(paths) > 1
+        }
+        items = [
+            item for item in catalog.values()
+            if str(item.get("name") or "") not in ambiguous
+        ]
         ns = str(namespace or "").strip().lower().rstrip(".")
         if ns:
             items = [item for item in items if _in_namespace(item, ns)]
@@ -500,7 +530,13 @@ def suggest_closest_item(root_dir: Path, name: str) -> dict | None:
     """Return the closest catalog item for a mistyped name, or None."""
     try:
         catalog = discover_catalog(root_dir)
-        matches = difflib.get_close_matches(name, catalog.keys(), n=1, cutoff=0.45)
+        ambiguous = {
+            claimed
+            for claimed, paths in _name_claimants(root_dir).items()
+            if len(paths) > 1
+        }
+        keys = [key for key in catalog if key not in ambiguous]
+        matches = difflib.get_close_matches(name, keys, n=1, cutoff=0.45)
         if matches:
             return catalog[matches[0]]
         tokens = [tok for tok in re.split(r"[.\-_]+", name) if tok]

@@ -1098,5 +1098,79 @@ class RunChainTests(unittest.TestCase):
             self.assertEqual(events[-1]["kind"], "chain")
 
 
+class DuplicateNameRunTests(unittest.TestCase):
+    def _tool(self, name: str, sentinel: Path) -> str:
+        return (
+            "#!/usr/bin/env bash\n"
+            f"# @tk-name: {name}\n"
+            "# @tk-summary: Duplicate fixture\n"
+            "# @tk-safety: read-only\n"
+            "# @tk-output: json | object\n"
+            f"# @tk-example: tk run {name}\n"
+            "# @tk-verified: none\n"
+            "\n"
+            f"touch {str(sentinel)!r}\n"
+            "printf '%s\\n' '{\"ok\":true}'\n"
+        )
+
+    def _write(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    def test_run_tool_and_run_chain_refuse_duplicate_names_without_a_sentinel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sentinel = root / "ran"
+            text = self._tool("dup.local", sentinel)
+            self._write(root / "tools" / "aaa" / "local", text)
+            self._write(root / "tools" / "gh" / "local", text)
+            winner = {
+                "kind": "tool",
+                "name": "dup.local",
+                "summary": "Duplicate fixture",
+                "safety": "read-only",
+                "args": [],
+                "path": str(root / "tools" / "aaa" / "local"),
+                "example": "tk run dup.local",
+            }
+            code, out, err = run_tool(root, winner, {})
+            self.assertEqual(code, 2, err)
+            self.assertEqual(json.loads(err)["error"], "duplicate_name")
+            self.assertFalse(sentinel.exists())
+            self.assertEqual(out, "")
+
+            chain_same = {
+                "kind": "chain",
+                "name": "dup.local",
+                "summary": "Colliding chain",
+                "safety": "read-only",
+                "args": [],
+                "steps": [{"tool": "dup.local"}],
+                "path": str(root / "chains" / "dup.local.json"),
+                "example": "tk run dup.local",
+            }
+            code, _out, err = run_chain(root, chain_same, {})
+            self.assertEqual(code, 2, err)
+            self.assertEqual(json.loads(err)["error"], "duplicate_name")
+            self.assertFalse(sentinel.exists())
+
+            chain_step = {
+                "kind": "chain",
+                "name": "wrap.pipeline",
+                "summary": "Calls the ambiguous name",
+                "safety": "read-only",
+                "args": [],
+                "steps": [{"tool": "dup.local"}],
+                "path": str(root / "chains" / "wrap.pipeline.json"),
+                "example": "tk run wrap.pipeline",
+            }
+            code, _out, err = run_chain(root, chain_step, {})
+            self.assertEqual(code, 2, err)
+            self.assertIn("tools/aaa/local", json.loads(err)["why"])
+            self.assertIn("tools/gh/local", json.loads(err)["why"])
+            self.assertFalse(sentinel.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

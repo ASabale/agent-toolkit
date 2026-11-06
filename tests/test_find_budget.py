@@ -59,6 +59,9 @@ class _EmptyCatalog:
     def discover_catalog(self, root_dir):
         return {"git.diff-digest": {"name": "git.diff-digest"}}
 
+    def resolve_named_item(self, root_dir, name):
+        return "none", None, []
+
     def format_find_output(self, items):
         return ""
 
