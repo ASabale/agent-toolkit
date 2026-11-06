@@ -50,6 +50,7 @@ def _empty_tool(path: Path) -> dict:
         "needs": [],
         "schema": [],
         "requires": [],
+        "deprecated": "",
         "path": resolved,
     }
 
@@ -149,6 +150,8 @@ def parse_tool_header(path: Path) -> dict:
                 item["schema"].extend(_schema_keys(value))
             elif key == "@tk-requires":
                 item["requires"].extend(part for part in re.split(r"[\s,]+", value) if part)
+            elif key == "@tk-deprecated":
+                item["deprecated"] = value
     except Exception:
         return item
     return item
@@ -506,6 +509,16 @@ def suggest_closest_item(root_dir: Path, name: str) -> dict | None:
         return None
 
 
+def _instead(item: dict) -> str:
+    """One replacement command. Empty when the tool is not deprecated."""
+    raw = str(item.get("deprecated") or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("tk "):
+        return raw
+    return f"tk run {raw}"
+
+
 def format_find_output(items: list[dict]) -> str:
     """Two lines per item: name/safety/summary, then the run example.
 
@@ -531,6 +544,10 @@ def format_find_output(items: list[dict]) -> str:
                 run = run[:140]
             lines.append(head)
             lines.append(run)
+            instead = _instead(item)
+            if instead:
+                extra = f"  instead: {instead}"
+                lines.append(extra[:140])
         if not lines:
             return ""
         return "\n".join(lines) + "\n"
@@ -579,6 +596,9 @@ def format_info_output(item: dict) -> str:
         lines.append(f"example: {item.get('example') or ''}")
         verified = str(item.get("verified") or "")
         lines.append(f"verified: {verified}")
+        instead = _instead(item)
+        if instead:
+            lines.append(f"deprecated: {instead}")
         lines.append(
             "trust: "
             + trust_label(verified, bool(item.get("check_passed")))

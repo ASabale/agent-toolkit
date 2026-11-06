@@ -300,6 +300,23 @@ OK
 ```
 decisions: no second timer. Not merged to `main` (issue #230).
 follow-ups: T3.2 deprecation depends on T1.6.
+## T3.2 Deprecation
+
+status: DONE
+branch: plan/t3.2-deprecated
+baseline: plan/t1.6-trust at 1de35b4
+result: optional `@tk-deprecated`. The tool stays in the one catalog and in `tk find`. Find and info add one line, `instead:` or `deprecated:`, naming `tk run <replacement>` or a header value that already starts with `tk `.
+verify-evidence: a deprecated tool is still returned by `find_items`. Find output has three lines for that tool and two for a tool with no header. Info has one `deprecated:` line.
+changes: lib/catalog.py; CODING_STANDARDS.md; tests/test_deprecated.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_deprecated tests.test_catalog.DiscoverAndFindTests.test_format_find_output_is_two_lines_per_item -v
+Ran 4 tests in 0.002s
+OK
+```
+decisions: no second catalog. Not merged to `main` (issue #232).
+follow-ups: T3.3 `@tk-keep` depends on T2.4.
+
 ## T4.4 Suggest a tool
 
 status: DONE
