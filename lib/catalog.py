@@ -621,8 +621,12 @@ def format_info_output(item: dict) -> str:
             f"kind: {item.get('kind') or ''}",
             f"safety: {item.get('safety') or ''}",
             f"summary: {item.get('summary') or ''}",
-            "args:",
         ]
+        for label, key in (("declared_needs", "needs"), ("declared_requires", "requires")):
+            values = [str(value).strip() for value in (item.get(key) or []) if str(value).strip()]
+            for value in values:
+                lines.append(f"{label}: {value}")
+        lines.append("args:")
         for arg in item.get("args") or []:
             if not isinstance(arg, dict):
                 lines.append(f"  {arg}")
