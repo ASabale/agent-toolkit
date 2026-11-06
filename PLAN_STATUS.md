@@ -228,3 +228,20 @@ OK
 ```
 decisions: isolation on the audit line is none. Not merged to main (issue #229).
 follow-ups: T2.5 keeps the one TK_TIMEOUT path.
+
+## T3.3 `@tk-keep`
+
+status: DONE
+branch: plan/t3.3-keep
+baseline: plan/t2.4-lock at bb1b223
+result: optional header. `tk prune --unused` skips a name with `@tk-keep`. A tool with no header is still unused after 50 run events when it is older than the first run and not referenced by a chain.
+verify-evidence: `lab.held` is absent from `unused_tools`. `lab.stale` is present. `run_events` stays 50.
+changes: lib/catalog.py; lib/evolver.py; CODING_STANDARDS.md; tests/test_keep.py
+acceptance-output:
+```
+TK_NO_TELEMETRY=1 python3 -m unittest tests.test_keep -v
+Ran 1 test in 0.287s
+OK
+```
+decisions: chain protection and the newer-than-first-run rule are unchanged. Not merged to `main` (issue #233).
+follow-ups: T3.4 does not add a second output cap.

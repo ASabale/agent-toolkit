@@ -49,6 +49,7 @@ def _empty_tool(path: Path) -> dict:
         "needs": [],
         "schema": [],
         "requires": [],
+        "keep": False,
         "path": resolved,
     }
 
@@ -148,6 +149,8 @@ def parse_tool_header(path: Path) -> dict:
                 item["schema"].extend(_schema_keys(value))
             elif key == "@tk-requires":
                 item["requires"].extend(part for part in re.split(r"[\s,]+", value) if part)
+            elif key == "@tk-keep":
+                item["keep"] = True
     except Exception:
         return item
     return item

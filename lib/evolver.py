@@ -1164,7 +1164,7 @@ def _unused_tools(
     first_run = _parse_event_ts(_first_run_ts(events))
     unused: list[str] = []
     for name in sorted(catalog):
-        if name in used:
+        if name in used or catalog[name].get("keep"):
             continue
         path = Path(str(catalog[name].get("path") or ""))
         if first_run is not None and not _mtime_on_or_before(path, first_run):
