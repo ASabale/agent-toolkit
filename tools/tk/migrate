@@ -1,38 +1,380 @@
 #!/usr/bin/env python3
 # @tk-name: tk.migrate
-# @tk-summary: Report what a move would copy, without copying secrets
-# @tk-safety: read-only
+# @tk-summary: Export or copy tools, chains, and the skill between toolkit checkouts
+# @tk-safety: destructive
+# @tk-arg: --action | optional | string | report, export, or apply (default: report)
+# @tk-arg: --source | optional | string | Source Agent Toolkit checkout
+# @tk-arg: --dest | optional | string | Destination Agent Toolkit checkout
+# @tk-arg: --apply | optional | bool | Write files during apply; dry-run is the default
+# @tk-arg: --manifest | optional | string | Manifest JSON to apply; a hash mismatch aborts the copy
 # @tk-output: json | object
-# @tk-example: tk run tk.migrate
+# @tk-example: tk run tk.migrate --action report
 # @tk-verified: none
 
+from __future__ import annotations
+
+import hashlib
+import json
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from lib.tool_sdk import emit, fail
+from lib.catalog import check_item
+from lib.tool_sdk import arg_str, emit, fail
 
-FIX = "tk run tk.migrate"
+FIX = "tk run tk.migrate --action report"
+_MANIFEST_VERSION = 1
+_SKIP_PARTS = {"state", ".git", "__pycache__"}
+_SKIP_NAMES = {
+    "policy.json",
+    "audit.jsonl",
+    "trace.jsonl",
+    "credentials",
+    "credentials.json",
+    "approvals.json",
+    "approval.json",
+    "confirmations.json",
+}
+
+
+def _truthy(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _version_string(root: Path) -> str | None:
+    path = root / "VERSION"
+    if not path.is_file() or path.is_symlink():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    return text or None
+
+
+def _reject_user_path(label: str, raw: str) -> str | None:
+    if not raw.strip():
+        return f"{label} is required"
+    if raw.startswith("-"):
+        return f"{label} must not start with -"
+    if ".." in Path(raw).parts:
+        return f"{label} must not contain .."
+    return None
+
+
+def _inside(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _skipped(rel: Path) -> bool:
+    if any(part in _SKIP_PARTS for part in rel.parts):
+        return True
+    lowered = rel.name.lower()
+    if rel.name in _SKIP_NAMES or lowered.startswith(".env") or lowered.endswith(".env"):
+        return True
+    return any(word in lowered for word in ("token", "credential", "secret", "approval"))
+
+
+def _kind(rel: Path) -> str | None:
+    parts = rel.parts
+    if any(part.startswith(".") or part in _SKIP_PARTS for part in parts):
+        return None
+    if rel.suffix.lower() in (".pyc", ".pyo"):
+        return None
+    if parts[0] == "tools":
+        return "tool"
+    if parts[0] == "chains":
+        return "chain" if rel.suffix.lower() == ".json" else None
+    if parts[:2] == ("skills", "agent-toolkit"):
+        return "skill"
+    return None
+
+
+def _scan(source: Path) -> tuple[list[dict], str | None]:
+    roots = [source / "tools", source / "chains", source / "skills" / "agent-toolkit"]
+    version = _version_string(source)
+    files: list[dict] = []
+    for base in roots:
+        if not base.exists():
+            continue
+        if base.is_symlink() and not _inside(source, base):
+            return [], f"symlink leaves source: {base}"
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            current = Path(dirpath)
+            kept = []
+            for dirname in dirnames:
+                child = current / dirname
+                if child.is_symlink() and not _inside(source, child):
+                    return [], f"symlink leaves source: {child}"
+                kept.append(dirname)
+            dirnames[:] = kept
+            for name in filenames:
+                path = current / name
+                rel = path.relative_to(source)
+                if path.is_symlink():
+                    if not _inside(source, path):
+                        return [], f"symlink leaves source: {path}"
+                    continue
+                if not path.is_file() or _skipped(rel):
+                    continue
+                kind = _kind(rel)
+                if kind is None:
+                    continue
+                data = path.read_bytes()
+                files.append(
+                    {
+                        "path": rel.as_posix(),
+                        "kind": kind,
+                        "sha256": _sha256(data),
+                        "size": len(data),
+                        "executable": bool(path.stat().st_mode & stat.S_IXUSR),
+                        "source_version": version,
+                    }
+                )
+    files.sort(key=lambda row: row["path"])
+    return files, None
+
+
+def _manifest(source: Path) -> tuple[dict | None, str | None]:
+    files, error = _scan(source)
+    if error:
+        return None, error
+    return {"version": _MANIFEST_VERSION, "source_version": _version_string(source), "files": files}, None
+
+
+def _load_manifest(raw: str, source: Path) -> tuple[dict | None, str | None]:
+    reason = _reject_user_path("manifest", raw)
+    if reason:
+        return None, reason
+    path = Path(raw)
+    if path.is_symlink() or not path.is_file():
+        return None, "manifest is not a file"
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"manifest is not json: {exc}"
+    if not isinstance(parsed, dict) or parsed.get("version") != _MANIFEST_VERSION:
+        return None, "manifest version must be 1"
+    rows = parsed.get("files")
+    if not isinstance(rows, list):
+        return None, "manifest files must be a list"
+    built, error = _manifest(source)
+    if error or built is None:
+        return None, error
+    by_path = {row["path"]: row for row in built["files"]}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None, "manifest entry is not an object"
+        rel = str(row.get("path") or "")
+        if rel.startswith("/") or ".." in Path(rel).parts or rel not in by_path:
+            return None, f"manifest path refused: {rel}"
+        if str(row.get("sha256") or "") != by_path[rel]["sha256"]:
+            return None, f"manifest hash mismatch: {rel}"
+    return built, None
+
+
+def _dest_stays(dest: Path, rel: Path) -> bool:
+    probe = dest
+    for part in rel.parts:
+        probe = probe / part
+        if probe.is_symlink() and not _inside(dest, probe):
+            return False
+        if probe.exists() and not _inside(dest, probe):
+            return False
+    parent = (dest / rel).parent
+    return not parent.exists() or _inside(dest, parent)
+
+
+def _read(path: Path) -> bytes | None:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _draft_bytes(data: bytes) -> bytes:
+    """Imported tools stay unverified. Rewriting the header changes the bytes."""
+    lines = []
+    for line in data.decode("utf-8", errors="replace").splitlines(keepends=True):
+        if line.startswith("# ") and "@tk-verified:" in line:
+            lines.append(f"# @tk-verified: none{line[-1:] if line.endswith(chr(10)) else ''}")
+        else:
+            lines.append(line)
+    return "".join(lines).encode("utf-8")
+
+
+def _exclusive_write(path: Path, data: bytes, executable: bool) -> str | None:
+    """Create only. Never replace an existing name, so a racing writer wins."""
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    mode = 0o755 if executable else 0o644
+    try:
+        fd = os.open(path, flags, mode)
+    except FileExistsError:
+        return "exists"
+    except OSError as exc:
+        return str(exc)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    except OSError as exc:
+        os.close(fd)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return str(exc)
+    os.close(fd)
+    os.chmod(path, mode)
+    return None
+
+
+def _rollback(created: list[tuple[Path, str]]) -> list[str]:
+    """Remove only names this run created and still holds the bytes it wrote."""
+    removed = []
+    for path, digest in reversed(created):
+        current = _read(path)
+        if current is None or _sha256(current) != digest:
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            continue
+        removed.append(str(path))
+    return removed
+
+
+def _failure(error: str, why: str, removed: list[str]) -> dict:
+    return {
+        "error": error,
+        "why": why,
+        "fix": FIX,
+        "removed": removed,
+        "secrets_copied": False,
+    }
+
+
+def _apply(source: Path, dest: Path, files: list[dict], write: bool) -> dict:
+    plan = [row["path"] for row in files]
+    if not write or os.environ.get("TK_DRY_RUN", "0") == "1":
+        return {"dry_run": True, "plan": plan, "copied": [], "skipped": [], "secrets_copied": False}
+    for row in files:
+        if not _dest_stays(dest, Path(row["path"])):
+            return _failure("dest_escape", f"destination path leaves the checkout: {row['path']}", [])
+    created: list[tuple[Path, str]] = []
+    copied: list[str] = []
+    skipped: list[str] = []
+    for row in files:
+        rel = Path(row["path"])
+        data = _read(source / rel)
+        if data is None or _sha256(data) != row["sha256"]:
+            return _failure("hash_mismatch", f"source changed: {row['path']}", _rollback(created))
+        if row["kind"] == "tool":
+            data = _draft_bytes(data)
+        digest = _sha256(data)
+        target = dest / rel
+        existing = _read(target)
+        if existing is not None:
+            if _sha256(existing) == digest:
+                skipped.append(row["path"])
+                continue
+            return _failure("collision", f"destination differs: {row['path']}", _rollback(created))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        error = _exclusive_write(target, data, bool(row["executable"]))
+        if error == "exists":
+            raced = _read(target)
+            if raced is not None and _sha256(raced) == digest:
+                skipped.append(row["path"])
+                continue
+            return _failure("collision", f"destination appeared: {row['path']}", _rollback(created))
+        if error:
+            return _failure("create_failed", error, _rollback(created))
+        written = _read(target)
+        if written is None or _sha256(written) != digest:
+            return _failure("hash_mismatch", f"wrote unexpected bytes: {row['path']}", _rollback(created))
+        created.append((target, digest))
+        copied.append(row["path"])
+    checks = [
+        check_item(dest, dest / row["path"])
+        for row in files
+        if row["kind"] in {"tool", "chain"} and row["path"] in copied
+    ]
+    bad = next((row for row in checks if not row.get("ok")), None)
+    if bad:
+        return _failure("check_failed", f"{bad['name']}: {bad['errors']}", _rollback(created))
+    return {
+        "dry_run": False,
+        "copied": copied,
+        "skipped": skipped,
+        "created": [{"path": path.relative_to(dest).as_posix(), "sha256": digest} for path, digest in created],
+        "checks": checks,
+        "secrets_copied": False,
+    }
+
+
+def _report(root: Path) -> dict:
+    return {
+        "dry_run": True,
+        "copy": [
+            {"kind": "tool", "path": str(root / "tools")},
+            {"kind": "chain", "path": str(root / "chains")},
+            {"kind": "skill", "path": str(root / "skills" / "agent-toolkit")},
+        ],
+        "credentials": [
+            {
+                "name": "gh",
+                "where": "already in gh" if os.environ.get("GH_TOKEN") or shutil.which("gh") else "gh not on PATH",
+                "copied": False,
+            }
+        ],
+        "secrets_copied": False,
+        "state_copied": False,
+    }
 
 
 def main() -> int:
+    action = (arg_str("--action") or "report").strip().lower()
+    if action not in {"report", "export", "apply"}:
+        return fail("unknown_action", f"action must be report, export, or apply: {action}", FIX, 2)
     root = Path(os.environ.get("TK_ROOT_DIR") or Path(__file__).resolve().parents[2])
-    state = os.environ.get("TK_STATE_DIR", "").strip() or str(root / "state")
-    where = "already in gh" if shutil.which("gh") else "gh not on PATH"
-    return emit(
-        {
-            "dry_run": True,
-            "copy": [
-                {"kind": "catalog", "path": str(root / "tools")},
-                {"kind": "catalog", "path": str(root / "chains")},
-                {"kind": "state", "path": state},
-            ],
-            "credentials": [{"name": "gh", "where": where, "copied": False}],
-            "secrets_copied": False,
-        }
-    )
+    if action == "report":
+        return emit(_report(root))
+    reason = _reject_user_path("source", arg_str("--source"))
+    if reason:
+        return fail("missing_flag", reason, FIX, 2)
+    source = Path(arg_str("--source"))
+    if not source.is_dir():
+        return fail("not_a_checkout", "source is not a directory", FIX, 2)
+    if action == "export":
+        manifest, error = _manifest(source)
+        if error or manifest is None:
+            return fail("refused", error or "scan failed", FIX)
+        manifest["dry_run"] = True
+        manifest["secrets_copied"] = False
+        return emit(manifest)
+    reason = _reject_user_path("dest", arg_str("--dest"))
+    if reason:
+        return fail("missing_flag", reason, FIX, 2)
+    dest = Path(arg_str("--dest"))
+    if not dest.is_dir():
+        return fail("not_a_checkout", "dest is not a directory", FIX, 2)
+    manifest_raw = arg_str("--manifest")
+    manifest, error = _load_manifest(manifest_raw, source) if manifest_raw else _manifest(source)
+    if error or manifest is None:
+        return fail("refused", error or "scan failed", FIX)
+    result = _apply(source, dest, list(manifest["files"]), _truthy(arg_str("--apply")))
+    return emit(result, 1 if result.get("error") else 0)
 
 
 if __name__ == "__main__":
