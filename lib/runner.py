@@ -28,7 +28,7 @@ from lib.catalog import (
 from lib.chainref import resolve_expr, stringify
 from lib.evolver import append_audit, append_trace, log_event, record_feedback
 from lib.guards import tool_subprocess_env
-from lib.redact import redact_data
+from lib.redact import redact_data, secret_hits
 
 _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no"}
@@ -677,23 +677,85 @@ def _writes(item: dict) -> bool:
     return str(item.get("safety") or "") in {"mutating", "destructive"}
 
 
+_SECRET_FLAG = "<redacted>"
+
+
+def _public_flags(flags: dict[str, str]) -> dict[str, str]:
+    """Drop secret-shaped values from printed commands.
+
+    ``apply`` and ``confirm`` keep the flag name and use ``<redacted>``.
+    The caller must pass the real value again. The plan id still hashes it.
+    """
+    shown: dict[str, str] = {}
+    for flag, value in flags.items():
+        shown[flag] = _SECRET_FLAG if secret_hits(str(value)) else value
+    return shown
+
+
 def _apply_command(item: dict, flags: dict[str, str]) -> str:
-    return _fix_command(item, flags) + " --yes"
+    return _fix_command(item, _public_flags(flags)) + " --yes"
 
 
-def _plan_id(name: str, flags: dict[str, str], plan: list) -> str:
-    """8 hex chars over name, sorted flags, and the dry-run plan. Not permission."""
-    body = {
-        "name": name,
-        "flags": [[flag, flags[flag]] for flag in sorted(flags)],
-        "plan": plan,
-    }
+def _sha256_file(path: object) -> str:
+    try:
+        data = Path(str(path or "")).read_bytes()
+    except OSError:
+        data = b""
+    return hashlib.sha256(data).hexdigest()
+
+
+def _canonical_id(body: dict) -> str:
+    """Full SHA-256 of canonical JSON. Not permission and not an identity."""
     raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _arg_pairs(flags: dict[str, str]) -> list[list[str]]:
+    return [[flag, flags[flag]] for flag in sorted(flags)]
+
+
+def _tool_plan_id(item: dict, flags: dict[str, str], plan: list) -> str:
+    return _canonical_id(
+        {
+            "schema": 1,
+            "kind": "tool",
+            "name": str(item.get("name") or ""),
+            "executable_sha256": _sha256_file(item.get("path")),
+            "args": _arg_pairs(flags),
+            "plan": plan,
+        }
+    )
+
+
+def _chain_plan_id(
+    chain_item: dict, flags: dict[str, str], plan: list, catalog: dict
+) -> str:
+    steps: list[dict[str, str]] = []
+    for step in chain_item.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("tool") or "")
+        tool = catalog.get(name) if name else None
+        steps.append(
+            {
+                "name": name,
+                "executable_sha256": _sha256_file((tool or {}).get("path")),
+            }
+        )
+    return _canonical_id(
+        {
+            "schema": 1,
+            "kind": "chain",
+            "chain_sha256": _sha256_file(chain_item.get("path")),
+            "steps": steps,
+            "args": _arg_pairs(flags),
+            "plan": plan,
+        }
+    )
 
 
 def _confirm_command(item: dict, flags: dict[str, str], plan_id: str) -> str:
-    return _fix_command(item, flags) + " --confirm " + plan_id
+    return _fix_command(item, _public_flags(flags)) + " --confirm " + plan_id
 
 
 def _plan_list(payload: object) -> list:
@@ -705,7 +767,7 @@ def _plan_list(payload: object) -> list:
 
 def _safe_write_result(item: dict, flags: dict[str, str], payload: object) -> dict:
     plan = _plan_list(payload)
-    plan_id = _plan_id(str(item.get("name") or ""), flags, plan)
+    plan_id = _tool_plan_id(item, flags, plan)
     return {
         "dry_run": True,
         "plan": plan,
@@ -718,7 +780,7 @@ def _safe_write_result(item: dict, flags: dict[str, str], payload: object) -> di
 def _plan_mismatch(item: dict, flags: dict[str, str], why: str) -> tuple[int, str, str]:
     return _failure(
         2,
-        {"error": "plan_mismatch", "why": why, "fix": _fix_command(item, flags)},
+        {"error": "plan_mismatch", "why": why, "fix": _fix_command(item, _public_flags(flags))},
     )
 
 
@@ -1499,7 +1561,7 @@ def run_chain(
                 plans.extend(prev["plan"])
             last_stdout = stdout
         if gated:
-            plan_id = _plan_id(str(chain_item.get("name") or ""), flags, plans)
+            plan_id = _chain_plan_id(chain_item, flags, plans, catalog)
             last_stdout = _compact(
                 {
                     "dry_run": True,
