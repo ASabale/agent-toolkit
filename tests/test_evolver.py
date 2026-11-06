@@ -1005,5 +1005,45 @@ class EvolverTests(unittest.TestCase):
         self.assertEqual(after, before)
 
 
+    def test_evolve_skips_failed_trust_destructive_and_core(self) -> None:
+        ok, _, err = save_tool(
+            self.root,
+            "alpha.keep",
+            "Keep this draft",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        ok, _, err = save_tool(
+            self.root,
+            "alpha.drop",
+            "Drop this draft",
+            safety="destructive",
+            from_cmd="printf '%s\\n' '{\"ok\":true}'",
+        )
+        self.assertEqual(ok, 0, err)
+        log_event(self.root, "run_ok", {"name": "alpha.keep"})
+        log_event(self.root, "run_ok", {"name": "alpha.drop"})
+        keep = self.root / "tools" / "alpha" / "keep"
+        drop = self.root / "tools" / "alpha" / "drop"
+        before_keep = keep.read_text(encoding="utf-8")
+        before_drop = drop.read_text(encoding="utf-8")
+
+        with patch("lib.evolver.trust_label", side_effect=RuntimeError("trust")):
+            report = evolve_report(self.root, auto_promote=True)
+        self.assertEqual(report["promoted"], [])
+        self.assertEqual(keep.read_text(encoding="utf-8"), before_keep)
+        self.assertIn("# @tk-verified: none", drop.read_text(encoding="utf-8"))
+        self.assertEqual(drop.read_text(encoding="utf-8"), before_drop)
+        failed = {item["name"] for item in report["failing_tools"]}
+        self.assertIn("alpha.keep", failed)
+
+        with patch("lib.evolver._core_tool_paths", return_value={keep.resolve()}):
+            report = evolve_report(self.root, auto_promote=True)
+        self.assertNotIn("alpha.keep", report["promoted"])
+        self.assertNotIn("alpha.drop", report["promoted"])
+        self.assertEqual(keep.read_text(encoding="utf-8"), before_keep)
+        self.assertEqual(drop.read_text(encoding="utf-8"), before_drop)
+
+
 if __name__ == "__main__":
     unittest.main()
